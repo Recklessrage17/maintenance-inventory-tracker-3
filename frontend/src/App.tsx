@@ -63,7 +63,12 @@ import {
   activateStockLedgerSqliteState,
   getSqliteStockLedgerMirrorStatus
 } from "./lib/sqliteStockLedgerMirror";
-import { getSqliteRequisitionMirrorStatus } from "./lib/sqliteRequisitionMirror";
+import {
+  activateRequisitionSqliteState,
+  getSqliteRequisitionMirrorStatus,
+  saveRequisitionToSqlite,
+  syncRequisitionsToSqlite
+} from "./lib/sqliteRequisitionMirror";
 import { IdleScreensaver } from "./components/layout/IdleScreensaver";
 import jbtLogo from "./assets/jbt-logo.png";
 import type {
@@ -2790,6 +2795,28 @@ function InventoryApp() {
           );
         }
 
+        const requisitionSqliteState = await activateRequisitionSqliteState(loadedData.requisitionMadeRecords);
+
+        if (cancelled) {
+          return;
+        }
+
+        if (requisitionSqliteState.sqliteAvailable) {
+          loadedData = {
+            ...loadedData,
+            requisitionMadeRecords: requisitionSqliteState.records
+          };
+
+          if (import.meta.env.DEV) {
+            console.info("[sqlite-requisition-mirror]", requisitionSqliteState);
+          }
+        } else if (requisitionSqliteState.error && import.meta.env.DEV) {
+          console.warn(
+            "[sqlite-requisition-mirror] Requisition SQLite activation failed. JSON requisitions remain available.",
+            requisitionSqliteState.error
+          );
+        }
+
         setData(loadedData);
         latestDataRef.current = loadedData;
         setLastBackupAt(loadedData.settings.lastBackupTimestamp || null);
@@ -3062,6 +3089,7 @@ function InventoryApp() {
 
         if (import.meta.env.DEV) {
           console.info("[sqlite-requisition-mirror]", {
+            activeRequisitionSource: "json",
             error: error instanceof Error ? error.message : String(error),
             jsonReorderHistoryCount: data.requisitionMadeRecords.reduce(
               (total, record) => total + record.itemSnapshots.length,
@@ -3930,6 +3958,12 @@ function InventoryApp() {
       const importAction =
         source === "auto" ? "Backup Auto Imported" : source === "folder" ? "Backup Imported" : "JSON Imported";
       const importActor = source === "auto" ? "Auto Import" : "User";
+
+      void syncRequisitionsToSqlite(imported.requisitionMadeRecords).catch((error) => {
+        if (import.meta.env.DEV) {
+          console.warn("[sqlite-requisition-mirror] Imported requisition sync failed. JSON import remains available.", error);
+        }
+      });
 
       suppressNextAutoBackupRef.current = true;
       setData((current) => {
@@ -9727,6 +9761,12 @@ function ReorderPage({
     const passedItemIds = new Set(record.itemIds);
     const currentIndex = vendorGroups.findIndex((candidate) => candidate.vendorKey === vendorKey);
     const hasNextVendor = currentIndex >= 0 && currentIndex < vendorGroups.length - 1;
+
+    void saveRequisitionToSqlite(record).catch((error) => {
+      if (import.meta.env.DEV) {
+        console.warn("[sqlite-requisition-mirror] Requisition SQLite save failed. JSON fallback remains available.", error);
+      }
+    });
 
     onDataChange((current) => {
       const updatedAt = nowIso();

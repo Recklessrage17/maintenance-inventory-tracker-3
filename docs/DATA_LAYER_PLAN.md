@@ -2,7 +2,7 @@
 
 ## Current Live Data Flow
 
-JSON/current app data remains the live data source for requisitions, settings, backup, and restore. Vendors, locations, inventory, and stock ledger/history are now SQLite live-read/write pilots on desktop, with IndexedDB still saving the full `AppData` object as fallback/export compatibility.
+JSON/current app data remains the live data source for settings, backup, and restore. Vendors, locations, inventory, stock ledger/history, and requisitions are now SQLite live-read/write pilots on desktop, with IndexedDB still saving the full `AppData` object as fallback/export compatibility.
 
 - App load: `frontend/src/App.tsx` calls `loadAppData()` during startup, normalizes the result, and falls back to demo data when no saved data is found.
 - App save: `frontend/src/App.tsx` watches `data` state and calls `saveAppData(data)` after changes.
@@ -29,7 +29,7 @@ Website V3 will need a backend/API for server-side data access. The website data
 - `SqliteDesktopDataAdapter`: future desktop adapter using Tauri + SQLite.
 - `WebApiDataAdapter`: future website adapter using HTTP calls to a backend/API.
 
-Keep `JsonLocalDataAdapter` as the live behavior for requisitions, settings, backup, and restore until each later migration pass is planned and tested.
+Keep `JsonLocalDataAdapter` as the live behavior for settings, backup, and restore until each later migration pass is planned and tested.
 
 ## SQLite Pilot - Vendors And Locations
 
@@ -51,8 +51,8 @@ Stock ledger/history now uses SQLite as the active desktop read/write pilot. On 
 
 Stock edit still creates history through the existing React app state flow, then syncs to SQLite with stable IDs, upserts, and stale-row pruning. History Logs UI, history pagination, history print/export, backup/restore, and requisitions keep their existing behavior.
 
-## SQLite Mirror - Requisitions
+## SQLite Pilot - Requisitions
 
-Requisitions are mirror-only in this pass. The live Reorder List, Requisition Made view, requisition history, official PDF generation, backup/export, and restore/import flows still use JSON `data.requisitionMadeRecords`.
+Requisitions now use SQLite as the active desktop read/write pilot. On desktop load, the app loads JSON/IndexedDB first for fallback compatibility, backfills SQLite requisition data when needed, then uses SQLite requisition rows in `data.requisitionMadeRecords`.
 
-On desktop, `frontend/src/lib/sqliteRequisitionMirror.ts` mirrors those JSON records into SQLite `requisitions`, `requisition_lines`, and `reorder_history` rows with stable source IDs. This prepares the future SQLite requisition migration without switching the UI or backup behavior yet.
+The Reorder List, Requisition Made view, requisition history, and official PDF generation still use the same React state shape and UI flow. Backup/export/import still uses the full JSON `AppData` payload, and restore/import syncs restored requisition records back into SQLite.

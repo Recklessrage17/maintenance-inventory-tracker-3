@@ -15,6 +15,36 @@ type RequisitionMirrorPartSampleRow = {
   part_number: string | null;
 };
 
+type SqliteRequisitionRow = {
+  created_at: string;
+  fulfilled_at: string | null;
+  id: string;
+  passed_at: string | null;
+  pdf_generated_at: string | null;
+  po_no: string | null;
+  requested_by: string | null;
+  requisition_type: string | null;
+  status: string | null;
+  submitted_at: string | null;
+  total_cost: number | string | null;
+  updated_at: string;
+  vendor_key: string | null;
+  vendor_name: string | null;
+};
+
+type SqliteRequisitionLineRow = {
+  description: string | null;
+  id: string;
+  item_id: string | null;
+  item_name: string | null;
+  line_total_cost: number | string | null;
+  part_number: string | null;
+  quantity_requested: number | string | null;
+  requisition_id: string;
+  source_item_id: string | null;
+  unit_cost: number | string | null;
+};
+
 export type RequisitionMirrorLine = {
   id: string;
   record: RequisitionMadeRecord;
@@ -27,6 +57,7 @@ export type RequisitionMirrorSample = {
 };
 
 export type SqliteRequisitionMirrorStatus = {
+  activeRequisitionSource: "json" | "sqlite";
   error?: string;
   jsonReorderHistoryCount: number;
   jsonRequisitionCount: number;
@@ -40,6 +71,10 @@ export type SqliteRequisitionMirrorStatus = {
   sqliteReorderHistoryCount: number;
   sqliteRequisitionCount: number;
   sqliteRequisitionLineCount: number;
+};
+
+export type SqliteRequisitionActivationResult = SqliteRequisitionMirrorStatus & {
+  records: RequisitionMadeRecord[];
 };
 
 const FALLBACK_DATE = "1970-01-01T00:00:00.000Z";
@@ -96,6 +131,99 @@ function activeRecordIds(records: RequisitionMadeRecord[]) {
 
 function activeLineIds(lines: RequisitionMirrorLine[]) {
   return lines.map((line) => line.id);
+}
+
+function normalizeRequisitionType(value: string | null | undefined): RequisitionMadeRecord["requisitionType"] {
+  return value === "over100" ? "over100" : "under100";
+}
+
+function recordFromSqlite(row: SqliteRequisitionRow, lines: SqliteRequisitionLineRow[]): RequisitionMadeRecord {
+  const createdAt = row.created_at || row.passed_at || row.pdf_generated_at || FALLBACK_DATE;
+  const itemSnapshots = lines.map((line) => {
+    const quantityRequested = numberValue(line.quantity_requested);
+    const unitCost = numberValue(line.unit_cost);
+
+    return {
+      itemId: line.source_item_id ?? line.item_id ?? "",
+      itemName: line.item_name ?? line.description ?? line.part_number ?? "Unknown Item",
+      partNumber: line.part_number ?? "",
+      quantityRequested,
+      unitCost,
+      totalCost: numberValue(line.line_total_cost, quantityRequested * unitCost)
+    };
+  });
+  const totalCost = numberValue(
+    row.total_cost,
+    itemSnapshots.reduce((sum, snapshot) => sum + snapshot.totalCost, 0)
+  );
+
+  return {
+    id: row.id,
+    vendorKey: row.vendor_key ?? "",
+    vendorName: row.vendor_name ?? "Unassigned Vendor",
+    createdAt,
+    createdBy: row.requested_by ?? "",
+    itemIds: itemSnapshots.map((snapshot) => snapshot.itemId),
+    itemSnapshots,
+    poNo: row.po_no ?? "",
+    totalCost,
+    requisitionType: normalizeRequisitionType(row.requisition_type),
+    pdfGeneratedAt: row.pdf_generated_at ?? row.submitted_at ?? createdAt,
+    passedAt: row.passed_at ?? row.fulfilled_at ?? createdAt,
+    requisitionedBy: row.requested_by ?? "",
+    status: "Made"
+  };
+}
+
+function recordsMatch(jsonRecord: RequisitionMadeRecord, sqliteRecord: RequisitionMadeRecord) {
+  if (
+    jsonRecord.id !== sqliteRecord.id ||
+    jsonRecord.vendorKey !== sqliteRecord.vendorKey ||
+    jsonRecord.vendorName !== sqliteRecord.vendorName ||
+    (jsonRecord.createdAt ?? "") !== (sqliteRecord.createdAt ?? "") ||
+    (jsonRecord.createdBy ?? "") !== (sqliteRecord.createdBy ?? "") ||
+    (jsonRecord.poNo ?? "") !== (sqliteRecord.poNo ?? "") ||
+    jsonRecord.totalCost !== sqliteRecord.totalCost ||
+    jsonRecord.requisitionType !== sqliteRecord.requisitionType ||
+    jsonRecord.pdfGeneratedAt !== sqliteRecord.pdfGeneratedAt ||
+    jsonRecord.passedAt !== sqliteRecord.passedAt ||
+    (jsonRecord.requisitionedBy ?? "") !== (sqliteRecord.requisitionedBy ?? "") ||
+    jsonRecord.itemSnapshots.length !== sqliteRecord.itemSnapshots.length
+  ) {
+    return false;
+  }
+
+  return jsonRecord.itemSnapshots.every((jsonSnapshot, index) => {
+    const sqliteSnapshot = sqliteRecord.itemSnapshots[index];
+
+    return (
+      sqliteSnapshot !== undefined &&
+      jsonSnapshot.itemId === sqliteSnapshot.itemId &&
+      jsonSnapshot.itemName === sqliteSnapshot.itemName &&
+      jsonSnapshot.partNumber === sqliteSnapshot.partNumber &&
+      jsonSnapshot.quantityRequested === sqliteSnapshot.quantityRequested &&
+      jsonSnapshot.unitCost === sqliteSnapshot.unitCost &&
+      jsonSnapshot.totalCost === sqliteSnapshot.totalCost
+    );
+  });
+}
+
+function shouldBackfillJsonRequisitions(jsonRecords: RequisitionMadeRecord[], sqliteRecords: RequisitionMadeRecord[]) {
+  if (jsonRecords.length === 0) {
+    return false;
+  }
+
+  if (sqliteRecords.length !== jsonRecords.length) {
+    return true;
+  }
+
+  const sqliteRecordsById = new Map(sqliteRecords.map((record) => [record.id, record]));
+
+  return jsonRecords.some((record) => {
+    const sqliteRecord = sqliteRecordsById.get(record.id);
+
+    return !sqliteRecord || !recordsMatch(record, sqliteRecord);
+  });
 }
 
 async function deleteMirrorRowsNotIn(
@@ -331,17 +459,111 @@ async function saveReorderHistoryLineWithDb(db: SqliteDatabase, line: Requisitio
   );
 }
 
-export async function syncRequisitionsToSqlite(records: RequisitionMadeRecord[]) {
+export async function loadRequisitionsFromSqlite(): Promise<RequisitionMadeRecord[]> {
   if (!hasTauriRuntime()) {
-    return 0;
+    return [];
   }
 
+  const db = await openMaintenanceSqliteDatabase();
+  const requisitionRows = await db.select<SqliteRequisitionRow[]>(
+    `SELECT
+      id,
+      requested_by,
+      status,
+      created_at,
+      updated_at,
+      submitted_at,
+      fulfilled_at,
+      vendor_key,
+      vendor_name,
+      po_no,
+      total_cost,
+      requisition_type,
+      pdf_generated_at,
+      passed_at
+    FROM requisitions
+    WHERE source_record_type = ?
+    ORDER BY created_at DESC, id ASC`,
+    [REQUISITION_MADE_SOURCE]
+  );
+  const lineRows = await db.select<SqliteRequisitionLineRow[]>(
+    `SELECT
+      id,
+      requisition_id,
+      item_id,
+      part_number,
+      description,
+      quantity_requested,
+      source_item_id,
+      item_name,
+      unit_cost,
+      line_total_cost
+    FROM requisition_lines
+    WHERE source_line_id IS NOT NULL
+    ORDER BY requisition_id ASC,
+      CAST(substr(id, length('requisition-line:' || requisition_id || ':') + 1) AS INTEGER) ASC,
+      id ASC`
+  );
+  const linesByRequisitionId = new Map<string, SqliteRequisitionLineRow[]>();
+
+  for (const line of lineRows) {
+    linesByRequisitionId.set(line.requisition_id, [...(linesByRequisitionId.get(line.requisition_id) ?? []), line]);
+  }
+
+  return requisitionRows.map((row) => recordFromSqlite(row, linesByRequisitionId.get(row.id) ?? []));
+}
+
+export async function saveRequisitionToSqlite(record: RequisitionMadeRecord) {
+  if (!hasTauriRuntime()) {
+    return;
+  }
+
+  const db = await openMaintenanceSqliteDatabase();
+  const lines = mirrorLinesFromRecords([record]);
+
+  await saveRequisitionWithDb(db, record);
+  await db.execute("DELETE FROM requisition_lines WHERE requisition_id = ? AND source_line_id IS NOT NULL", [record.id]);
+  await db.execute("DELETE FROM reorder_history WHERE source_requisition_id = ?", [record.id]);
+
+  for (const line of lines) {
+    await saveRequisitionLineWithDb(db, line);
+    await saveReorderHistoryLineWithDb(db, line);
+  }
+}
+
+export async function deleteRequisitionFromSqlite(recordId: string) {
+  if (!hasTauriRuntime()) {
+    return;
+  }
+
+  const db = await openMaintenanceSqliteDatabase();
+
+  await db.execute("DELETE FROM reorder_history WHERE source_requisition_id = ?", [recordId]);
+  await db.execute("DELETE FROM requisitions WHERE id = ? AND source_record_type = ?", [
+    recordId,
+    REQUISITION_MADE_SOURCE
+  ]);
+}
+
+async function syncRequisitionRecordsToSqlite(records: RequisitionMadeRecord[]) {
   const db = await openMaintenanceSqliteDatabase();
   await deleteMirrorRowsNotIn(db, "requisitions", "source_record_type", REQUISITION_MADE_SOURCE, activeRecordIds(records));
 
   for (const record of records) {
     await saveRequisitionWithDb(db, record);
   }
+
+  return countSqliteRequisitions();
+}
+
+export async function syncRequisitionsToSqlite(records: RequisitionMadeRecord[]) {
+  if (!hasTauriRuntime()) {
+    return 0;
+  }
+
+  await syncRequisitionRecordsToSqlite(records);
+  await syncRequisitionLinesToSqlite(mirrorLinesFromRecords(records));
+  await syncReorderHistoryToSqlite(mirrorLinesFromRecords(records));
 
   return countSqliteRequisitions();
 }
@@ -361,7 +583,7 @@ export async function syncRequisitionLinesToSqlite(lines: RequisitionMirrorLine[
   return countSqliteRequisitionLines();
 }
 
-async function syncReorderHistoryToSqlite(lines: RequisitionMirrorLine[]) {
+export async function syncReorderHistoryToSqlite(lines: RequisitionMirrorLine[]) {
   if (!hasTauriRuntime()) {
     return 0;
   }
@@ -409,7 +631,7 @@ export async function countSqliteRequisitionLines() {
   return rows[0]?.count ?? 0;
 }
 
-async function countSqliteReorderHistory() {
+export async function countSqliteReorderHistory() {
   if (!hasTauriRuntime()) {
     return 0;
   }
@@ -464,6 +686,7 @@ export async function getSqliteRequisitionMirrorStatus(data: AppData): Promise<S
 
   if (!hasTauriRuntime()) {
     return {
+      activeRequisitionSource: "json",
       jsonReorderHistoryCount,
       jsonRequisitionCount,
       jsonRequisitionLineCount,
@@ -481,11 +704,12 @@ export async function getSqliteRequisitionMirrorStatus(data: AppData): Promise<S
 
   try {
     const sqliteRequisitionCount = await syncRequisitionsToSqlite(records);
-    const sqliteRequisitionLineCount = await syncRequisitionLinesToSqlite(lines);
-    const sqliteReorderHistoryCount = await syncReorderHistoryToSqlite(lines);
+    const sqliteRequisitionLineCount = await countSqliteRequisitionLines();
+    const sqliteReorderHistoryCount = await countSqliteReorderHistory();
     const sample = await loadRequisitionMirrorSample();
 
     return {
+      activeRequisitionSource: "sqlite",
       jsonReorderHistoryCount,
       jsonRequisitionCount,
       jsonRequisitionLineCount,
@@ -501,10 +725,88 @@ export async function getSqliteRequisitionMirrorStatus(data: AppData): Promise<S
     };
   } catch (error) {
     return {
+      activeRequisitionSource: "json",
       error: errorMessage(error),
       jsonReorderHistoryCount,
       jsonRequisitionCount,
       jsonRequisitionLineCount,
+      reorderHistoryMatch: false,
+      requisitionLinesMatch: false,
+      requisitionsMatch: false,
+      samplePartNumbers: [],
+      sampleRequisitionNumbers: [],
+      sqliteAvailable: false,
+      sqliteReorderHistoryCount: 0,
+      sqliteRequisitionCount: 0,
+      sqliteRequisitionLineCount: 0
+    };
+  }
+}
+
+export async function activateRequisitionSqliteState(
+  jsonRecords: RequisitionMadeRecord[]
+): Promise<SqliteRequisitionActivationResult> {
+  const jsonLines = mirrorLinesFromRecords(jsonRecords);
+  const jsonRequisitionCount = jsonRecords.length;
+  const jsonRequisitionLineCount = jsonLines.length;
+  const jsonReorderHistoryCount = jsonLines.length;
+
+  if (!hasTauriRuntime()) {
+    return {
+      activeRequisitionSource: "json",
+      jsonReorderHistoryCount,
+      jsonRequisitionCount,
+      jsonRequisitionLineCount,
+      records: jsonRecords,
+      reorderHistoryMatch: false,
+      requisitionLinesMatch: false,
+      requisitionsMatch: false,
+      samplePartNumbers: [],
+      sampleRequisitionNumbers: [],
+      sqliteAvailable: false,
+      sqliteReorderHistoryCount: 0,
+      sqliteRequisitionCount: 0,
+      sqliteRequisitionLineCount: 0
+    };
+  }
+
+  try {
+    let sqliteRecords = await loadRequisitionsFromSqlite();
+
+    if (shouldBackfillJsonRequisitions(jsonRecords, sqliteRecords)) {
+      await syncRequisitionsToSqlite(jsonRecords);
+      sqliteRecords = await loadRequisitionsFromSqlite();
+    }
+
+    const sqliteRequisitionCount = await countSqliteRequisitions();
+    const sqliteRequisitionLineCount = await countSqliteRequisitionLines();
+    const sqliteReorderHistoryCount = await countSqliteReorderHistory();
+    const sample = await loadRequisitionMirrorSample();
+
+    return {
+      activeRequisitionSource: "sqlite",
+      jsonReorderHistoryCount: sqliteRecords.reduce((total, record) => total + record.itemSnapshots.length, 0),
+      jsonRequisitionCount: sqliteRecords.length,
+      jsonRequisitionLineCount: sqliteRecords.reduce((total, record) => total + record.itemSnapshots.length, 0),
+      records: sqliteRecords,
+      reorderHistoryMatch: sqliteReorderHistoryCount === sqliteRecords.reduce((total, record) => total + record.itemSnapshots.length, 0),
+      requisitionLinesMatch: sqliteRequisitionLineCount === sqliteRecords.reduce((total, record) => total + record.itemSnapshots.length, 0),
+      requisitionsMatch: sqliteRequisitionCount === sqliteRecords.length,
+      samplePartNumbers: sample.partNumbers,
+      sampleRequisitionNumbers: sample.requisitionNumbers,
+      sqliteAvailable: true,
+      sqliteReorderHistoryCount,
+      sqliteRequisitionCount,
+      sqliteRequisitionLineCount
+    };
+  } catch (error) {
+    return {
+      activeRequisitionSource: "json",
+      error: errorMessage(error),
+      jsonReorderHistoryCount,
+      jsonRequisitionCount,
+      jsonRequisitionLineCount,
+      records: jsonRecords,
       reorderHistoryMatch: false,
       requisitionLinesMatch: false,
       requisitionsMatch: false,
