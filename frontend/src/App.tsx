@@ -59,6 +59,7 @@ import {
   activateVendorLocationSqliteState,
   getSqliteVendorLocationStatus
 } from "./lib/sqliteVendorsLocations";
+import { getSqliteStockLedgerMirrorStatus } from "./lib/sqliteStockLedgerMirror";
 import { IdleScreensaver } from "./components/layout/IdleScreensaver";
 import jbtLogo from "./assets/jbt-logo.png";
 import type {
@@ -2683,6 +2684,7 @@ function InventoryApp() {
   const pendingTimedBackupRef = useRef(false);
   const latestDataRef = useRef<AppData | null>(null);
   const sqliteInventoryMirrorSignatureRef = useRef("");
+  const sqliteStockLedgerMirrorSignatureRef = useRef("");
   const sqliteVendorLocationMirrorSignatureRef = useRef("");
   const skipHeaderBadgeSaveRef = useRef(false);
   const vendorAiPromptResolveRef = useRef<((note: string | null) => void) | null>(null);
@@ -2927,6 +2929,59 @@ function InventoryApp() {
       cancelled = true;
     };
   }, [data?.items]);
+
+  useEffect(() => {
+    if (!data || !import.meta.env.DEV) {
+      return;
+    }
+
+    const mirrorSignature = JSON.stringify({
+      stockChanges: data.stockChanges.map((record) => [
+        record.id,
+        record.createdAt,
+        record.occurredAt,
+        record.actionType,
+        record.quantity,
+        record.previousQuantity,
+        record.newQuantity
+      ])
+    });
+
+    if (sqliteStockLedgerMirrorSignatureRef.current === mirrorSignature) {
+      return;
+    }
+
+    sqliteStockLedgerMirrorSignatureRef.current = mirrorSignature;
+    let cancelled = false;
+
+    getSqliteStockLedgerMirrorStatus(data.stockChanges)
+      .then((status) => {
+        if (cancelled) {
+          return;
+        }
+
+        console.info("[sqlite-stock-ledger-mirror]", status);
+      })
+      .catch((error) => {
+        if (cancelled) {
+          return;
+        }
+
+        console.info("[sqlite-stock-ledger-mirror]", {
+          error: error instanceof Error ? error.message : String(error),
+          jsonStockLedgerCount: data.stockChanges.length,
+          sampleActions: [],
+          samplePartNumbers: [],
+          sqliteAvailable: false,
+          sqliteStockLedgerCount: 0,
+          stockLedgerMatch: false
+        });
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [data?.stockChanges]);
 
   useEffect(() => {
     if (!data) {

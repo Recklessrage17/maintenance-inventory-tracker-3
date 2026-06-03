@@ -44,3 +44,7 @@ Inventory, stock history, requisitions, PDF, print, backup, and restore behavior
 Inventory now uses SQLite as the active desktop read/write pilot. On desktop load, the app loads JSON/IndexedDB first for fallback compatibility, backfills SQLite inventory when needed, then uses SQLite inventory rows in `data.items`.
 
 Inventory changes still flow through the existing React app state, then sync to SQLite with stable IDs, upserts, and stale-row pruning. The full `AppData` object still saves to IndexedDB so backup/export/import and fallback remain compatible. Stock history, requisitions, PDF/print, and UI behavior are unchanged.
+
+## SQLite Mirror - Stock Ledger
+
+Stock ledger/history has started as a SQLite mirror only. In development desktop runs, `data.stockChanges` is upserted into `stock_ledger` with stable IDs and stale mirror rows are pruned. The History Logs UI, history pagination, stock edit flow, history print/export, backup/restore, and requisitions still use the existing JSON/IndexedDB app state path.
