@@ -51,7 +51,10 @@ import {
 } from "./lib/historyLog";
 import { getRoleLabel, hasPermission, PERMISSION_DENIED_MESSAGE, type Permission } from "./lib/permissions";
 import { checkPdfExportEngines, type PdfEngineStatus } from "./lib/pdfEngineStatus";
-import { getSqliteInventoryMirrorStatus } from "./lib/sqliteInventoryMirror";
+import {
+  activateInventorySqliteState,
+  getSqliteInventoryMirrorStatus
+} from "./lib/sqliteInventoryMirror";
 import {
   activateVendorLocationSqliteState,
   getSqliteVendorLocationStatus
@@ -2736,6 +2739,28 @@ function InventoryApp() {
           );
         }
 
+        const inventorySqliteState = await activateInventorySqliteState(loadedData.items);
+
+        if (cancelled) {
+          return;
+        }
+
+        if (inventorySqliteState.sqliteAvailable) {
+          loadedData = {
+            ...loadedData,
+            items: inventorySqliteState.items
+          };
+
+          if (import.meta.env.DEV) {
+            console.info("[sqlite-inventory-mirror]", inventorySqliteState);
+          }
+        } else if (inventorySqliteState.error && import.meta.env.DEV) {
+          console.warn(
+            "[sqlite-inventory-mirror] Inventory SQLite activation failed. JSON inventory remains available.",
+            inventorySqliteState.error
+          );
+        }
+
         setData(loadedData);
         latestDataRef.current = loadedData;
         setLastBackupAt(loadedData.settings.lastBackupTimestamp || null);
@@ -2849,7 +2874,7 @@ function InventoryApp() {
   }, [data?.locations, data?.vendors]);
 
   useEffect(() => {
-    if (!data || !import.meta.env.DEV) {
+    if (!data) {
       return;
     }
 
@@ -2876,21 +2901,26 @@ function InventoryApp() {
           return;
         }
 
-        console.info("[sqlite-inventory-mirror]", status);
+        if (import.meta.env.DEV) {
+          console.info("[sqlite-inventory-mirror]", status);
+        }
       })
       .catch((error) => {
         if (cancelled) {
           return;
         }
 
-        console.info("[sqlite-inventory-mirror]", {
-          error: error instanceof Error ? error.message : String(error),
-          inventoryMatch: false,
-          jsonInventoryCount: data.items.length,
-          samplePartNumbers: [],
-          sqliteAvailable: false,
-          sqliteInventoryCount: 0
-        });
+        if (import.meta.env.DEV) {
+          console.info("[sqlite-inventory-mirror]", {
+            activeInventorySource: "json",
+            error: error instanceof Error ? error.message : String(error),
+            inventoryMatch: false,
+            jsonInventoryCount: data.items.length,
+            samplePartNumbers: [],
+            sqliteAvailable: false,
+            sqliteInventoryCount: 0
+          });
+        }
       });
 
     return () => {

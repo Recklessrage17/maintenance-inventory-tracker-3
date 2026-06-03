@@ -28,6 +28,12 @@ fn sqlite_migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/002_vendor_contact_email.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 3,
+            description: "inventory_live_fields",
+            sql: include_str!("../migrations/003_inventory_live_fields.sql"),
+            kind: MigrationKind::Up,
+        },
     ]
 }
 

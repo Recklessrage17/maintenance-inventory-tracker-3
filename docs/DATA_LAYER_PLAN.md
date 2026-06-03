@@ -2,7 +2,7 @@
 
 ## Current Live Data Flow
 
-JSON/current app data remains the live data source for inventory, history, requisitions, settings, backup, and restore. Vendors and locations are now the first SQLite live-read/write pilot on desktop, with IndexedDB still saving the full `AppData` object as fallback/export compatibility.
+JSON/current app data remains the live data source for stock history, requisitions, settings, backup, and restore. Vendors, locations, and inventory are now SQLite live-read/write pilots on desktop, with IndexedDB still saving the full `AppData` object as fallback/export compatibility.
 
 - App load: `frontend/src/App.tsx` calls `loadAppData()` during startup, normalizes the result, and falls back to demo data when no saved data is found.
 - App save: `frontend/src/App.tsx` watches `data` state and calls `saveAppData(data)` after changes.
@@ -29,7 +29,7 @@ Website V3 will need a backend/API for server-side data access. The website data
 - `SqliteDesktopDataAdapter`: future desktop adapter using Tauri + SQLite.
 - `WebApiDataAdapter`: future website adapter using HTTP calls to a backend/API.
 
-Keep `JsonLocalDataAdapter` as the live behavior for everything except the vendor/location SQLite pilot until each later migration pass is planned and tested.
+Keep `JsonLocalDataAdapter` as the live behavior for stock history, requisitions, settings, backup, and restore until each later migration pass is planned and tested.
 
 ## SQLite Pilot - Vendors And Locations
 
@@ -39,6 +39,8 @@ Vendor/location state changes continue through the existing React flows, then sy
 
 Inventory, stock history, requisitions, PDF, print, backup, and restore behavior are unchanged. Restore/import replaces app state through the existing JSON path, and the vendor/location sync effect writes the restored vendors and locations into SQLite after state updates.
 
-## SQLite Mirror - Inventory
+## SQLite Pilot - Inventory
 
-Inventory has started as a SQLite mirror only. In development desktop runs, `data.items` is upserted into `inventory_items` with stable IDs and stale mirror rows are pruned. The Inventory UI, stock edit flow, CSV import, backup/restore, stock history, and requisitions still use the existing JSON/IndexedDB app state path.
+Inventory now uses SQLite as the active desktop read/write pilot. On desktop load, the app loads JSON/IndexedDB first for fallback compatibility, backfills SQLite inventory when needed, then uses SQLite inventory rows in `data.items`.
+
+Inventory changes still flow through the existing React app state, then sync to SQLite with stable IDs, upserts, and stale-row pruning. The full `AppData` object still saves to IndexedDB so backup/export/import and fallback remain compatible. Stock history, requisitions, PDF/print, and UI behavior are unchanged.
