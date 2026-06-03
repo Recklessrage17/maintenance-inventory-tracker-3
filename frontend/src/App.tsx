@@ -59,7 +59,10 @@ import {
   activateVendorLocationSqliteState,
   getSqliteVendorLocationStatus
 } from "./lib/sqliteVendorsLocations";
-import { getSqliteStockLedgerMirrorStatus } from "./lib/sqliteStockLedgerMirror";
+import {
+  activateStockLedgerSqliteState,
+  getSqliteStockLedgerMirrorStatus
+} from "./lib/sqliteStockLedgerMirror";
 import { IdleScreensaver } from "./components/layout/IdleScreensaver";
 import jbtLogo from "./assets/jbt-logo.png";
 import type {
@@ -2763,6 +2766,28 @@ function InventoryApp() {
           );
         }
 
+        const stockLedgerSqliteState = await activateStockLedgerSqliteState(loadedData.stockChanges);
+
+        if (cancelled) {
+          return;
+        }
+
+        if (stockLedgerSqliteState.sqliteAvailable) {
+          loadedData = {
+            ...loadedData,
+            stockChanges: stockLedgerSqliteState.records
+          };
+
+          if (import.meta.env.DEV) {
+            console.info("[sqlite-stock-ledger-mirror]", stockLedgerSqliteState);
+          }
+        } else if (stockLedgerSqliteState.error && import.meta.env.DEV) {
+          console.warn(
+            "[sqlite-stock-ledger-mirror] Stock ledger SQLite activation failed. JSON history remains available.",
+            stockLedgerSqliteState.error
+          );
+        }
+
         setData(loadedData);
         latestDataRef.current = loadedData;
         setLastBackupAt(loadedData.settings.lastBackupTimestamp || null);
@@ -2931,7 +2956,7 @@ function InventoryApp() {
   }, [data?.items]);
 
   useEffect(() => {
-    if (!data || !import.meta.env.DEV) {
+    if (!data) {
       return;
     }
 
@@ -2960,22 +2985,27 @@ function InventoryApp() {
           return;
         }
 
-        console.info("[sqlite-stock-ledger-mirror]", status);
+        if (import.meta.env.DEV) {
+          console.info("[sqlite-stock-ledger-mirror]", status);
+        }
       })
       .catch((error) => {
         if (cancelled) {
           return;
         }
 
-        console.info("[sqlite-stock-ledger-mirror]", {
-          error: error instanceof Error ? error.message : String(error),
-          jsonStockLedgerCount: data.stockChanges.length,
-          sampleActions: [],
-          samplePartNumbers: [],
-          sqliteAvailable: false,
-          sqliteStockLedgerCount: 0,
-          stockLedgerMatch: false
-        });
+        if (import.meta.env.DEV) {
+          console.info("[sqlite-stock-ledger-mirror]", {
+            activeStockLedgerSource: "json",
+            error: error instanceof Error ? error.message : String(error),
+            jsonStockLedgerCount: data.stockChanges.length,
+            sampleActions: [],
+            samplePartNumbers: [],
+            sqliteAvailable: false,
+            sqliteStockLedgerCount: 0,
+            stockLedgerMatch: false
+          });
+        }
       });
 
     return () => {
