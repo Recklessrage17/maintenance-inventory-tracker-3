@@ -53,6 +53,7 @@ export type InventoryBackupPayload = {
   vendors: unknown[];
   stockChanges: unknown[];
   requisitionMadeRecords?: unknown[];
+  deletedRecords?: unknown[];
   auditLog: unknown[];
   settings: Record<string, unknown>;
 };
@@ -139,6 +140,7 @@ export const createBackupPayload = (data: AppData, backupAt = new Date().toISOSt
     vendors: data.vendors,
     stockChanges: data.stockChanges,
     requisitionMadeRecords: data.requisitionMadeRecords,
+    deletedRecords: data.deletedRecords ?? [],
     auditLog: data.auditLog,
     settings: {
       ...portableSettings,
@@ -322,6 +324,7 @@ export const getLocalDataUpdatedAt = (data: AppData) => {
 
       return [raw.createdAt, raw.updatedAt];
     }),
+    ...(data.deletedRecords ?? []).flatMap((record) => [record.deletedAt, record.expiresAt]),
     ...data.auditLog.flatMap((entry) => {
       const raw = entry as unknown as Record<string, unknown>;
 

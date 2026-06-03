@@ -1,20 +1,28 @@
 {
-  "name": "frontend",
+  "name": "maintenance-inventory-tracker",
   "private": true,
-  "version": "0.0.0",
+  "version": "3.0.0-alpha.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "inspect:requisition": "node scripts/inspect-requisition-template.mjs",
     "lint": "eslint .",
     "preview": "vite preview",
+    "version:patch": "node scripts/bump-version.mjs",
+    "version:bump": "npm run version:patch",
+    "release:patch": "npm run release:build",
+    "release:build": "npm run version:patch && npm run release:build:no-bump",
+    "release:build:no-bump": "powershell -ExecutionPolicy Bypass -File scripts/build-release.ps1",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build"
   },
   "dependencies": {
+    "@tauri-apps/plugin-opener": "^2.5.4",
     "@tauri-apps/plugin-sql": "^2.4.0",
     "pdf-lib": "^1.17.1",
+    "qrcode.react": "^4.2.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "xlsx-populate": "^1.21.0"

@@ -1,9 +1,12 @@
+import { DEFAULT_USER_ROLE, normalizeUserRole, type UserRole } from "./permissions";
+
 const AUTH_RECORD_KEY = "maintenance-inventory-auth-record";
 const AUTH_SESSION_KEY = "maintenance-inventory-auth-session";
 const AUTH_VERSION = 1;
 
 export type AuthRecord = {
   version: number;
+  role: UserRole;
   passwordHash: string;
   passwordSalt: string;
   recoveryCodeHash: string;
@@ -97,7 +100,7 @@ const parseAuthRecord = (value: string | null): AuthRecord | null => {
   }
 
   try {
-    const record = JSON.parse(value) as Partial<AuthRecord>;
+    const record = JSON.parse(value) as Partial<Omit<AuthRecord, "role">> & { role?: unknown };
 
     if (
       record.version !== AUTH_VERSION ||
@@ -111,6 +114,7 @@ const parseAuthRecord = (value: string | null): AuthRecord | null => {
 
     return {
       version: AUTH_VERSION,
+      role: normalizeUserRole(record.role),
       passwordHash: record.passwordHash,
       passwordSalt: record.passwordSalt,
       recoveryCodeHash: record.recoveryCodeHash,
@@ -127,7 +131,7 @@ const parseAuthRecord = (value: string | null): AuthRecord | null => {
 export const readAuthRecord = () => parseAuthRecord(localStorage.getItem(AUTH_RECORD_KEY));
 
 export const saveAuthRecord = (record: AuthRecord) => {
-  localStorage.setItem(AUTH_RECORD_KEY, JSON.stringify(record));
+  localStorage.setItem(AUTH_RECORD_KEY, JSON.stringify({ ...record, role: normalizeUserRole(record.role) }));
 };
 
 export const createAuthRecord = async (password: string, recoveryEmail = "") => {
@@ -137,6 +141,7 @@ export const createAuthRecord = async (password: string, recoveryEmail = "") => 
   const createdAt = nowIso();
   const record: AuthRecord = {
     version: AUTH_VERSION,
+    role: DEFAULT_USER_ROLE,
     passwordHash: await sha256Hex(passwordSalt, password),
     passwordSalt,
     recoveryCodeHash: await sha256Hex(recoveryCodeSalt, normalizeRecoveryCode(recoveryCode)),

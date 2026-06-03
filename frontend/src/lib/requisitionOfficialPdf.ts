@@ -12,7 +12,7 @@ type TauriPdfExportResult = {
 };
 
 const pdfMimeType = "application/pdf";
-const officialRequisitionRowsPerPage = 10;
+const officialRequisitionRowsPerPage = 8;
 
 export function arrayBufferToBase64(buffer: ArrayBuffer): string {
   const bytes = new Uint8Array(buffer);

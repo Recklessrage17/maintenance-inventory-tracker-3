@@ -149,6 +149,63 @@ function cleanText(value: unknown) {
   return String(value ?? "").replace(/\s+/g, " ").trim();
 }
 
+function wrapTextByLength(value: unknown, maxLineLength: number) {
+  const words = cleanText(value).split(" ").filter(Boolean);
+  const lines: string[] = [];
+  let currentLine = "";
+
+  words.forEach((word) => {
+    const nextLine = currentLine ? `${currentLine} ${word}` : word;
+
+    if (nextLine.length <= maxLineLength) {
+      currentLine = nextLine;
+      return;
+    }
+
+    if (currentLine) {
+      lines.push(currentLine);
+    }
+
+    if (word.length > maxLineLength) {
+      for (let index = 0; index < word.length; index += maxLineLength) {
+        lines.push(word.slice(index, index + maxLineLength));
+      }
+      currentLine = "";
+      return;
+    }
+
+    currentLine = word;
+  });
+
+  if (currentLine) {
+    lines.push(currentLine);
+  }
+
+  return lines.length ? lines.join("\n") : "";
+}
+
+function countWrappedLines(value: string) {
+  return Math.max(1, value.split(/\n/).length);
+}
+
+function setWrappedCellValue(cell: XlsxCell, value: unknown, maxLineLength: number) {
+  const wrappedValue = wrapTextByLength(value, maxLineLength);
+
+  cell.value(wrappedValue);
+
+  try {
+    cell.style?.({
+      shrinkToFit: true,
+      verticalAlignment: "center",
+      wrapText: true
+    });
+  } catch {
+    // Some generated workbook cells may reject style changes; keep export moving.
+  }
+
+  return countWrappedLines(wrappedValue);
+}
+
 function getRecommendedReorderQuantity(item: InventoryItem) {
   return Math.max(1, item.minimumStockLevel - item.quantityOnHand);
 }
@@ -163,6 +220,13 @@ function getLineQuantity(item: InventoryItem, lineDrafts: Record<string, Requisi
   const parsed = Number(rawValue);
 
   return Number.isFinite(parsed) ? Math.max(0, Math.trunc(parsed)) : getRecommendedReorderQuantity(item);
+}
+
+function getLineDescription(item: InventoryItem) {
+  const description = item.description || item.name;
+  const notes = cleanText(item.notes);
+
+  return notes ? `${description} - Notes: ${notes}` : description;
 }
 
 export function parseDateInput(value: string) {
@@ -226,28 +290,28 @@ function clearCellFully(cell: XlsxCell) {
 function writeHeader(sheet: XlsxSheet, map: HeaderCellMap, group: RequisitionVendorGroup, header: RequisitionHeaderDraft) {
   const [vendorAddressLine1 = "", vendorAddressLine2 = ""] = getVendorContactLines(group, header);
 
-  setCellValue(sheet, map.poNo, header.poNo);
-  setCellValue(sheet, map.poInitiator, header.poInitiator);
-  setCellValue(sheet, map.shipVia, header.shipVia);
-  setCellValue(sheet, map.poClass, header.poClass);
+  setWrappedCellValue(sheet.cell(map.poNo), header.poNo, 18);
+  setWrappedCellValue(sheet.cell(map.poInitiator), header.poInitiator, 20);
+  setWrappedCellValue(sheet.cell(map.shipVia), header.shipVia, 18);
+  setWrappedCellValue(sheet.cell(map.poClass), header.poClass, 18);
   setCellValue(sheet, map.reqDate, parseDateInput(header.reqDate));
-  setCellValue(sheet, map.vendorName, header.vendorName || group.vendorName);
-  setCellValue(sheet, map.vendorAddressLine1, vendorAddressLine1);
-  setCellValue(sheet, map.vendorAddressLine2, vendorAddressLine2);
-  setCellValue(sheet, map.confirmedWith, header.confirmedWith);
-  setCellValue(sheet, map.assetNo, header.assetNo);
-  setCellValue(sheet, map.moldNo, header.moldNo);
-  setCellValue(sheet, map.equipmentNo, header.equipmentNo);
-  setCellValue(sheet, map.partNo, header.partNo);
-  setCellValue(sheet, map.jobNo, header.jobNo);
-  setCellValue(sheet, map.initials, header.initials);
-  setCellValue(sheet, map.tsNo, header.tsNo);
-  setCellValue(sheet, map.codeNo, header.codeNo);
-  setCellValue(sheet, map.workOrderNo, header.workOrderNo);
-  setCellValue(sheet, map.comments, getComments(header));
-  setCellValue(sheet, map.departmentManager, header.departmentManager);
-  setCellValue(sheet, map.requisitionedBy, header.requisitionedBy);
-  setCellValue(sheet, map.authorizedBy, header.authorizedBy);
+  setWrappedCellValue(sheet.cell(map.vendorName), header.vendorName || group.vendorName, 26);
+  setWrappedCellValue(sheet.cell(map.vendorAddressLine1), vendorAddressLine1, 34);
+  setWrappedCellValue(sheet.cell(map.vendorAddressLine2), vendorAddressLine2, 44);
+  setWrappedCellValue(sheet.cell(map.confirmedWith), header.confirmedWith, 22);
+  setWrappedCellValue(sheet.cell(map.assetNo), header.assetNo, 18);
+  setWrappedCellValue(sheet.cell(map.moldNo), header.moldNo, 18);
+  setWrappedCellValue(sheet.cell(map.equipmentNo), header.equipmentNo, 18);
+  setWrappedCellValue(sheet.cell(map.partNo), header.partNo, 18);
+  setWrappedCellValue(sheet.cell(map.jobNo), header.jobNo, 18);
+  setWrappedCellValue(sheet.cell(map.initials), header.initials, 8);
+  setWrappedCellValue(sheet.cell(map.tsNo), header.tsNo, 16);
+  setWrappedCellValue(sheet.cell(map.codeNo), header.codeNo, 16);
+  setWrappedCellValue(sheet.cell(map.workOrderNo), header.workOrderNo, 18);
+  setWrappedCellValue(sheet.cell(map.comments), getComments(header), 72);
+  setWrappedCellValue(sheet.cell(map.departmentManager), header.departmentManager, 22);
+  setWrappedCellValue(sheet.cell(map.requisitionedBy), header.requisitionedBy, 22);
+  setWrappedCellValue(sheet.cell(map.authorizedBy), header.authorizedBy, 22);
 }
 
 function writeLineRow(
@@ -285,8 +349,8 @@ function writeLineRow(
 
   setCellValue(sheet, quantityCell, quantity);
   setCellValue(sheet, unitCell, item.stockUnit);
-  itemNumberCellRef.value(item.partNumber || item.name);
-  descriptionCellRef.value(item.description || item.name);
+  const itemNumberLines = setWrappedCellValue(itemNumberCellRef, item.partNumber || item.name, 22);
+  const descriptionLines = setWrappedCellValue(descriptionCellRef, getLineDescription(item), 54);
   setCellValue(sheet, dueDateCell, parseDateInput(lineDrafts[item.id]?.dueDate ?? ""));
   unitPriceCellRef.value(unitPrice);
 
@@ -297,17 +361,8 @@ function writeLineRow(
   totalPriceCell.value(quantity * unitPrice);
 
   try {
-    itemNumberCellRef.style?.({
-      shrinkToFit: true,
-      verticalAlignment: "center",
-      wrapText: true
-    });
-    descriptionCellRef.style?.({
-      shrinkToFit: true,
-      verticalAlignment: "center",
-      wrapText: true
-    });
-    sheet.row?.(row).height?.(32);
+    const lineCount = Math.max(itemNumberLines, descriptionLines);
+    sheet.row?.(row).height?.(Math.min(58, 20 + (lineCount - 1) * 12));
   } catch {
     // Text fitting is best-effort; keep export moving if a template rejects a style.
   }

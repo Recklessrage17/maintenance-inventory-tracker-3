@@ -4,6 +4,7 @@
   "description": "Default desktop window capability for Maintenance Inventory Tracker.",
   "windows": ["main"],
   "permissions": [
+    "opener:default",
     "sql:default",
     "sql:allow-execute"
   ]

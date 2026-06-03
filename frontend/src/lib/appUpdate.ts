@@ -1,11 +1,11 @@
 import { getAppVersion } from "./appVersion";
 
-export const APP_VERSION = "0.1.1";
+export const APP_VERSION = "3.0.0-alpha.1";
 export const DEFAULT_MANUAL_UPDATE_FOLDER =
   "C:\\Users\\maste\\OneDrive\\Company - Files - 2.0\\JBT USA - Files\\Dash Board - Info\\Inventoy System app\\Maintenance Inventory Tracker\\App Updates\\";
 
 const UPDATE_FOLDER_STORAGE_KEY = "maintenance-inventory-manual-update-folder";
-const INSTALLER_PATTERN = /^Maintenance Inventory Tracker_(\d+(?:\.\d+){1,3})_x64-setup\.exe$/i;
+const INSTALLER_PATTERN = /^Maintenance Inventory Tracker_(\d+(?:\.\d+){1,3}(?:-[0-9A-Za-z.-]+)?)_x64-setup\.exe$/i;
 
 type TauriInvoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 
@@ -68,8 +68,17 @@ export function saveManualInstallerFolder(folderPath: string) {
 }
 
 export function compareVersions(leftVersion: string, rightVersion: string) {
-  const leftParts = leftVersion.split(".").map((part) => Number.parseInt(part, 10));
-  const rightParts = rightVersion.split(".").map((part) => Number.parseInt(part, 10));
+  const parseVersion = (version: string) => {
+    const [core, prerelease = ""] = version.split("-", 2);
+    return {
+      parts: core.split(".").map((part) => Number.parseInt(part, 10)),
+      prerelease
+    };
+  };
+  const leftVersionParts = parseVersion(leftVersion);
+  const rightVersionParts = parseVersion(rightVersion);
+  const leftParts = leftVersionParts.parts;
+  const rightParts = rightVersionParts.parts;
   const length = Math.max(leftParts.length, rightParts.length);
 
   for (let index = 0; index < length; index += 1) {
@@ -83,6 +92,21 @@ export function compareVersions(leftVersion: string, rightVersion: string) {
     if (left < right) {
       return -1;
     }
+  }
+
+  if (leftVersionParts.prerelease && !rightVersionParts.prerelease) {
+    return -1;
+  }
+
+  if (!leftVersionParts.prerelease && rightVersionParts.prerelease) {
+    return 1;
+  }
+
+  if (leftVersionParts.prerelease || rightVersionParts.prerelease) {
+    return leftVersionParts.prerelease.localeCompare(rightVersionParts.prerelease, undefined, {
+      numeric: true,
+      sensitivity: "base"
+    });
   }
 
   return 0;
@@ -108,6 +132,10 @@ export function getNewestInstaller(fileNames: string[]) {
     .sort((left, right) => compareVersions(right.version, left.version) || left.fileName.localeCompare(right.fileName));
 
   return installers[0] ?? null;
+}
+
+function isSafeInstallerFileName(fileName: string) {
+  return INSTALLER_PATTERN.test(fileName) && !fileName.includes("/") && !fileName.includes("\\") && !fileName.includes("..");
 }
 
 export async function getCurrentAppVersion() {
@@ -166,6 +194,23 @@ export async function openInstallerFolder(folderPath = getManualInstallerFolder(
 
   await invoke("open_manual_installer_folder", {
     directoryPath: normalizeUpdateFolder(folderPath)
+  });
+}
+
+export async function openInstallerFile(folderPath: string, fileName: string) {
+  if (!isSafeInstallerFileName(fileName)) {
+    throw new Error("Installer file name is invalid.");
+  }
+
+  const invoke = getTauriInvoke();
+
+  if (!invoke) {
+    throw new Error("Opening the installer file is available in the desktop app.");
+  }
+
+  await invoke("open_manual_installer_file", {
+    directoryPath: normalizeUpdateFolder(folderPath),
+    fileName
   });
 }
 

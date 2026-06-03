@@ -1035,6 +1035,22 @@ fn list_manual_installer_files(directory_path: String) -> Result<InstallerFileLi
     })
 }
 
+fn validate_manual_installer_file_name(file_name: &str) -> Result<(), String> {
+    if file_name.contains('/') || file_name.contains('\\') || file_name.contains("..") {
+        return Err("Installer file name is invalid.".to_string());
+    }
+
+    let installer_pattern =
+        Regex::new(r"(?i)^Maintenance Inventory Tracker_\d+(?:\.\d+){1,3}(?:-[0-9A-Za-z.-]+)?_x64-setup\.exe$")
+            .map_err(|error| error.to_string())?;
+
+    if !installer_pattern.is_match(file_name) {
+        return Err("Installer file name is invalid.".to_string());
+    }
+
+    Ok(())
+}
+
 #[tauri::command]
 fn open_manual_installer_folder(directory_path: String) -> Result<(), String> {
     let directory = PathBuf::from(directory_path);
@@ -1083,12 +1099,79 @@ fn open_manual_installer_folder(directory_path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn open_manual_installer_file(directory_path: String, file_name: String) -> Result<(), String> {
+    validate_manual_installer_file_name(&file_name)?;
+
+    let directory = PathBuf::from(directory_path);
+
+    if !directory.exists() {
+        return Err(
+            "Installer folder not found. Run release build first or choose an update folder."
+                .to_string(),
+        );
+    }
+
+    if !directory.is_dir() {
+        return Err("Installer folder path is not a folder.".to_string());
+    }
+
+    let installer_path = directory.join(&file_name);
+
+    if !installer_path.exists() {
+        return Err(
+            "Installer file not found. Check the update folder or run release build first."
+                .to_string(),
+        );
+    }
+
+    if !installer_path.is_file() {
+        return Err("Installer path is not a file.".to_string());
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        Command::new("explorer.exe")
+            .arg(format!("/select,\"{}\"", installer_path.to_string_lossy()))
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .map_err(|error| error.to_string())?;
+
+        return Ok(());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open")
+            .arg("-R")
+            .arg(&installer_path)
+            .spawn()
+            .map_err(|error| error.to_string())?;
+
+        return Ok(());
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        Command::new("xdg-open")
+            .arg(directory)
+            .spawn()
+            .map_err(|error| error.to_string())?;
+
+        return Ok(());
+    }
+}
+
+#[tauri::command]
 fn get_app_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
         .plugin(
             tauri_plugin_sql::Builder::default()
                 .add_migrations(SQLITE_CONNECTION, sqlite_migrations())
@@ -1102,6 +1185,7 @@ fn main() {
             fetch_website_preview,
             get_app_version,
             list_manual_installer_files,
+            open_manual_installer_file,
             open_manual_installer_folder,
             read_backup_file,
             write_backup_file

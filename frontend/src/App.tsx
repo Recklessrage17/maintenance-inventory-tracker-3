@@ -1,4 +1,7 @@
 import { type Dispatch, FormEvent, type SetStateAction, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import { QRCodeSVG } from "qrcode.react";
 import {
   APP_VERSION,
   checkManualInstallerFolder,
@@ -7,6 +10,7 @@ import {
   getCurrentAppVersion,
   getManualInstallerFolder,
   type ManualInstallerCheckResult,
+  openInstallerFile,
   openInstallerFolder
 } from "./lib/appUpdate";
 import {
@@ -39,7 +43,16 @@ import {
 } from "./lib/auth";
 import { loadAppData, saveAppData } from "./lib/db";
 import { downloadTextFile, parseCsv, rowsToCsv } from "./lib/export";
+import {
+  DEFAULT_HISTORY_LOG_PAGE_SIZE,
+  HISTORY_LOG_PAGE_SIZE_OPTIONS,
+  trimAuditLogEntries,
+  trimStockChangeEntries
+} from "./lib/historyLog";
+import { getRoleLabel, hasPermission, PERMISSION_DENIED_MESSAGE, type Permission } from "./lib/permissions";
 import { checkPdfExportEngines, type PdfEngineStatus } from "./lib/pdfEngineStatus";
+import { IdleScreensaver } from "./components/layout/IdleScreensaver";
+import jbtLogo from "./assets/jbt-logo.png";
 import type {
   AppData,
   AppSettings,
@@ -47,6 +60,8 @@ import type {
   AuditEntityType,
   BackupIndicatorState,
   BackupInterval,
+  DeletedRecord,
+  DeletedRecordType,
   InventoryItem,
   InventoryStatus,
   LocationRecord,
@@ -61,11 +76,32 @@ import type {
 } from "./types";
 
 const DEFAULT_HEADER_BADGE_TEXT = "Private Local Desktop App";
+const MIN_AUTH_LOADING_MS = 1100;
 const RECENT_ACTIVITY_WINDOW_MS = 5 * 60 * 1000;
+const TRASH_RETENTION_MS = 30 * 60 * 1000;
+const ITEM_IMAGE_MAX_DIMENSION = 400;
+const ITEM_IMAGE_MAX_FILE_SIZE_BYTES = 8 * 1024 * 1024;
+const ITEM_IMAGE_MAX_DATA_URL_LENGTH = 900_000;
+const ITEM_IMAGE_OUTPUT_QUALITY = 0.82;
+const ITEM_IMAGE_ALLOWED_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
+const ITEM_IMAGE_ALLOWED_EXTENSION = /\.(png|jpe?g|webp)$/i;
+const QR_ITEM_PREFIX = "MIT:";
+const labelSizeOptions: LabelSizeOption[] = [
+  { id: "brady", label: "Brady .75 in tape", description: "Narrow machine/bin tape" },
+  { id: "small", label: "Small bin 2 x 1", description: "Compact shelf or bin label" },
+  { id: "large", label: "Shelf 3 x 1.5", description: "Larger shelf label" }
+];
 const TIMED_BACKUP_INTERVAL_MS: Record<Extract<BackupInterval, "5min" | "15min">, number> = {
   "5min": 5 * 60 * 1000,
   "15min": 15 * 60 * 1000
 };
+const INVENTORY_SEARCH_DEBOUNCE_MS = 180;
+const INVENTORY_PAGE_SIZE_OPTIONS = [25, 50, 100] as const;
+const DEFAULT_INVENTORY_PAGE_SIZE = 50;
+const INVENTORY_COMPACT_LAYOUT_QUERY = "(max-width: 1024px)";
+const REQUISITION_HISTORY_PAGE_SIZE_OPTIONS = [10, 20, 50, 100] as const;
+const DEFAULT_REQUISITION_HISTORY_PAGE_SIZE = 20;
+const DASHBOARD_SCREENSAVER_TIMEOUT_MS = 5 * 60 * 1000;
 
 const pages: Array<{ id: PageId; label: string }> = [
   { id: "dashboard", label: "Dashboard" },
@@ -92,6 +128,8 @@ const categoryOptions = [
 
 const stockUnitOptions = ["Each", "Ft"] as const;
 const DEFAULT_STOCK_UNIT = stockUnitOptions[0];
+const MANUAL_REQUISITION_ITEM_PREFIX = "manual-requisition-item-";
+const MANUAL_REQUISITION_VENDOR_PREFIX = "manual-requisition-vendor:";
 
 type NumericInputValue = number | string;
 
@@ -110,17 +148,43 @@ type ItemFormState = {
   itemUrl: string;
   notes: string;
   imagePlaceholder: string;
+  imageDataUrl: string;
   barcodePlaceholder: string;
+  reorderHold: boolean;
+  orderPlaced: boolean;
 };
 
 type StockFormState = {
   itemId: string;
   actionType: StockActionType | "";
   quantity: NumericInputValue;
+  orderPlaced: boolean;
+  reorderHold: boolean;
   reason: string;
   actor: string;
   notes: string;
   occurredAt: string;
+};
+
+type ManualRequisitionDraft = {
+  costEach: string;
+  description: string;
+  notes: string;
+  partNumber: string;
+  quantity: string;
+  vendorName: string;
+};
+
+type WatchListVisibilityChoice = "hidden" | "visible" | "held";
+
+type RequisitionHistoryFilters = {
+  dateFrom: string;
+  dateTo: string;
+  itemName: string;
+  partNumber: string;
+  poNo: string;
+  vendor: string;
+  year: string;
 };
 
 type LocationFormState = {
@@ -156,9 +220,32 @@ type TauriInvoke = <T>(command: string, args?: Record<string, unknown>) => Promi
 type ToastState = {
   tone: "success" | "warning" | "danger";
   text: string;
+  actionLabel?: string;
+  onAction?: () => void;
 } | null;
 
 type ToastTone = NonNullable<ToastState>["tone"];
+type ScanApplyTarget = "partNumber" | "barcodePlaceholder" | "itemUrl";
+type LabelSizeKey = "brady" | "small" | "large";
+type InventoryColumnFilterKey = "location" | "partNumber" | "category" | "description" | "vendor";
+type InventoryColumnFilters = Record<InventoryColumnFilterKey, string>;
+
+type LabelSizeOption = {
+  id: LabelSizeKey;
+  label: string;
+  description: string;
+};
+
+const blankInventoryColumnFilters = (): InventoryColumnFilters => ({
+  location: "",
+  partNumber: "",
+  category: "",
+  description: "",
+  vendor: ""
+});
+
+const hasActiveInventoryColumnFilters = (filters: InventoryColumnFilters) =>
+  Object.values(filters).some((value) => value.trim().length > 0);
 
 type CsvImportResult = {
   created: number;
@@ -222,12 +309,6 @@ type SaveHealthRow = {
   value: string;
 };
 
-type BackupStatusInfo = {
-  pulse: boolean;
-  tone: HealthTone;
-  tooltip: string;
-};
-
 type RecentAddAlert = {
   id: string;
   label: string;
@@ -278,8 +359,19 @@ const dateTimeLocalToIso = (value: string) => {
 const asRecord = (value: unknown): Record<string, unknown> =>
   value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 
+const cleanDisplayText = (value: string) =>
+  value
+    .replace(/Caf(?:\uFFFD|\u00ef\u00bf\u00bd)/gi, "Cafe")
+    .replace(/\uFFFD|\u00ef\u00bf\u00bd/g, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+
 const stringValue = (value: unknown, fallback = "") =>
-  typeof value === "string" ? value : value === undefined || value === null ? fallback : String(value);
+  typeof value === "string"
+    ? cleanDisplayText(value) || fallback
+    : value === undefined || value === null
+      ? fallback
+      : cleanDisplayText(String(value)) || fallback;
 
 const numberValue = (value: unknown, fallback = 0) => {
   const parsed = Number(value);
@@ -376,34 +468,6 @@ function getStockActionLabel(actionType: StockActionType) {
   }
 }
 
-function getStockQuantityLabel(actionType: StockActionType | "") {
-  switch (actionType) {
-    case "Stock In":
-      return "Quantity to Add";
-    case "Stock Out":
-      return "Quantity to Pull";
-    case "Set Stock On Hand":
-      return "New Stock On Hand";
-    default:
-      return "Quantity";
-  }
-}
-
-function getStockQuantityPlaceholder(actionType: StockActionType | "") {
-  return actionType === "Set Stock On Hand" ? "Enter actual counted quantity" : "";
-}
-
-function calculateStockQuantity(previousQuantity: number, actionType: StockActionType, quantity: number) {
-  switch (actionType) {
-    case "Stock In":
-      return previousQuantity + quantity;
-    case "Stock Out":
-      return previousQuantity - quantity;
-    case "Set Stock On Hand":
-      return quantity;
-  }
-}
-
 const csvNumberValue = (value: unknown) => {
   const text = stringValue(value).replace(/\$/g, "").replace(/,/g, "").trim();
 
@@ -434,6 +498,40 @@ const normalizeLowStockAlertLevel = (_minimumStockLevel: number, value: unknown)
 
   return parsed >= 0 ? parsed : defaultLowStockAlertLevel();
 };
+
+function useDebouncedValue<T>(value: T, delayMs: number) {
+  const [debouncedValue, setDebouncedValue] = useState(value);
+
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => setDebouncedValue(value), delayMs);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [delayMs, value]);
+
+  return debouncedValue;
+}
+
+function useMediaQuery(query: string) {
+  const [matches, setMatches] = useState(() =>
+    typeof window === "undefined" ? false : window.matchMedia(query).matches
+  );
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const mediaQuery = window.matchMedia(query);
+    const updateMatches = () => setMatches(mediaQuery.matches);
+
+    updateMatches();
+    mediaQuery.addEventListener("change", updateMatches);
+
+    return () => mediaQuery.removeEventListener("change", updateMatches);
+  }, [query]);
+
+  return matches;
+}
 
 const blankLocationForm = (): LocationFormState => ({
   name: "",
@@ -466,13 +564,18 @@ const blankItemForm = (defaultLocationId = ""): ItemFormState => ({
   itemUrl: "",
   notes: "",
   imagePlaceholder: "",
-  barcodePlaceholder: ""
+  imageDataUrl: "",
+  barcodePlaceholder: "",
+  reorderHold: false,
+  orderPlaced: true
 });
 
 const blankStockForm = (itemId = ""): StockFormState => ({
   itemId,
   actionType: "",
-  quantity: 1,
+  quantity: "",
+  orderPlaced: false,
+  reorderHold: false,
   reason: "",
   actor: "",
   notes: "",
@@ -497,6 +600,7 @@ function createDefaultSettings(now = nowIso()): AppSettings {
     lastBackupTimestamp: "",
     lastAutoImportTimestamp: "",
     backupStatus: "Choose backup folder to enable auto backup and auto import.",
+    watchListDefaultsMigratedAt: now,
     createdAt: now,
     updatedAt: now
   };
@@ -663,7 +767,10 @@ function createDemoData(): AppData {
     itemUrl: "",
     notes: seed.notes ?? "",
     imagePlaceholder: "",
+    imageDataUrl: "",
     barcodePlaceholder: "",
+    reorderHold: seed.reorderHold === true,
+    orderPlaced: seed.orderPlaced === false ? false : true,
     isDemo: true,
     createdAt: now,
     updatedAt: now
@@ -717,6 +824,7 @@ function createDemoData(): AppData {
     vendors,
     stockChanges,
     requisitionMadeRecords: [],
+    deletedRecords: [],
     auditLog: [
       createAuditEntry("Import", "demo", "Demo Data Loaded", "Starter maintenance inventory was created.", "System", now, true),
       createAuditEntry("Stock", stockChanges[1].id, "Stock Out", "M12 Proximity Sensor moved to Out of Stock.", "Maintenance", now, true)
@@ -755,6 +863,7 @@ function normalizeSettings(value: unknown): AppSettings {
     lastBackupTimestamp: stringValue(raw.lastBackupTimestamp),
     lastAutoImportTimestamp: stringValue(raw.lastAutoImportTimestamp),
     backupStatus: stringValue(raw.backupStatus, defaults.backupStatus),
+    watchListDefaultsMigratedAt: stringValue(raw.watchListDefaultsMigratedAt, defaults.watchListDefaultsMigratedAt),
     updatedAt: stringValue(raw.updatedAt, defaults.updatedAt)
   };
 }
@@ -798,6 +907,7 @@ function normalizeItem(value: unknown): InventoryItem {
   const now = nowIso();
   const minimumStockLevel = Math.max(0, numberValue(raw.minimumStockLevel, 0));
   const lowStockAlertLevel = normalizeLowStockAlertLevel(minimumStockLevel, raw.lowStockAlertLevel);
+  const hasOrderPlaced = Object.prototype.hasOwnProperty.call(raw, "orderPlaced");
 
   return {
     id: stringValue(raw.id, createId()),
@@ -815,7 +925,13 @@ function normalizeItem(value: unknown): InventoryItem {
     itemUrl: stringValue(raw.itemUrl),
     notes: stringValue(raw.notes),
     imagePlaceholder: stringValue(raw.imagePlaceholder),
+    imageDataUrl: normalizeImageDataUrl(raw.imageDataUrl),
     barcodePlaceholder: stringValue(raw.barcodePlaceholder),
+    reorderHold: raw.reorderHold === true,
+    orderPlaced: hasOrderPlaced ? raw.orderPlaced === true : true,
+    orderRequisitionId: Object.prototype.hasOwnProperty.call(raw, "orderRequisitionId")
+      ? stringValue(raw.orderRequisitionId)
+      : undefined,
     isDemo: raw.isDemo === true,
     createdAt: stringValue(raw.createdAt, now),
     updatedAt: stringValue(raw.updatedAt, now)
@@ -873,8 +989,11 @@ function normalizeRequisitionMadeRecord(value: unknown): RequisitionMadeRecord {
     id: stringValue(raw.id, createId()),
     vendorKey: stringValue(raw.vendorKey),
     vendorName: stringValue(raw.vendorName, "Unassigned Vendor"),
+    createdAt: stringValue(raw.createdAt ?? raw.passedAt, now),
+    createdBy: stringValue(raw.createdBy ?? raw.requisitionedBy, "User"),
     itemIds,
     itemSnapshots,
+    poNo: stringValue(raw.poNo),
     totalCost: Math.max(
       0,
       numberValue(
@@ -885,6 +1004,7 @@ function normalizeRequisitionMadeRecord(value: unknown): RequisitionMadeRecord {
     requisitionType: raw.requisitionType === "over100" ? "over100" : "under100",
     pdfGeneratedAt: stringValue(raw.pdfGeneratedAt, now),
     passedAt: stringValue(raw.passedAt, now),
+    requisitionedBy: stringValue(raw.requisitionedBy ?? raw.createdBy),
     status: "Made"
   };
 }
@@ -905,6 +1025,25 @@ function normalizeAuditEntry(value: unknown): AuditEntry {
   };
 }
 
+function shouldApplyWatchListDefaultsMigration(value: unknown) {
+  const raw = asRecord(value);
+  const rawSettings = asRecord(raw.settings);
+
+  return Array.isArray(raw.items) && !stringValue(rawSettings.watchListDefaultsMigratedAt);
+}
+
+function applyWatchListDefaultsToExistingItems(items: InventoryItem[], rawItems: unknown[]) {
+  return items.map((item, index) => {
+    const raw = asRecord(rawItems[index]);
+
+    return {
+      ...item,
+      orderPlaced: Object.prototype.hasOwnProperty.call(raw, "orderPlaced") ? item.orderPlaced : true,
+      reorderHold: Object.prototype.hasOwnProperty.call(raw, "reorderHold") ? item.reorderHold : false
+    };
+  });
+}
+
 function normalizeAppData(value: unknown): AppData {
   if (!value) {
     return createDemoData();
@@ -915,10 +1054,19 @@ function normalizeAppData(value: unknown): AppData {
   const settings = normalizeSettings(raw.settings);
   const locations = Array.isArray(raw.locations) ? raw.locations.map(normalizeLocation) : [];
   const vendors = Array.isArray(raw.vendors) ? raw.vendors.map(normalizeVendor) : [];
-  const items = Array.isArray(raw.items) ? raw.items.map(normalizeItem) : [];
+  const shouldMigrateWatchListDefaults = shouldApplyWatchListDefaultsMigration(raw);
+  const rawItems = Array.isArray(raw.items) ? raw.items : [];
+  const normalizedItems = rawItems.map(normalizeItem);
+  const items = shouldMigrateWatchListDefaults
+    ? applyWatchListDefaultsToExistingItems(normalizedItems, rawItems)
+    : normalizedItems;
 
   if (!settings.defaultLocationId && locations[0]) {
     settings.defaultLocationId = locations[0].id;
+  }
+
+  if (shouldMigrateWatchListDefaults) {
+    settings.watchListDefaultsMigratedAt = now;
   }
 
   return {
@@ -928,11 +1076,14 @@ function normalizeAppData(value: unknown): AppData {
     items,
     locations,
     vendors,
-    stockChanges: Array.isArray(raw.stockChanges) ? raw.stockChanges.map(normalizeStockChange) : [],
+    stockChanges: Array.isArray(raw.stockChanges) ? trimStockChangeEntries(raw.stockChanges.map(normalizeStockChange)) : [],
     requisitionMadeRecords: Array.isArray(raw.requisitionMadeRecords)
       ? raw.requisitionMadeRecords.map(normalizeRequisitionMadeRecord)
       : [],
-    auditLog: Array.isArray(raw.auditLog) ? raw.auditLog.map(normalizeAuditEntry) : [],
+    deletedRecords: Array.isArray(raw.deletedRecords)
+      ? purgeExpiredDeletedRecords(raw.deletedRecords.map(normalizeDeletedRecord).filter(Boolean) as DeletedRecord[])
+      : [],
+    auditLog: Array.isArray(raw.auditLog) ? trimAuditLogEntries(raw.auditLog.map(normalizeAuditEntry)) : [],
     settings
   };
 }
@@ -956,32 +1107,136 @@ function isReorderNeeded(item: InventoryItem, settings: AppSettings) {
   return status === "Low Stock" || status === "Out of Stock";
 }
 
-function pruneRequisitionMadeRecords(data: AppData): AppData {
-  const lowStockItemIds = new Set(data.items.filter((item) => isReorderNeeded(item, data.settings)).map((item) => item.id));
-  const requisitionMadeRecords = data.requisitionMadeRecords
+function isHiddenFromDashboardWatchList(item: InventoryItem, settings: AppSettings) {
+  return isReorderNeeded(item, settings) && item.orderPlaced === true && item.reorderHold !== true;
+}
+
+function applyWatchListVisibilityChoice(form: ItemFormState, choice: WatchListVisibilityChoice): ItemFormState {
+  if (choice === "visible") {
+    return { ...form, orderPlaced: false, reorderHold: false };
+  }
+
+  if (choice === "held") {
+    return { ...form, orderPlaced: false, reorderHold: true };
+  }
+
+  return { ...form, orderPlaced: true, reorderHold: false };
+}
+
+function getWatchListVisibilitySummary(item: InventoryItem, choice: Exclude<WatchListVisibilityChoice, "hidden">) {
+  if (choice === "held") {
+    return `${item.name} was moved to the Held list.`;
+  }
+
+  return `${item.name} was shown on the Dashboard Watch List.`;
+}
+
+function getActiveRequisitionMadeRecords(data: AppData) {
+  const activeRequisitionIdByItemId = new Map<string, string>();
+
+  data.items.forEach((item) => {
+    if (!item.orderPlaced || !isReorderNeeded(item, data.settings)) {
+      return;
+    }
+
+    const record = getLinkedRequisitionMadeRecord(data, item);
+
+    if (record) {
+      activeRequisitionIdByItemId.set(item.id, record.id);
+    }
+  });
+
+  return data.requisitionMadeRecords
     .map((record) => ({
       ...record,
-      itemIds: record.itemIds.filter((itemId) => lowStockItemIds.has(itemId)),
-      itemSnapshots: record.itemSnapshots.filter((snapshot) => lowStockItemIds.has(snapshot.itemId))
+      itemIds: record.itemIds.filter((itemId) => activeRequisitionIdByItemId.get(itemId) === record.id),
+      itemSnapshots: record.itemSnapshots.filter((snapshot) => activeRequisitionIdByItemId.get(snapshot.itemId) === record.id)
     }))
     .filter((record) => record.itemIds.length > 0);
+}
 
-  return {
-    ...data,
-    requisitionMadeRecords
-  };
+function getLinkedRequisitionMadeRecord(data: AppData, item: InventoryItem) {
+  if (!item.orderPlaced) {
+    return null;
+  }
+
+  if (item.orderRequisitionId !== undefined) {
+    const requisitionId = item.orderRequisitionId.trim();
+
+    if (!requisitionId) {
+      return null;
+    }
+
+    return data.requisitionMadeRecords.find((record) => record.id === requisitionId && record.itemIds.includes(item.id)) ?? null;
+  }
+
+  return data.requisitionMadeRecords.find((record) => record.itemIds.includes(item.id)) ?? null;
 }
 
 function addAudit(data: AppData, entry: AuditEntry): AppData {
   return {
     ...data,
-    auditLog: [entry, ...data.auditLog].slice(0, 600)
+    deletedRecords: purgeExpiredDeletedRecords(data.deletedRecords ?? []),
+    auditLog: trimAuditLogEntries([entry, ...data.auditLog])
+  };
+}
+
+function isDeletedRecordExpired(record: DeletedRecord, nowMs = Date.now()) {
+  const expiresAt = new Date(record.expiresAt).getTime();
+
+  return Number.isFinite(expiresAt) && expiresAt <= nowMs;
+}
+
+function purgeExpiredDeletedRecords(records: DeletedRecord[]) {
+  const nowMs = Date.now();
+
+  return records.filter((record) => !isDeletedRecordExpired(record, nowMs));
+}
+
+function normalizeDeletedRecord(value: unknown): DeletedRecord | null {
+  const raw = value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+
+  if (!raw) {
+    return null;
+  }
+
+  const type =
+    raw.type === "Inventory" || raw.type === "Vendor" || raw.type === "Location" ? (raw.type as DeletedRecordType) : null;
+
+  if (!type) {
+    return null;
+  }
+
+  const payloadRecord =
+    raw.payload && typeof raw.payload === "object" && !Array.isArray(raw.payload) ? (raw.payload as Record<string, unknown>) : {};
+  const payload =
+    type === "Inventory"
+      ? normalizeItem(payloadRecord)
+      : type === "Vendor"
+        ? normalizeVendor(payloadRecord)
+        : normalizeLocation(payloadRecord);
+  const deletedAt = stringValue(raw.deletedAt) || nowIso();
+  const deletedAtMs = new Date(deletedAt).getTime();
+  const fallbackExpiresAt = new Date((Number.isFinite(deletedAtMs) ? deletedAtMs : Date.now()) + TRASH_RETENTION_MS).toISOString();
+
+  return {
+    id: stringValue(raw.id, createId()),
+    originalId: stringValue(raw.originalId, payload.id),
+    type,
+    title: stringValue(raw.title, payload.name),
+    details: stringValue(raw.details),
+    deletedAt,
+    expiresAt: stringValue(raw.expiresAt, fallbackExpiresAt),
+    actor: stringValue(raw.actor, "User"),
+    payload
   };
 }
 
 function stampData(data: AppData): AppData {
   return {
     ...data,
+    auditLog: trimAuditLogEntries(data.auditLog),
+    stockChanges: trimStockChangeEntries(data.stockChanges),
     version: APP_VERSION,
     lastSavedAt: nowIso()
   };
@@ -1054,11 +1309,172 @@ function getItemUrlHref(value: string) {
     return "";
   }
 
-  return /^[a-z][a-z\d+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+  const hasProtocol = /^[a-z][a-z\d+.-]*:/i.test(trimmed);
+  const candidate = hasProtocol ? trimmed : `https://${trimmed}`;
+
+  try {
+    const parsed = new URL(candidate);
+
+    if ((parsed.protocol !== "https:" && parsed.protocol !== "http:") || !parsed.hostname) {
+      return "";
+    }
+
+    return parsed.href;
+  } catch {
+    return "";
+  }
 }
 
 function getExternalHref(value: string) {
   return getItemUrlHref(value);
+}
+
+function normalizeImageDataUrl(value: unknown) {
+  const dataUrl = stringValue(value).trim();
+
+  if (!/^data:image\/(?:png|jpe?g|webp);base64,/i.test(dataUrl)) {
+    return "";
+  }
+
+  return dataUrl;
+}
+
+function isAllowedImageFile(file: File) {
+  const type = file.type.trim().toLowerCase();
+  return (type && ITEM_IMAGE_ALLOWED_TYPES.has(type)) || ITEM_IMAGE_ALLOWED_EXTENSION.test(file.name);
+}
+
+function loadImageElement(src: string) {
+  return new Promise<HTMLImageElement>((resolve, reject) => {
+    const image = new Image();
+
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error("Could not read this image file."));
+    image.src = src;
+  });
+}
+
+async function resizeItemImageToDataUrl(file: File) {
+  if (!isAllowedImageFile(file)) {
+    throw new Error("Choose a PNG, JPG, JPEG, or WEBP image.");
+  }
+
+  if (file.size > ITEM_IMAGE_MAX_FILE_SIZE_BYTES) {
+    throw new Error("Image file must be 8 MB or smaller.");
+  }
+
+  const sourceUrl = URL.createObjectURL(file);
+
+  try {
+    const image = await loadImageElement(sourceUrl);
+    const sourceWidth = image.naturalWidth || image.width;
+    const sourceHeight = image.naturalHeight || image.height;
+
+    if (!sourceWidth || !sourceHeight) {
+      throw new Error("Could not read this image file.");
+    }
+
+    const scale = Math.min(1, ITEM_IMAGE_MAX_DIMENSION / Math.max(sourceWidth, sourceHeight));
+    const width = Math.max(1, Math.round(sourceWidth * scale));
+    const height = Math.max(1, Math.round(sourceHeight * scale));
+    const canvas = document.createElement("canvas");
+    const context = canvas.getContext("2d");
+
+    if (!context) {
+      throw new Error("Image processing is not available.");
+    }
+
+    canvas.width = width;
+    canvas.height = height;
+    context.fillStyle = "#f8fafc";
+    context.fillRect(0, 0, width, height);
+    context.drawImage(image, 0, 0, width, height);
+
+    const dataUrl = canvas.toDataURL("image/jpeg", ITEM_IMAGE_OUTPUT_QUALITY);
+
+    if (dataUrl.length > ITEM_IMAGE_MAX_DATA_URL_LENGTH) {
+      throw new Error("Processed image is still too large. Choose a smaller image.");
+    }
+
+    return dataUrl;
+  } finally {
+    URL.revokeObjectURL(sourceUrl);
+  }
+}
+
+function cleanScanValue(value: string) {
+  return value.trim();
+}
+
+function getScanUrlHref(value: string) {
+  const trimmed = cleanScanValue(value);
+
+  if (!trimmed || !/^https?:\/\//i.test(trimmed)) {
+    return "";
+  }
+
+  return getItemUrlHref(trimmed);
+}
+
+function getScanSuggestedTarget(value: string): ScanApplyTarget {
+  return getScanUrlHref(value) ? "itemUrl" : "partNumber";
+}
+
+function getFormQrCodeValue(form: Pick<ItemFormState, "barcodePlaceholder" | "partNumber" | "name">, itemId?: string | null) {
+  const manualValue = form.barcodePlaceholder.trim();
+
+  if (manualValue) {
+    return manualValue;
+  }
+
+  if (itemId) {
+    return `${QR_ITEM_PREFIX}${itemId}`;
+  }
+
+  return form.partNumber.trim() || form.name.trim();
+}
+
+function getInventoryItemQrValue(item: InventoryItem) {
+  return item.barcodePlaceholder.trim() || (item.id ? `${QR_ITEM_PREFIX}${item.id}` : item.partNumber.trim() || item.name.trim());
+}
+
+function normalizeLookupValue(value: string) {
+  return value.trim().toLowerCase();
+}
+
+function findItemsByScannedValue(items: InventoryItem[], scanValue: string) {
+  const value = cleanScanValue(scanValue);
+  const normalized = normalizeLookupValue(value);
+
+  if (!normalized) {
+    return [];
+  }
+
+  if (normalized.startsWith(QR_ITEM_PREFIX.toLowerCase())) {
+    const itemId = value.slice(QR_ITEM_PREFIX.length).trim();
+    return itemId ? items.filter((item) => item.id === itemId) : [];
+  }
+
+  const normalizedHref = getItemUrlHref(value).toLowerCase();
+  const exactMatches = items.filter((item) => {
+    const fields = [item.barcodePlaceholder, item.partNumber, item.name, item.itemUrl]
+      .map((field) => normalizeLookupValue(field))
+      .filter(Boolean);
+    const itemHref = getItemUrlHref(item.itemUrl).toLowerCase();
+
+    return fields.includes(normalized) || (normalizedHref && itemHref === normalizedHref);
+  });
+
+  if (exactMatches.length > 0) {
+    return exactMatches;
+  }
+
+  return items.filter((item) =>
+    [item.barcodePlaceholder, item.partNumber, item.name, item.itemUrl]
+      .map((field) => normalizeLookupValue(field))
+      .filter(Boolean)
+      .some((field) => field.includes(normalized))
+  );
 }
 
 function getWebsiteDisplayText(value: string) {
@@ -1296,27 +1712,6 @@ function cleanMaintenanceNote(value: string) {
   return cleaned;
 }
 
-function isQrCellActive(value: string, index: number) {
-  const size = 9;
-  const row = Math.floor(index / size);
-  const column = index % size;
-  const inFinder =
-    (row < 3 && column < 3) ||
-    (row < 3 && column > size - 4) ||
-    (row > size - 4 && column < 3);
-
-  if (inFinder) {
-    return row === 0 || row === 2 || column === 0 || column === 2;
-  }
-
-  const source = value.trim() || "QR";
-  const seed = Array.from(source).reduce((total, character, characterIndex) => {
-    return total + character.charCodeAt(0) * (characterIndex + 3);
-  }, 17);
-
-  return (seed + row * 11 + column * 7 + index * 3) % 5 < 2;
-}
-
 function getSaveHealthRows(
   data: AppData,
   backupSupported: boolean,
@@ -1411,46 +1806,6 @@ function getOverallHealthTone(rows: SaveHealthRow[]): HealthTone {
   }
 
   return rows.some((row) => row.tone === "warning") ? "warning" : "good";
-}
-
-function getBackupStatusInfo(data: AppData, backupSupported: boolean, backupIndicator: BackupIndicatorState, backupMessage: string): BackupStatusInfo {
-  const hasBackupFolder = Boolean(
-    data.settings.backupDirectoryName || data.settings.backupDirectoryPath || data.settings.backupDirectoryHandle
-  );
-
-  if (backupIndicator === "failed") {
-    return { pulse: false, tone: "danger", tooltip: backupMessage || "Backup failed" };
-  }
-
-  if (backupIndicator === "pending") {
-    return { pulse: false, tone: "warning", tooltip: "Save pending" };
-  }
-
-  if (backupIndicator === "running") {
-    return { pulse: true, tone: "good", tooltip: backupMessage || "Backup running" };
-  }
-
-  if (backupIndicator === "done") {
-    return { pulse: true, tone: "good", tooltip: backupMessage.startsWith("Backed up") ? "Backed up" : "Saved locally" };
-  }
-
-  if (!backupSupported) {
-    return { pulse: false, tone: "warning", tooltip: "Manual export only" };
-  }
-
-  if (!data.settings.backupEnabled) {
-    return { pulse: false, tone: "warning", tooltip: "Auto JSON backup is off" };
-  }
-
-  if (!hasBackupFolder) {
-    return { pulse: false, tone: "warning", tooltip: "Backup folder not selected" };
-  }
-
-  if (data.settings.backupInterval === "manual") {
-    return { pulse: false, tone: "warning", tooltip: "Manual export only" };
-  }
-
-  return { pulse: false, tone: "good", tooltip: backupMessage.startsWith("Backed up") ? "Backed up" : "Saved locally" };
 }
 
 function getRecentAddAlerts(data: AppData, nowMs: number): RecentAddAlert[] {
@@ -1688,11 +2043,39 @@ function itemFromForm(form: ItemFormState, existing?: InventoryItem): InventoryI
     itemUrl: form.itemUrl.trim(),
     notes: form.notes.trim(),
     imagePlaceholder: form.imagePlaceholder.trim(),
+    imageDataUrl: normalizeImageDataUrl(form.imageDataUrl),
     barcodePlaceholder: form.barcodePlaceholder.trim(),
+    reorderHold: Boolean(form.reorderHold),
+    orderPlaced: Boolean(form.orderPlaced),
+    orderRequisitionId: form.orderPlaced ? existing?.orderRequisitionId : "",
     isDemo: existing?.isDemo,
     createdAt: existing?.createdAt ?? now,
     updatedAt: now
   };
+}
+
+function getItemFormValidationWarning(form: ItemFormState, settings: AppSettings) {
+  if (!form.name.trim()) {
+    return "Item name is required.";
+  }
+
+  if (!settings.allowNegativeStockOverride && wholeNumberValue(form.quantityOnHand) < 0) {
+    return "Quantity on hand cannot be negative unless override is enabled in Settings.";
+  }
+
+  if (wholeNumberValue(form.minimumStockLevel) < 0) {
+    return "Minimum stock level cannot be negative.";
+  }
+
+  if (wholeNumberValue(form.lowStockAlertLevel) < 0) {
+    return "Low Stock Alert Level cannot be negative.";
+  }
+
+  if (numberValue(form.costEach) < 0) {
+    return "Cost each cannot be negative.";
+  }
+
+  return "";
 }
 
 function formFromItem(item: InventoryItem): ItemFormState {
@@ -1711,7 +2094,10 @@ function formFromItem(item: InventoryItem): ItemFormState {
     itemUrl: item.itemUrl,
     notes: item.notes,
     imagePlaceholder: item.imagePlaceholder,
-    barcodePlaceholder: item.barcodePlaceholder
+    imageDataUrl: item.imageDataUrl,
+    barcodePlaceholder: item.barcodePlaceholder,
+    reorderHold: Boolean(item.reorderHold),
+    orderPlaced: Boolean(item.orderPlaced)
   };
 }
 
@@ -1738,9 +2124,35 @@ function App() {
 
 function AuthGate({ children }: { children: React.ReactNode }) {
   const [stage, setStage] = useState<AuthStage>("checking");
+  const startupStartedAtRef = useRef(Date.now());
+  const startupStageTimerRef = useRef<number | null>(null);
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [recoveryEmail, setRecoveryEmail] = useState("");
+
+  function setStartupStage(nextStage: AuthStage) {
+    const remainingMs = Math.max(0, MIN_AUTH_LOADING_MS - (Date.now() - startupStartedAtRef.current));
+
+    if (remainingMs === 0 || nextStage === "ready") {
+      setStage(nextStage);
+      return;
+    }
+
+    if (startupStageTimerRef.current !== null) {
+      window.clearTimeout(startupStageTimerRef.current);
+    }
+
+    startupStageTimerRef.current = window.setTimeout(() => setStage(nextStage), remainingMs);
+  }
+
+  useEffect(
+    () => () => {
+      if (startupStageTimerRef.current !== null) {
+        window.clearTimeout(startupStageTimerRef.current);
+      }
+    },
+    []
+  );
   const [recoveryCode, setRecoveryCode] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [newConfirmPassword, setNewConfirmPassword] = useState("");
@@ -1752,7 +2164,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
     const authRecord = readAuthRecord();
 
     if (!authRecord) {
-      setStage("setup");
+      setStartupStage("setup");
     } else {
       setStage(isAuthSessionUnlocked() ? "ready" : "login");
     }
@@ -1897,17 +2309,18 @@ function AuthGate({ children }: { children: React.ReactNode }) {
   return (
     <main className="auth-shell app-shell min-h-screen p-4 text-slate-100">
       <section className="auth-panel">
-        <div className="auth-brand">
-          <AppLogoMark />
-          <div>
-            <p className="eyebrow">Maintenance access control</p>
-            <h1>Maintenance Inventory Tracker</h1>
-          </div>
-        </div>
-        <div className="auth-security-strip" aria-hidden="true">
-          <span>Secure local station</span>
-          <span>Protected access</span>
-        </div>
+        {stage !== "login" && (
+          <>
+            <div className="auth-brand">
+              <AppLogoMark />
+              <p className="auth-product-name">MAINTENANCE INVENTORY TRACKER</p>
+            </div>
+            <div className="auth-security-strip" aria-hidden="true">
+              <span>Secure local station</span>
+              <span>Protected access</span>
+            </div>
+          </>
+        )}
 
         {stage === "setup" && (
           <form className="auth-form" onSubmit={handleSetupSubmit}>
@@ -1969,11 +2382,9 @@ function AuthGate({ children }: { children: React.ReactNode }) {
         )}
 
         {stage === "login" && (
+          <>
+            <AccessTerminalPanel />
           <form className="auth-form" onSubmit={handleLoginSubmit}>
-            <div>
-              <h2>Unlock Inventory</h2>
-              <p>Enter the local password for this maintenance inventory station.</p>
-            </div>
             <label className="field-label">
               Password
               <input
@@ -1988,7 +2399,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
             {error && <p className="auth-alert">{error}</p>}
             <div className="auth-actions">
               <button className="btn-primary" type="submit" disabled={busy}>
-                Unlock
+                Sign In
               </button>
               <button
                 className="btn-muted"
@@ -2003,6 +2414,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
               </button>
             </div>
           </form>
+          </>
         )}
 
         {stage === "recovery-code" && (
@@ -2034,7 +2446,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
                 type="button"
                 onClick={() => {
                   setError("");
-                  setStage("login");
+    setStartupStage("login");
                 }}
               >
                 Back to Login
@@ -2095,6 +2507,22 @@ function AuthGate({ children }: { children: React.ReactNode }) {
   );
 }
 
+function AccessTerminalPanel() {
+  return (
+    <div className="access-terminal" aria-label="Maintenance access terminal">
+      <div className="access-terminal-mark" aria-hidden="true">
+        <span>JBT</span>
+        <small>USA</small>
+      </div>
+      <div className="access-terminal-core">
+        <div className="access-terminal-kicker">Access Terminal</div>
+        <div className="access-terminal-title">Authorized Maintenance Access</div>
+        <span className="access-terminal-divider" aria-hidden="true" />
+      </div>
+    </div>
+  );
+}
+
 function MaintenanceLoadingScreen() {
   const loadingStatusMessages = [
     "Loading inventory database...",
@@ -2150,7 +2578,7 @@ function MaintenanceLoadingScreen() {
 function AppLogoMark() {
   return (
     <span className="tool-mark" aria-hidden="true">
-      <img src="/brand/maintenance-inventory-logo.png" alt="" />
+      <img src={jbtLogo} alt="" />
     </span>
   );
 }
@@ -2189,10 +2617,23 @@ function ExpandHeaderIcon() {
   );
 }
 
+function ScreensaverModeIcon() {
+  return (
+    <svg viewBox="0 0 24 24" role="img" aria-hidden="true">
+      <path d="M4 5.5h16v10H4z" />
+      <path d="M9 19h6" />
+      <path d="M12 15.5V19" />
+      <path d="M17.3 8.1a3.4 3.4 0 1 0 0 5.8 4.1 4.1 0 0 1 0-5.8z" />
+    </svg>
+  );
+}
+
 function InventoryApp() {
   const [data, setData] = useState<AppData | null>(null);
   const [activePage, setActivePage] = useState<PageId>("dashboard");
   const [isChromeCollapsed, setIsChromeCollapsed] = useState(false);
+  const [isDashboardScreensaverActive, setIsDashboardScreensaverActive] = useState(false);
+  const [isManualScreensaverActive, setIsManualScreensaverActive] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [backupIndicator, setBackupIndicator] = useState<BackupIndicatorState>("saved");
   const [backupMessage, setBackupMessage] = useState("Loading local data");
@@ -2206,9 +2647,12 @@ function InventoryApp() {
   const [backupDialog, setBackupDialog] = useState<BackupDialogState | null>(null);
   const [manualUpdateNotice, setManualUpdateNotice] = useState<ManualInstallerCheckResult | null>(null);
   const [csvImportPreview, setCsvImportPreview] = useState<CsvImportPreview | null>(null);
+  const [labelPreviewItem, setLabelPreviewItem] = useState<InventoryItem | null>(null);
   const [itemForm, setItemForm] = useState<ItemFormState>(blankItemForm());
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
   const [isItemFormOpen, setIsItemFormOpen] = useState(false);
+  const [pendingNewItemVisibilityForm, setPendingNewItemVisibilityForm] = useState<ItemFormState | null>(null);
+  const [watchListVisibilityItemId, setWatchListVisibilityItemId] = useState<string | null>(null);
   const [stockForm, setStockForm] = useState<StockFormState>(blankStockForm());
   const [locationForm, setLocationForm] = useState<LocationFormState>(blankLocationForm());
   const [vendorForm, setVendorForm] = useState<VendorFormState>(blankVendorForm());
@@ -2216,7 +2660,10 @@ function InventoryApp() {
   const [vendorAiPrompt, setVendorAiPrompt] = useState<VendorAiPromptState | null>(null);
   const [vendorAiPromptText, setVendorAiPromptText] = useState("");
   const [recentlySavedVendorNoteId, setRecentlySavedVendorNoteId] = useState<string | null>(null);
-  const [inventorySearch, setInventorySearch] = useState("");
+  const [selectedVendorId, setSelectedVendorId] = useState<string | null>(null);
+  const [selectedLocationId, setSelectedLocationId] = useState<string | null>(null);
+  const [inventoryRequisitionLaunch, setInventoryRequisitionLaunch] = useState<{ id: string; itemIds: string[] } | null>(null);
+  const [inventoryColumnFilters, setInventoryColumnFilters] = useState<InventoryColumnFilters>(() => blankInventoryColumnFilters());
   const [statusFilter, setStatusFilter] = useState<"All" | InventoryStatus>("All");
   const [isEditingHeaderBadge, setIsEditingHeaderBadge] = useState(false);
   const [headerBadgeDraft, setHeaderBadgeDraft] = useState(DEFAULT_HEADER_BADGE_TEXT);
@@ -2239,15 +2686,38 @@ function InventoryApp() {
           return;
         }
 
+        const savedDataRecord =
+          savedData && typeof savedData === "object" && !Array.isArray(savedData) ? (savedData as Record<string, unknown>) : {};
+        const shouldPersistWatchListDefaultsMigration = shouldApplyWatchListDefaultsMigration(savedData);
         const normalized = normalizeAppData(savedData);
+        const normalizedData = {
+          ...normalized,
+          deletedRecords: purgeExpiredDeletedRecords(
+            (Array.isArray(savedDataRecord.deletedRecords) ? savedDataRecord.deletedRecords : normalized.deletedRecords ?? [])
+              .map(normalizeDeletedRecord)
+              .filter(Boolean) as DeletedRecord[]
+          )
+        };
+        const loadedData = shouldPersistWatchListDefaultsMigration ? stampData(normalizedData) : normalizedData;
 
-        setData(normalized);
-        latestDataRef.current = normalized;
-        setLastBackupAt(normalized.settings.lastBackupTimestamp || null);
-        setLastAutoImportAt(normalized.settings.lastAutoImportTimestamp || null);
-        setItemForm(blankItemForm(normalized.settings.defaultLocationId));
-        setStockForm(blankStockForm(normalized.items[0]?.id ?? ""));
-        setBackupMessage(normalized.settings.backupStatus || `Saved locally ${formatDateTime(normalized.lastSavedAt)}`);
+        setData(loadedData);
+        latestDataRef.current = loadedData;
+        setLastBackupAt(loadedData.settings.lastBackupTimestamp || null);
+        setLastAutoImportAt(loadedData.settings.lastAutoImportTimestamp || null);
+        setItemForm(blankItemForm(loadedData.settings.defaultLocationId));
+        setStockForm(blankStockForm(loadedData.items[0]?.id ?? ""));
+        setBackupMessage(loadedData.settings.backupStatus || `Saved locally ${formatDateTime(loadedData.lastSavedAt)}`);
+
+        if (shouldPersistWatchListDefaultsMigration) {
+          void saveAppData(loadedData).catch((error) => {
+            if (cancelled) {
+              return;
+            }
+
+            setBackupIndicator("failed");
+            setBackupMessage(error instanceof Error ? error.message : "Save failed");
+          });
+        }
       })
       .catch((error) => {
         if (cancelled) {
@@ -2278,8 +2748,133 @@ function InventoryApp() {
   }, []);
 
   useEffect(() => {
+    const intervalId = window.setInterval(() => {
+      const deletedRecords = latestDataRef.current?.deletedRecords ?? [];
+
+      if (deletedRecords.some((record) => isDeletedRecordExpired(record))) {
+        purgeExpiredDeletedRecordsFromData();
+      }
+    }, 60_000);
+
+    return () => window.clearInterval(intervalId);
+  }, []);
+
+  useEffect(() => {
+    if (data?.deletedRecords?.some((record) => isDeletedRecordExpired(record))) {
+      purgeExpiredDeletedRecordsFromData();
+    }
+  }, [data?.deletedRecords]);
+
+  useEffect(() => {
     latestDataRef.current = data;
   }, [data]);
+
+  useEffect(() => {
+    if (!data) {
+      return;
+    }
+
+    const canEnterScreensaver =
+      !isManualScreensaverActive &&
+      !isSettingsOpen &&
+      !isItemFormOpen &&
+      !isAddLocationOpen &&
+      !isAddVendorOpen &&
+      !editingVendorId &&
+      !csvImportPreview &&
+      !backupDialog &&
+      !manualUpdateNotice &&
+      !labelPreviewItem &&
+      !selectedVendorId &&
+      !selectedLocationId &&
+      !vendorAiPrompt &&
+      activePage !== "add-item" &&
+      activePage !== "stock" &&
+      activePage !== "reorder";
+    let idleTimerId: number | null = null;
+
+    function clearIdleTimer() {
+      if (idleTimerId !== null) {
+        window.clearTimeout(idleTimerId);
+        idleTimerId = null;
+      }
+    }
+
+    function scheduleIdleTimer() {
+      clearIdleTimer();
+
+      if (!canEnterScreensaver) {
+        setIsDashboardScreensaverActive(false);
+        return;
+      }
+
+      idleTimerId = window.setTimeout(() => {
+        setActivePage("dashboard");
+        setIsChromeCollapsed(true);
+        setIsDashboardScreensaverActive(true);
+      }, DASHBOARD_SCREENSAVER_TIMEOUT_MS);
+    }
+
+    function handleUserActivity() {
+      setIsDashboardScreensaverActive(false);
+      scheduleIdleTimer();
+    }
+
+    const events: Array<keyof WindowEventMap> = ["mousemove", "mousedown", "keydown", "scroll", "touchstart", "wheel"];
+
+    events.forEach((eventName) => window.addEventListener(eventName, handleUserActivity, { passive: true }));
+    scheduleIdleTimer();
+
+    return () => {
+      clearIdleTimer();
+      events.forEach((eventName) => window.removeEventListener(eventName, handleUserActivity));
+    };
+  }, [
+    activePage,
+    backupDialog,
+    csvImportPreview,
+    data,
+    editingVendorId,
+    isAddLocationOpen,
+    isAddVendorOpen,
+    isItemFormOpen,
+    isManualScreensaverActive,
+    isSettingsOpen,
+    labelPreviewItem,
+    manualUpdateNotice,
+    selectedLocationId,
+    selectedVendorId,
+    vendorAiPrompt
+  ]);
+
+  useEffect(() => {
+    if (!isDashboardScreensaverActive && !isManualScreensaverActive) {
+      return;
+    }
+
+    let canWake = false;
+    const wakeDelayId = window.setTimeout(() => {
+      canWake = true;
+    }, 300);
+
+    function wakeScreensaver() {
+      if (!canWake) {
+        return;
+      }
+
+      setIsDashboardScreensaverActive(false);
+      setIsManualScreensaverActive(false);
+    }
+
+    const events: Array<keyof WindowEventMap> = ["mousemove", "mousedown", "keydown", "wheel", "scroll", "touchstart"];
+
+    events.forEach((eventName) => window.addEventListener(eventName, wakeScreensaver, { passive: true }));
+
+    return () => {
+      window.clearTimeout(wakeDelayId);
+      events.forEach((eventName) => window.removeEventListener(eventName, wakeScreensaver));
+    };
+  }, [isDashboardScreensaverActive, isManualScreensaverActive]);
 
   useEffect(() => {
     if (!data || startupBackupCheckRef.current) {
@@ -2391,41 +2986,61 @@ function InventoryApp() {
     data?.settings.backupInterval
   ]);
 
+  const debouncedInventoryColumnFilters = useDebouncedValue(inventoryColumnFilters, INVENTORY_SEARCH_DEBOUNCE_MS);
+  const inventoryLocationNameById = useMemo(
+    () => new Map((data?.locations ?? []).map((location) => [location.id, location.name])),
+    [data?.locations]
+  );
+  const inventoryVendorNameById = useMemo(
+    () => new Map((data?.vendors ?? []).map((vendor) => [vendor.id, vendor.name])),
+    [data?.vendors]
+  );
+
   const filteredItems = useMemo(() => {
     if (!data) {
       return [];
     }
 
-    const search = inventorySearch.trim().toLowerCase();
+    const locationFilter = debouncedInventoryColumnFilters.location.trim().toLowerCase();
+    const partNumberFilter = debouncedInventoryColumnFilters.partNumber.trim().toLowerCase();
+    const categoryFilter = debouncedInventoryColumnFilters.category.trim().toLowerCase();
+    const descriptionFilter = debouncedInventoryColumnFilters.description.trim().toLowerCase();
+    const vendorFilter = debouncedInventoryColumnFilters.vendor.trim().toLowerCase();
 
     return data.items
       .filter((item) => {
-        const status = getInventoryStatus(item, data.settings);
+        const status = getInventoryStatus(item);
+        const locationName = inventoryLocationNameById.get(item.locationId) || "Unassigned";
+        const vendorName = inventoryVendorNameById.get(item.vendorId) || "Unassigned";
 
         if (statusFilter !== "All" && status !== statusFilter) {
           return false;
         }
 
-        if (!search) {
-          return true;
+        if (locationFilter && !locationName.toLowerCase().includes(locationFilter)) {
+          return false;
         }
 
-        return [
-          item.name,
-          item.partNumber,
-          item.category,
-          item.stockUnit,
-          item.description,
-          item.notes,
-          getLocationName(data, item.locationId),
-          getVendorName(data, item.vendorId)
-        ]
-          .join(" ")
-          .toLowerCase()
-          .includes(search);
+        if (partNumberFilter && !item.partNumber.toLowerCase().includes(partNumberFilter)) {
+          return false;
+        }
+
+        if (categoryFilter && !item.category.toLowerCase().includes(categoryFilter)) {
+          return false;
+        }
+
+        if (descriptionFilter && !item.description.toLowerCase().includes(descriptionFilter)) {
+          return false;
+        }
+
+        if (vendorFilter && !vendorName.toLowerCase().includes(vendorFilter)) {
+          return false;
+        }
+
+        return true;
       })
       .sort((a, b) => a.name.localeCompare(b.name));
-  }, [data, inventorySearch, statusFilter]);
+  }, [data?.items, debouncedInventoryColumnFilters, inventoryLocationNameById, inventoryVendorNameById, statusFilter]);
 
   const reorderItems = useMemo(() => {
     if (!data) {
@@ -2433,13 +3048,194 @@ function InventoryApp() {
     }
 
     return data.items
-      .filter((item) => isReorderNeeded(item, data.settings))
+      .filter((item) => isReorderNeeded(item, data.settings) && !item.orderPlaced && !item.reorderHold)
       .sort((a, b) => a.quantityOnHand - b.quantityOnHand || a.name.localeCompare(b.name));
   }, [data]);
 
-  function showToast(tone: ToastTone, text: string) {
-    setToast({ tone, text });
-    window.setTimeout(() => setToast(null), 4000);
+  function showToast(tone: ToastTone, text: string, actionLabel?: string, onAction?: () => void) {
+    const nextToast = { tone, text, actionLabel, onAction };
+
+    setToast(nextToast);
+    window.setTimeout(() => setToast((current) => (current === nextToast ? null : current)), 6000);
+  }
+
+  function updateInventoryColumnFilter(key: InventoryColumnFilterKey, value: string) {
+    setInventoryColumnFilters((current) => (current[key] === value ? current : { ...current, [key]: value }));
+  }
+
+  function clearInventoryColumnFilters() {
+    setInventoryColumnFilters((current) =>
+      hasActiveInventoryColumnFilters(current) ? blankInventoryColumnFilters() : current
+    );
+  }
+
+  function startInventoryRequisition(itemIds: string[]) {
+    const uniqueItemIds = Array.from(new Set(itemIds.filter((itemId) => data?.items.some((item) => item.id === itemId))));
+
+    if (uniqueItemIds.length === 0) {
+      return;
+    }
+
+    setInventoryRequisitionLaunch({ id: createId(), itemIds: uniqueItemIds });
+    openPage("reorder");
+  }
+
+  function ensurePermission(permission: Permission) {
+    if (hasPermission(readAuthRecord()?.role, permission)) {
+      return true;
+    }
+
+    showToast("warning", PERMISSION_DENIED_MESSAGE);
+    return false;
+  }
+
+  function deletedRecordPermission(type: DeletedRecordType): Permission {
+    if (type === "Vendor") {
+      return "vendors:delete";
+    }
+
+    if (type === "Location") {
+      return "locations:delete";
+    }
+
+    return "inventory:delete";
+  }
+
+  function deletedRecordEntityType(type: DeletedRecordType): AuditEntityType {
+    return type === "Inventory" ? "Item" : type;
+  }
+
+  function createDeletedRecord(type: DeletedRecordType, payload: DeletedRecord["payload"], details: string): DeletedRecord {
+    const deletedAt = nowIso();
+
+    return {
+      id: createId(),
+      originalId: payload.id,
+      type,
+      title: payload.name,
+      details,
+      deletedAt,
+      expiresAt: new Date(new Date(deletedAt).getTime() + TRASH_RETENTION_MS).toISOString(),
+      actor: "User",
+      payload
+    };
+  }
+
+  function restoreDeletedRecord(deletedRecordId: string) {
+    const currentData = data;
+    const record = currentData?.deletedRecords?.find((candidate) => candidate.id === deletedRecordId);
+
+    if (!currentData || !record) {
+      showToast("warning", "That deleted record is no longer available.");
+      return;
+    }
+
+    if (!ensurePermission(deletedRecordPermission(record.type))) {
+      return;
+    }
+
+    if (isDeletedRecordExpired(record)) {
+      purgeExpiredDeletedRecordsFromData();
+      showToast("warning", "That deleted record expired.");
+      return;
+    }
+
+    const hasDuplicate =
+      record.type === "Inventory"
+        ? currentData.items.some((item) => item.id === record.originalId)
+        : record.type === "Vendor"
+          ? currentData.vendors.some((vendor) => vendor.id === record.originalId)
+          : currentData.locations.some((location) => location.id === record.originalId);
+
+    if (hasDuplicate) {
+      showToast("warning", "Could not restore because a matching record already exists.");
+      return;
+    }
+
+    commitData((current) => {
+      const deletedRecord = current.deletedRecords?.find((candidate) => candidate.id === deletedRecordId);
+
+      if (!deletedRecord) {
+        return current;
+      }
+
+      const nextData = {
+        ...current,
+        items:
+          deletedRecord.type === "Inventory"
+            ? [deletedRecord.payload as InventoryItem, ...current.items]
+            : current.items,
+        vendors:
+          deletedRecord.type === "Vendor"
+            ? [deletedRecord.payload as VendorRecord, ...current.vendors]
+            : current.vendors,
+        locations:
+          deletedRecord.type === "Location"
+            ? [...current.locations, deletedRecord.payload as LocationRecord]
+            : current.locations,
+        deletedRecords: (current.deletedRecords ?? []).filter((candidate) => candidate.id !== deletedRecordId)
+      };
+
+      return addAudit(
+        nextData,
+        createAuditEntry(
+          deletedRecordEntityType(deletedRecord.type),
+          deletedRecord.originalId,
+          `${deletedRecord.type} Restored`,
+          `${deletedRecord.title} was restored from Recently Deleted.`,
+          "User"
+        )
+      );
+    });
+
+    showToast("success", "Record restored.");
+  }
+
+  function purgeExpiredDeletedRecordsFromData() {
+    commitData((current) => {
+      const deletedRecords = current.deletedRecords ?? [];
+      const activeDeletedRecords = purgeExpiredDeletedRecords(deletedRecords);
+
+      return activeDeletedRecords.length === deletedRecords.length
+        ? current
+        : { ...current, deletedRecords: activeDeletedRecords };
+    });
+  }
+
+  function deleteDeletedRecordForever(deletedRecordId: string) {
+    const record = data?.deletedRecords?.find((candidate) => candidate.id === deletedRecordId);
+
+    if (!record) {
+      showToast("warning", "That deleted record is no longer available.");
+      return;
+    }
+
+    if (!ensurePermission(deletedRecordPermission(record.type))) {
+      return;
+    }
+
+    const confirmed = window.confirm(`Permanently delete ${record.title}? This cannot be undone.`);
+
+    if (!confirmed) {
+      return;
+    }
+
+    commitData((current) =>
+      addAudit(
+        {
+          ...current,
+          deletedRecords: (current.deletedRecords ?? []).filter((candidate) => candidate.id !== deletedRecordId)
+        },
+        createAuditEntry(
+          deletedRecordEntityType(record.type),
+          record.originalId,
+          `${record.type} Permanently Deleted`,
+          `${record.title} was permanently deleted from Recently Deleted.`,
+          "User"
+        )
+      )
+    );
+    showToast("success", "Deleted record removed permanently.");
   }
 
   async function openManualUpdateFolderFromNotice(updateCheck: ManualInstallerCheckResult) {
@@ -2448,6 +3244,23 @@ function InventoryApp() {
       setManualUpdateNotice(null);
     } catch (error) {
       showToast("warning", error instanceof Error ? error.message : "Could not open installer folder.");
+    }
+  }
+
+  async function openManualUpdateInstallerFromNotice(updateCheck: ManualInstallerCheckResult) {
+    const installer = updateCheck.newerInstaller;
+
+    if (!installer) {
+      showToast("warning", "No newer installer file was found.");
+      return;
+    }
+
+    try {
+      await openInstallerFile(updateCheck.folderPath, installer.fileName);
+      setManualUpdateNotice(null);
+      showToast("success", "Installer selected in File Explorer. Close this app, then run the setup file.");
+    } catch (error) {
+      showToast("warning", error instanceof Error ? error.message : "Could not open installer file.");
     }
   }
 
@@ -2466,9 +3279,17 @@ function InventoryApp() {
   }
 
   function openPage(page: PageId) {
+    setIsDashboardScreensaverActive(false);
+    setIsManualScreensaverActive(false);
     setActivePage(page);
     setIsChromeCollapsed(page === "inventory");
     closeSettingsPanel();
+  }
+
+  function startManualScreensaverMode() {
+    closeSettingsPanel();
+    setIsDashboardScreensaverActive(false);
+    setIsManualScreensaverActive(true);
   }
 
   function openInventoryForItemForm() {
@@ -2481,15 +3302,69 @@ function InventoryApp() {
   }
 
   function startAddItem() {
+    if (!ensurePermission("inventory:create")) {
+      return;
+    }
+
     setEditingItemId(null);
     setItemForm(blankItemForm(data?.settings.defaultLocationId ?? ""));
     setIsItemFormOpen(true);
     openInventoryForItemForm();
   }
 
+  async function handleItemImageUpload(file: File) {
+    try {
+      const imageDataUrl = await resizeItemImageToDataUrl(file);
+
+      setItemForm((current) => ({ ...current, imageDataUrl }));
+      showToast("success", "Item image added.");
+    } catch (error) {
+      showToast("warning", error instanceof Error ? error.message : "Could not process image.");
+    }
+  }
+
+  function removeItemImage() {
+    setItemForm((current) => ({ ...current, imageDataUrl: "" }));
+  }
+
+  function openLabelPreview(item: InventoryItem) {
+    setLabelPreviewItem(item);
+  }
+
+  function openCurrentItemFormLabel() {
+    if (!data || !editingItemId) {
+      return;
+    }
+
+    const existing = data.items.find((item) => item.id === editingItemId);
+
+    if (!existing) {
+      showToast("warning", "Save this item before printing a label.");
+      return;
+    }
+
+    setLabelPreviewItem(itemFromForm(itemForm, existing));
+  }
+
+  function printInventoryLabel() {
+    const printClassName = "printing-inventory-label";
+    const cleanup = () => {
+      document.body.classList.remove(printClassName);
+      window.removeEventListener("afterprint", cleanup);
+    };
+
+    window.addEventListener("afterprint", cleanup, { once: true });
+    document.body.classList.add(printClassName);
+    window.setTimeout(() => {
+      window.print();
+      window.setTimeout(cleanup, 800);
+    }, 50);
+  }
+
   function closeItemForm() {
     setIsItemFormOpen(false);
     setEditingItemId(null);
+    setPendingNewItemVisibilityForm(null);
     setItemForm(blankItemForm(data?.settings.defaultLocationId ?? ""));
     setActivePage("inventory");
     closeSettingsPanel();
@@ -2544,7 +3419,57 @@ function InventoryApp() {
   }
 
   function commitData(updater: (current: AppData) => AppData) {
-    setData((current) => (current ? stampData(pruneRequisitionMadeRecords(updater(current))) : current));
+    setData((current) => (current ? stampData(updater(current)) : current));
+  }
+
+  function toggleReorderHold(itemId: string) {
+    commitData((current) => ({
+      ...current,
+      items: current.items.map((it) => (it.id === itemId ? { ...it, reorderHold: !it.reorderHold, updatedAt: nowIso() } : it))
+    }));
+  }
+
+  function toggleOrderPlaced(itemId: string) {
+    commitData((current) => ({
+      ...current,
+      items: current.items.map((it) =>
+        it.id === itemId ? { ...it, orderPlaced: !it.orderPlaced, orderRequisitionId: "", updatedAt: nowIso() } : it
+      )
+    }));
+  }
+
+  function updateWatchListVisibility(itemId: string, choice: Exclude<WatchListVisibilityChoice, "hidden">) {
+    commitData((current) => {
+      const item = current.items.find((candidate) => candidate.id === itemId);
+
+      if (!item) {
+        return current;
+      }
+
+      const updatedAt = nowIso();
+      const updatedItem: InventoryItem =
+        choice === "held"
+          ? { ...item, orderPlaced: false, reorderHold: true, orderRequisitionId: "", updatedAt }
+          : { ...item, orderPlaced: false, reorderHold: false, orderRequisitionId: "", updatedAt };
+
+      return addAudit(
+        {
+          ...current,
+          items: current.items.map((candidate) => (candidate.id === itemId ? updatedItem : candidate))
+        },
+        createAuditEntry(
+          "Item",
+          itemId,
+          choice === "held" ? "Moved to Held List" : "Shown on Dashboard Watch List",
+          getWatchListVisibilitySummary(updatedItem, choice),
+          "User",
+          updatedAt
+        )
+      );
+    });
+
+    setWatchListVisibilityItemId(null);
+    showToast("success", choice === "held" ? "Item moved to Held list." : "Item will show on the Watch List.");
   }
 
   function hasBackupTarget(settings: AppSettings) {
@@ -2785,43 +3710,36 @@ function InventoryApp() {
       return;
     }
 
-    if (!itemForm.name.trim()) {
-      showToast("warning", "Item name is required.");
+    const validationWarning = getItemFormValidationWarning(itemForm, data.settings);
+
+    if (validationWarning) {
+      showToast("warning", validationWarning);
       return;
     }
 
-    if (!data.settings.allowNegativeStockOverride && wholeNumberValue(itemForm.quantityOnHand) < 0) {
-      showToast("warning", "Quantity on hand cannot be negative unless override is enabled in Settings.");
+    if (!editingItemId) {
+      setPendingNewItemVisibilityForm(itemForm);
       return;
     }
 
-    if (wholeNumberValue(itemForm.minimumStockLevel) < 0) {
-      showToast("warning", "Minimum stock level cannot be negative.");
+    saveItemForm(itemForm, editingItemId);
+  }
+
+  function saveItemForm(formToSave: ItemFormState, itemId: string | null) {
+    if (!data) {
       return;
     }
 
-    if (wholeNumberValue(itemForm.lowStockAlertLevel) < 0) {
-      showToast("warning", "Low Stock Alert Level cannot be negative.");
-      return;
-    }
-
-    if (numberValue(itemForm.costEach) < 0) {
-      showToast("warning", "Cost each cannot be negative.");
-      return;
-    }
-
-    const wasEditing = Boolean(editingItemId);
+    const wasEditing = Boolean(itemId);
 
     commitData((current) => {
-      const existing = editingItemId ? current.items.find((item) => item.id === editingItemId) : undefined;
-      const item = itemFromForm(itemForm, existing);
+      const existing = itemId ? current.items.find((item) => item.id === itemId) : undefined;
+      const item = itemFromForm(formToSave, existing);
       const nextItems = existing
         ? current.items.map((candidate) => (candidate.id === existing.id ? item : candidate))
         : [item, ...current.items];
       const action = existing ? "Item Updated" : "Item Created";
-      const summary = `${item.name}${item.partNumber ? ` (${item.partNumber})` : ""} was ${
-        existing ? "updated" : "created"
-      }.`;
+      const summary = `${item.name}${item.partNumber ? ` (${item.partNumber})` : ""} was ${existing ? "updated" : "created"}.`;
 
       return addAudit(
         {
@@ -2836,6 +3754,7 @@ function InventoryApp() {
     if (!wasEditing) {
       setActivityNow(Date.now());
     }
+    setPendingNewItemVisibilityForm(null);
     setEditingItemId(null);
     setItemForm(blankItemForm(data?.settings.defaultLocationId ?? ""));
     setIsItemFormOpen(false);
@@ -2843,7 +3762,19 @@ function InventoryApp() {
     closeSettingsPanel();
   }
 
+  function chooseNewItemWatchListVisibility(choice: WatchListVisibilityChoice) {
+    if (!pendingNewItemVisibilityForm) {
+      return;
+    }
+
+    saveItemForm(applyWatchListVisibilityChoice(pendingNewItemVisibilityForm, choice), null);
+  }
+
   function editItem(item: InventoryItem) {
+    if (!ensurePermission("inventory:edit")) {
+      return;
+    }
+
     setEditingItemId(item.id);
     setItemForm(formFromItem(item));
     setIsItemFormOpen(true);
@@ -2851,13 +3782,30 @@ function InventoryApp() {
   }
 
   function deleteItem(itemId: string) {
+    if (!ensurePermission("inventory:delete")) {
+      return;
+    }
+
     if (!data) {
       return;
     }
 
     const item = data.items.find((candidate) => candidate.id === itemId);
 
-    if (!item || !window.confirm(`Delete ${item.name}? This keeps existing audit history.`)) {
+    if (!item) {
+      return;
+    }
+
+    const deletedRecord = createDeletedRecord(
+      "Inventory",
+      item,
+      `${item.partNumber || item.name} will be kept in Recently Deleted for 30 minutes. Existing audit history remains.`
+    );
+    const confirmed = window.confirm(
+      `Delete ${item.name}? This moves it to Recently Deleted for 30 minutes so it can be restored.`
+    );
+
+    if (!confirmed) {
       return;
     }
 
@@ -2865,20 +3813,34 @@ function InventoryApp() {
       addAudit(
         {
           ...current,
-          items: current.items.filter((candidate) => candidate.id !== itemId)
+          items: current.items.filter((candidate) => candidate.id !== itemId),
+          deletedRecords: [deletedRecord, ...purgeExpiredDeletedRecords(current.deletedRecords ?? [])]
         },
-        createAuditEntry("Item", itemId, "Item Deleted", `${item.name} was deleted.`, "User")
+        createAuditEntry("Item", itemId, "Item Moved to Recently Deleted", `${item.name} was deleted.`, "User")
       )
     );
-    showToast("success", "Item deleted.");
+    showToast("success", "Item moved to Recently Deleted for 30 minutes.", "Undo", () => restoreDeletedRecord(deletedRecord.id));
   }
 
-  function startStockAction(itemId: string, actionType: StockActionType | "" = "") {
-    setStockForm({ ...blankStockForm(itemId), actionType, quantity: actionType === "Set Stock On Hand" ? "" : 1 });
+  function startStockAction(itemId: string, _actionType: StockActionType | "" = "") {
+    if (!ensurePermission("inventory:stock")) {
+      return;
+    }
+
+    const item = data?.items.find((candidate) => candidate.id === itemId);
+    setStockForm({
+      ...blankStockForm(itemId),
+      orderPlaced: Boolean(item?.orderPlaced),
+      reorderHold: Boolean(item?.reorderHold)
+    });
     openPage("stock");
   }
 
   function updateMinimumStockLevel(itemId: string, minimumStockLevel: number) {
+    if (!ensurePermission("inventory:edit")) {
+      return;
+    }
+
     if (!data) {
       return;
     }
@@ -2929,6 +3891,10 @@ function InventoryApp() {
   }
 
   function updateLowStockAlertLevel(itemId: string, lowStockAlertLevel: number) {
+    if (!ensurePermission("inventory:edit")) {
+      return;
+    }
+
     if (!data) {
       return;
     }
@@ -2978,6 +3944,10 @@ function InventoryApp() {
   function handleStockSubmit(event: FormEvent) {
     event.preventDefault();
 
+    if (!ensurePermission("inventory:stock")) {
+      return;
+    }
+
     if (!data) {
       return;
     }
@@ -2989,44 +3959,52 @@ function InventoryApp() {
       return;
     }
 
-    if (!stockForm.actionType) {
-      showToast("warning", "Choose Add, Pull, or Set Stock On Hand first.");
-      return;
-    }
-
-    const actionType = stockForm.actionType;
+    const nextOrderPlaced = Boolean(stockForm.orderPlaced);
+    const nextReorderHold = Boolean(stockForm.reorderHold);
+    const orderPlacedChanged = nextOrderPlaced !== Boolean(item.orderPlaced);
+    const reorderHoldChanged = nextReorderHold !== Boolean(item.reorderHold);
+    const hasFlagChanges = orderPlacedChanged || reorderHoldChanged;
     const quantityText = String(stockForm.quantity).trim();
 
     if (!quantityText) {
-      showToast(
-        "warning",
-        actionType === "Set Stock On Hand" ? "Enter the actual counted quantity." : "Quantity must be greater than 0."
-      );
-      return;
+      if (!hasFlagChanges) {
+        showToast("warning", "Enter a positive or negative quantity or change reorder options.");
+        return;
+      }
     }
 
-    const quantity = wholeNumberValue(stockForm.quantity, Number.NaN);
+    const quantityChange = quantityText ? wholeNumberValue(stockForm.quantity, Number.NaN) : 0;
 
-    if (!Number.isFinite(quantity)) {
+    if (!Number.isFinite(quantityChange)) {
       showToast("warning", "Enter a valid whole number quantity.");
       return;
     }
 
-    if (actionType !== "Set Stock On Hand" && quantity <= 0) {
-      showToast("warning", "Quantity must be greater than 0.");
-      return;
+    if (quantityChange === 0) {
+      if (!hasFlagChanges) {
+        showToast("warning", "Enter a positive or negative quantity or change reorder options.");
+        return;
+      }
     }
 
+    const hasStockMovement = quantityChange !== 0;
+    const actionType: StockActionType = quantityChange > 0 ? "Stock In" : "Stock Out";
+    const movementQuantity = Math.abs(quantityChange);
     const previousQuantity = item.quantityOnHand;
-    const nextQuantity = calculateStockQuantity(previousQuantity, actionType, quantity);
+    const nextQuantity = previousQuantity + quantityChange;
+    const willClearOrderPlaced =
+      hasStockMovement &&
+      item.orderPlaced === true &&
+      nextQuantity > previousQuantity &&
+      !isReorderNeeded({ ...item, quantityOnHand: nextQuantity }, data.settings);
 
-    if (nextQuantity < 0 && !data.settings.allowNegativeStockOverride) {
-      showToast("danger", "Stock would be below 0. Enable negative stock override in Settings to allow it.");
+    if (nextQuantity < 0) {
+      showToast("danger", "Not enough stock on hand to pull that quantity.");
       return;
     }
 
     const occurredAt = dateTimeLocalToIso(stockForm.occurredAt);
-    const reason = stockForm.reason.trim() || (actionType === "Set Stock On Hand" ? "Physical count adjustment." : "");
+    const reason = stockForm.reason.trim();
 
     commitData((current) => {
       const currentItem = current.items.find((candidate) => candidate.id === item.id);
@@ -3035,23 +4013,37 @@ function InventoryApp() {
         return current;
       }
 
-      const finalQuantity = calculateStockQuantity(currentItem.quantityOnHand, actionType, quantity);
-      const updatedItem = {
+      const finalQuantity = currentItem.quantityOnHand + quantityChange;
+      const shouldClearOrderPlaced =
+        hasStockMovement &&
+        currentItem.orderPlaced === true &&
+        finalQuantity > currentItem.quantityOnHand &&
+        !isReorderNeeded({ ...currentItem, quantityOnHand: finalQuantity }, current.settings);
+      const finalOrderPlaced = shouldClearOrderPlaced ? false : nextOrderPlaced;
+      let updatedItem = {
         ...currentItem,
         quantityOnHand: finalQuantity,
+        orderPlaced: finalOrderPlaced,
+        reorderHold: nextReorderHold,
+        orderRequisitionId: finalOrderPlaced ? currentItem.orderRequisitionId : "",
         updatedAt: nowIso()
       };
-      const movementQuantity =
-        actionType === "Set Stock On Hand" ? Math.abs(finalQuantity - currentItem.quantityOnHand) : quantity;
+      const restockClearSummary = `Item removed from Mark Ordered because it was restocked. Item: ${updatedItem.name}. Part number: ${
+        updatedItem.partNumber || "No part number"
+      }. Restock quantity: ${formatNumber(movementQuantity)} ${normalizeStockUnit(updatedItem.stockUnit)}. New quantity on hand: ${formatStockQuantity(
+        updatedItem
+      )}.`;
+      const stockReason = shouldClearOrderPlaced ? [reason, restockClearSummary].filter(Boolean).join(" ") : reason;
+
       const stockChange: StockChange = {
         id: createId(),
         itemId: updatedItem.id,
         itemNameSnapshot: updatedItem.name,
         partNumberSnapshot: updatedItem.partNumber,
         vendorNameSnapshot: getVendorName(current, updatedItem.vendorId),
-        actionType,
+        actionType: finalQuantity >= currentItem.quantityOnHand ? "Stock In" : "Stock Out",
         quantity: movementQuantity,
-        reason,
+        reason: stockReason,
         actor: stockForm.actor.trim() || "User",
         notes: stockForm.notes.trim(),
         occurredAt,
@@ -3059,26 +4051,80 @@ function InventoryApp() {
         newQuantity: finalQuantity,
         createdAt: nowIso()
       };
-      const summary = `${getStockActionLabel(actionType)}: ${formatNumber(currentItem.quantityOnHand)} -> ${formatNumber(
+      const summary = `${getStockActionLabel(stockChange.actionType)}: ${formatNumber(currentItem.quantityOnHand)} -> ${formatNumber(
         finalQuantity
       )} ${normalizeStockUnit(updatedItem.stockUnit)} for ${updatedItem.name}.`;
 
-      return addAudit(
-        {
-          ...current,
-          items: current.items.map((candidate) => (candidate.id === updatedItem.id ? updatedItem : candidate)),
-          stockChanges: [stockChange, ...current.stockChanges].slice(0, 600)
-        },
-        createAuditEntry("Stock", stockChange.id, actionType, summary, stockChange.actor, occurredAt)
-      );
+      let nextData = {
+        ...current,
+        items: current.items.map((candidate) => (candidate.id === updatedItem.id ? updatedItem : candidate)),
+        stockChanges: hasStockMovement ? trimStockChangeEntries([stockChange, ...current.stockChanges]) : current.stockChanges
+      };
+
+      if (hasStockMovement) {
+        nextData = addAudit(
+          nextData,
+          createAuditEntry("Stock", stockChange.id, stockChange.actionType, summary, stockChange.actor, occurredAt)
+        );
+      }
+
+      if (shouldClearOrderPlaced) {
+        nextData = addAudit(
+          nextData,
+          createAuditEntry("Item", updatedItem.id, "Mark Ordered Cleared", restockClearSummary, stockChange.actor, occurredAt)
+        );
+      }
+
+      if (orderPlacedChanged) {
+        nextData = addAudit(
+          nextData,
+          createAuditEntry(
+            "Item",
+            updatedItem.id,
+            nextOrderPlaced ? "Order Placed Flag Enabled" : "Order Placed Flag Removed",
+            nextOrderPlaced ? "Order placed flag enabled." : "Order placed flag removed.",
+            stockForm.actor.trim() || "User",
+            occurredAt
+          )
+        );
+      }
+
+      if (reorderHoldChanged) {
+        nextData = addAudit(
+          nextData,
+          createAuditEntry(
+            "Item",
+            updatedItem.id,
+            nextReorderHold ? "Hold For Reorder Enabled" : "Hold For Reorder Removed",
+            nextReorderHold ? "Hold for reorder enabled." : "Hold for reorder removed.",
+            stockForm.actor.trim() || "User",
+            occurredAt
+          )
+        );
+      }
+
+      return nextData;
     });
 
-    showToast("success", `${getStockActionLabel(actionType)} saved.`);
-    setStockForm(blankStockForm(item.id));
+    showToast(
+      "success",
+      hasStockMovement
+        ? `${getStockActionLabel(actionType)} saved${willClearOrderPlaced ? " and Mark Ordered cleared" : ""}.`
+        : "Reorder options saved."
+    );
+    setStockForm({
+      ...blankStockForm(item.id),
+      orderPlaced: willClearOrderPlaced ? false : nextOrderPlaced,
+      reorderHold: nextReorderHold
+    });
   }
 
   function handleLocationSubmit(event: FormEvent) {
     event.preventDefault();
+
+    if (!ensurePermission("locations:manage")) {
+      return;
+    }
 
     if (!locationForm.name.trim()) {
       showToast("warning", "Location name is required.");
@@ -3109,6 +4155,10 @@ function InventoryApp() {
   }
 
   function deleteLocation(locationId: string) {
+    if (!ensurePermission("locations:delete")) {
+      return;
+    }
+
     if (!data) {
       return;
     }
@@ -3125,19 +4175,34 @@ function InventoryApp() {
       return;
     }
 
+    const deletedRecord = createDeletedRecord(
+      "Location",
+      location,
+      "This location will be kept in Recently Deleted for 30 minutes."
+    );
+    const confirmed = window.confirm(
+      `Delete ${location.name}? This moves it to Recently Deleted for 30 minutes so it can be restored.`
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
     commitData((current) =>
       addAudit(
         {
           ...current,
           locations: current.locations.filter((candidate) => candidate.id !== locationId),
+          deletedRecords: [deletedRecord, ...purgeExpiredDeletedRecords(current.deletedRecords ?? [])],
           settings:
             current.settings.defaultLocationId === locationId
               ? { ...current.settings, defaultLocationId: "", updatedAt: nowIso() }
               : current.settings
         },
-        createAuditEntry("Location", locationId, "Location Deleted", `${location.name} was deleted.`, "User")
+        createAuditEntry("Location", locationId, "Location Moved to Recently Deleted", `${location.name} was deleted.`, "User")
       )
     );
+    showToast("success", "Location moved to Recently Deleted for 30 minutes.", "Undo", () => restoreDeletedRecord(deletedRecord.id));
   }
 
   async function suggestVendorNoteWithWebsite(vendor: VendorNoteContext) {
@@ -3245,6 +4310,10 @@ function InventoryApp() {
   function handleVendorSubmit(event: FormEvent) {
     event.preventDefault();
 
+    if (!ensurePermission("vendors:manage")) {
+      return;
+    }
+
     const submittedVendorForm = {
       name: vendorForm.name.trim(),
       contactName: vendorForm.contactName.trim(),
@@ -3322,6 +4391,10 @@ function InventoryApp() {
   }
 
   function startEditVendor(vendor: VendorRecord) {
+    if (!ensurePermission("vendors:manage")) {
+      return;
+    }
+
     setEditingVendorId(vendor.id);
     setVendorForm({
       name: vendor.name,
@@ -3352,11 +4425,19 @@ function InventoryApp() {
       return;
     }
 
+    if (!ensurePermission("vendors:manage")) {
+      return;
+    }
+
     setEditingVendorId(null);
     setIsAddVendorOpen(true);
   }
 
   function updateVendorNotes(vendorId: string, notes: string) {
+    if (!ensurePermission("vendors:manage")) {
+      return;
+    }
+
     const vendor = data?.vendors.find((candidate) => candidate.id === vendorId);
 
     if (!vendor) {
@@ -3387,6 +4468,10 @@ function InventoryApp() {
   }
 
   function deleteVendor(vendorId: string) {
+    if (!ensurePermission("vendors:delete")) {
+      return;
+    }
+
     if (!data) {
       return;
     }
@@ -3403,18 +4488,37 @@ function InventoryApp() {
       return;
     }
 
+    const deletedRecord = createDeletedRecord(
+      "Vendor",
+      vendor,
+      "This vendor will be kept in Recently Deleted for 30 minutes."
+    );
+    const confirmed = window.confirm(
+      `Delete ${vendor.name}? This moves it to Recently Deleted for 30 minutes so it can be restored.`
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
     commitData((current) =>
       addAudit(
         {
           ...current,
-          vendors: current.vendors.filter((candidate) => candidate.id !== vendorId)
+          vendors: current.vendors.filter((candidate) => candidate.id !== vendorId),
+          deletedRecords: [deletedRecord, ...purgeExpiredDeletedRecords(current.deletedRecords ?? [])]
         },
-        createAuditEntry("Vendor", vendorId, "Vendor Deleted", `${vendor.name} was deleted.`, "User")
+        createAuditEntry("Vendor", vendorId, "Vendor Moved to Recently Deleted", `${vendor.name} was deleted.`, "User")
       )
     );
+    showToast("success", "Vendor moved to Recently Deleted for 30 minutes.", "Undo", () => restoreDeletedRecord(deletedRecord.id));
   }
 
   function updateSettings(settings: AppSettings, auditSummary = "Settings were updated.") {
+    if (!ensurePermission("settings:manage")) {
+      return;
+    }
+
     commitData((current) =>
       addAudit(
         {
@@ -3430,6 +4534,10 @@ function InventoryApp() {
   }
 
   async function handleChooseBackupFolder() {
+    if (!ensurePermission("settings:manage")) {
+      return;
+    }
+
     if (!data) {
       return;
     }
@@ -3491,6 +4599,10 @@ function InventoryApp() {
   }
 
   function handleImportConfirmation(dialog: Extract<BackupDialogState, { kind: "confirm-import" }>) {
+    if (!ensurePermission("data:import")) {
+      return;
+    }
+
     const message = dialog.source === "manual" ? "JSON import complete." : "Backup imported successfully.";
 
     applyImportedBackup(dialog.payload, dialog.source, dialog.fileName, message);
@@ -3521,6 +4633,10 @@ function InventoryApp() {
   }
 
   function handleExportJson() {
+    if (!ensurePermission("data:export")) {
+      return;
+    }
+
     if (!data) {
       return;
     }
@@ -3536,6 +4652,10 @@ function InventoryApp() {
   }
 
   async function handleImportJson(file: File) {
+    if (!ensurePermission("data:import")) {
+      return;
+    }
+
     try {
       const contents = await file.text();
       const fileLastModifiedAt = file.lastModified ? new Date(file.lastModified).toISOString() : null;
@@ -3599,6 +4719,10 @@ function InventoryApp() {
   }
 
   function handleExportCsv() {
+    if (!ensurePermission("reports:export")) {
+      return;
+    }
+
     if (!data) {
       return;
     }
@@ -3612,6 +4736,10 @@ function InventoryApp() {
   }
 
   function handleExportExcelCsv() {
+    if (!ensurePermission("reports:export")) {
+      return;
+    }
+
     if (!data) {
       return;
     }
@@ -3625,6 +4753,10 @@ function InventoryApp() {
   }
 
   async function handleImportCsv(file: File) {
+    if (!ensurePermission("data:import")) {
+      return;
+    }
+
     if (!data) {
       return;
     }
@@ -3641,6 +4773,10 @@ function InventoryApp() {
   }
 
   function confirmCsvImport() {
+    if (!ensurePermission("data:import")) {
+      return;
+    }
+
     if (!data || !csvImportPreview) {
       return;
     }
@@ -3749,7 +4885,10 @@ function InventoryApp() {
           itemUrl: record.itemUrl || existing?.itemUrl || "",
           notes: record.notes || existing?.notes || "",
           imagePlaceholder: existing?.imagePlaceholder || "",
-          barcodePlaceholder: existing?.barcodePlaceholder || ""
+          imageDataUrl: existing?.imageDataUrl || "",
+          barcodePlaceholder: existing?.barcodePlaceholder || "",
+          reorderHold: existing?.reorderHold === true,
+          orderPlaced: existing?.orderPlaced === false ? false : true
         },
         existing
       );
@@ -3781,7 +4920,7 @@ function InventoryApp() {
         items: nextItems,
         locations: nextLocations,
         vendors: nextVendors,
-        auditLog: [...auditEntries.reverse(), ...current.auditLog].slice(0, 600)
+        auditLog: trimAuditLogEntries([...auditEntries.reverse(), ...current.auditLog])
       })
     );
 
@@ -3816,16 +4955,27 @@ function InventoryApp() {
   const backupSupported = isFileSystemBackupSupported();
   const saveHealthRows = getSaveHealthRows(data, backupSupported, lastBackupAt, lastAutoImportAt, backupIndicator, backupMessage);
   const saveHealthTone = getOverallHealthTone(saveHealthRows);
-  const backupStatusInfo = getBackupStatusInfo(data, backupSupported, backupIndicator, backupMessage);
   const recentAddAlerts = getRecentAddAlerts(data, activityNow);
   const canCollapseChrome = activePage !== "dashboard";
   const chromeCollapsed = canCollapseChrome && isChromeCollapsed;
   const isCompactChrome = activePage !== "dashboard";
   const isInventoryWorkspace = activePage === "inventory" && !isSettingsOpen;
+  const isScreensaverModeActive = isDashboardScreensaverActive || isManualScreensaverActive;
+  const watchListVisibilityItem = watchListVisibilityItemId
+    ? data.items.find((item) => item.id === watchListVisibilityItemId) ?? null
+    : null;
+
+  if (isScreensaverModeActive) {
+    return (
+      <main className="app-shell app-shell-screensaver min-h-screen text-slate-100">
+        <IdleScreensaver />
+      </main>
+    );
+  }
 
   return (
     <main
-      className={`app-shell min-h-screen p-3 text-slate-100 sm:p-5 ${isCompactChrome ? "compact-chrome" : ""} ${
+      className={`app-shell min-h-screen text-slate-100 ${isCompactChrome ? "compact-chrome" : ""} ${
         chromeCollapsed ? "chrome-collapsed" : ""
       } ${isInventoryWorkspace ? "inventory-workspace-mode" : ""} ${
         isInventoryWorkspace && chromeCollapsed ? "inventory-workspace-expanded" : ""
@@ -3852,7 +5002,6 @@ function InventoryApp() {
             >
               <ReturnDashboardIcon />
             </button>
-            <BackupStatusDot status={backupStatusInfo} />
             <button
               className={`settings-gear floating-settings-gear ${isSettingsOpen ? "settings-gear-active" : ""}`}
               type="button"
@@ -3861,15 +5010,13 @@ function InventoryApp() {
               onClick={toggleSettingsPanel}
             >
               <GearIcon />
-              <span className={`gear-health-dot status-health-dot ${saveHealthTone}`} aria-hidden="true" />
             </button>
           </div>
         )}
 
         {!chromeCollapsed && (
         <header className={`header-panel ${isCompactChrome ? "header-panel-compact" : ""}`}>
-          <div className="flex min-w-0 items-center gap-3">
-            <AppLogoMark />
+          <div className="flex min-w-0 items-center">
             <div className="min-w-0">
               {isEditingHeaderBadge ? (
                 <input
@@ -3891,7 +5038,6 @@ function InventoryApp() {
             </div>
           </div>
           <div className="header-actions">
-            <BackupStatusDot status={backupStatusInfo} />
             <button
               className={`settings-gear ${isSettingsOpen ? "settings-gear-active" : ""}`}
               type="button"
@@ -3900,7 +5046,6 @@ function InventoryApp() {
               onClick={toggleSettingsPanel}
             >
               <GearIcon />
-              <span className={`gear-health-dot status-health-dot ${saveHealthTone}`} aria-hidden="true" />
             </button>
           </div>
         </header>
@@ -3923,7 +5068,11 @@ function InventoryApp() {
             onImportCsv={(file) => void handleImportCsv(file)}
             onImportJson={(file) => void handleImportJson(file)}
             onRunBackup={() => void runBackup(data, true)}
+            onStartScreensaver={startManualScreensaverMode}
             newRecoveryCode={newRecoveryCode}
+            onPurgeExpiredDeletedRecords={purgeExpiredDeletedRecordsFromData}
+            onDeleteDeletedRecordForever={deleteDeletedRecordForever}
+            onRestoreDeletedRecord={restoreDeletedRecord}
             saveHealthRows={saveHealthRows}
             updateSettings={updateSettings}
           />
@@ -3968,7 +5117,7 @@ function InventoryApp() {
         </div>
         )}
 
-        {toast && <Toast tone={toast.tone} text={toast.text} />}
+        {toast && <Toast {...toast} />}
         {backupDialog && (
           <BackupWorkflowDialog
             backupSupported={backupSupported}
@@ -3994,6 +5143,7 @@ function InventoryApp() {
             updateCheck={manualUpdateNotice}
             onLater={() => setManualUpdateNotice(null)}
             onOpenFolder={() => void openManualUpdateFolderFromNotice(manualUpdateNotice)}
+            onUpdate={() => void openManualUpdateInstallerFromNotice(manualUpdateNotice)}
           />
         )}
         {csvImportPreview && (
@@ -4011,6 +5161,44 @@ function InventoryApp() {
             onChange={setVendorAiPromptText}
           />
         )}
+        {labelPreviewItem && (
+          <InventoryLabelDialog
+            data={data}
+            item={labelPreviewItem}
+            onClose={() => setLabelPreviewItem(null)}
+            onPrint={printInventoryLabel}
+          />
+        )}
+        {pendingNewItemVisibilityForm && (
+          <NewItemWatchListSettingDialog
+            onCancel={() => setPendingNewItemVisibilityForm(null)}
+            onChoose={chooseNewItemWatchListVisibility}
+          />
+        )}
+        {watchListVisibilityItem && (
+          <ShowWatchListDialog
+            item={watchListVisibilityItem}
+            onClose={() => setWatchListVisibilityItemId(null)}
+            onMoveToHeld={() => updateWatchListVisibility(watchListVisibilityItem.id, "held")}
+            onShow={() => updateWatchListVisibility(watchListVisibilityItem.id, "visible")}
+          />
+        )}
+        {selectedVendorId && (
+          <VendorItemsDialog
+            data={data}
+            onWatchListVisibilityClick={setWatchListVisibilityItemId}
+            vendorId={selectedVendorId}
+            onClose={() => setSelectedVendorId(null)}
+          />
+        )}
+        {selectedLocationId && (
+          <LocationItemsDialog
+            data={data}
+            locationId={selectedLocationId}
+            onWatchListVisibilityClick={setWatchListVisibilityItemId}
+            onClose={() => setSelectedLocationId(null)}
+          />
+        )}
         {isItemFormOpen && (
           <ItemFormDrawer
             data={data}
@@ -4018,6 +5206,9 @@ function InventoryApp() {
             form={itemForm}
             onCancel={closeItemForm}
             onChange={setItemForm}
+            onImageRemove={removeItemImage}
+            onImageUpload={handleItemImageUpload}
+            onPrintLabel={openCurrentItemFormLabel}
             onSubmit={handleItemSubmit}
           />
         )}
@@ -4025,26 +5216,36 @@ function InventoryApp() {
         {activePage === "dashboard" && (
           <DashboardPage
             data={data}
+            isScreensaverActive={isDashboardScreensaverActive}
             onStockAction={startStockAction}
             recentAddAlerts={recentAddAlerts}
             reorderItems={reorderItems}
             setActivePage={openPage}
+            onToggleHold={toggleReorderHold}
+            onToggleOrdered={toggleOrderPlaced}
+            onWatchListVisibilityClick={setWatchListVisibilityItemId}
           />
         )}
         {activePage === "inventory" && (
           <InventoryPage
+            columnFilters={inventoryColumnFilters}
             data={data}
             filteredItems={filteredItems}
-            inventorySearch={inventorySearch}
+            onClearColumnFilters={clearInventoryColumnFilters}
+            onColumnFilterChange={updateInventoryColumnFilter}
             onDelete={deleteItem}
             onEdit={editItem}
             onExportCsv={handleExportCsv}
             onExportExcelCsv={handleExportExcelCsv}
             onImportCsv={(file) => void handleImportCsv(file)}
             onAddItem={startAddItem}
-            onSearch={setInventorySearch}
+            onCreateRequisition={startInventoryRequisition}
+            onPrintLabel={openLabelPreview}
+            onScanLookupWarning={(message) => showToast("warning", message)}
             onStockAction={startStockAction}
             onStatusFilter={setStatusFilter}
+            onWatchListVisibilityClick={setWatchListVisibilityItemId}
+            onItemLinkOpenError={() => showToast("warning", "Could not open item link.")}
             statusFilter={statusFilter}
           />
         )}
@@ -4055,6 +5256,9 @@ function InventoryApp() {
             form={itemForm}
             onCancel={closeItemForm}
             onChange={setItemForm}
+            onImageRemove={removeItemImage}
+            onImageUpload={handleItemImageUpload}
+            onPrintLabel={openCurrentItemFormLabel}
             onSubmit={handleItemSubmit}
           />
         )}
@@ -4065,7 +5269,9 @@ function InventoryApp() {
             onChange={setStockForm}
             onLowStockAlertChange={updateLowStockAlertLevel}
             onMinimumStockChange={updateMinimumStockLevel}
+            onPrintLabel={openLabelPreview}
             onSubmit={handleStockSubmit}
+            onWatchListVisibilityClick={setWatchListVisibilityItemId}
           />
         )}
         {activePage === "locations" && (
@@ -4075,6 +5281,7 @@ function InventoryApp() {
             isAddOpen={isAddLocationOpen}
             onChange={setLocationForm}
             onDelete={deleteLocation}
+            onOpenItems={setSelectedLocationId}
             onSubmit={handleLocationSubmit}
             onToggleAdd={() => setIsAddLocationOpen((open) => !open)}
             updateSettings={updateSettings}
@@ -4092,6 +5299,7 @@ function InventoryApp() {
             onChange={setVendorForm}
             onDelete={deleteVendor}
             onEdit={startEditVendor}
+            onOpenItems={setSelectedVendorId}
             onSubmit={handleVendorSubmit}
             onToggleAdd={toggleVendorAddPanel}
             onUpdateNotes={updateVendorNotes}
@@ -4099,7 +5307,14 @@ function InventoryApp() {
           />
         )}
         {activePage === "reorder" && (
-          <ReorderPage data={data} items={reorderItems} onDataChange={commitData} onStockAction={startStockAction} />
+          <ReorderPage
+            data={data}
+            inventoryRequisitionLaunch={inventoryRequisitionLaunch}
+            items={reorderItems}
+            onDataChange={commitData}
+            onStockAction={startStockAction}
+            onWatchListVisibilityClick={setWatchListVisibilityItemId}
+          />
         )}
         {activePage === "history" && <HistoryPage data={data} />}
       </div>
@@ -4109,18 +5324,77 @@ function InventoryApp() {
 
 function DashboardPage({
   data,
+  isScreensaverActive,
   onStockAction,
   recentAddAlerts,
   reorderItems,
-  setActivePage
+  setActivePage,
+  onToggleHold,
+  onToggleOrdered,
+  onWatchListVisibilityClick
 }: {
   data: AppData;
+  isScreensaverActive: boolean;
   onStockAction: (itemId: string, actionType?: StockActionType | "") => void;
   recentAddAlerts: RecentAddAlert[];
   reorderItems: InventoryItem[];
   setActivePage: (page: PageId) => void;
+  onToggleHold: (itemId: string) => void;
+  onToggleOrdered: (itemId: string) => void;
+  onWatchListVisibilityClick: (itemId: string) => void;
 }) {
-  const visibleReorderItems = reorderItems.slice(0, 8);
+  const [viewMode, setViewMode] = useState<"reorder" | "hold" | "ordered">("reorder");
+  const [selectedRequisitionRecord, setSelectedRequisitionRecord] = useState<RequisitionMadeRecord | null>(null);
+  const heldItemCount = data.items.filter((it) => it.reorderHold).length;
+  const orderedItemCount = data.items.filter((it) => it.orderPlaced && isReorderNeeded(it, data.settings)).length;
+  const requisitionOrderedItemCount = data.items.filter(
+    (it) => it.orderPlaced && Boolean(it.orderRequisitionId) && isReorderNeeded(it, data.settings)
+  ).length;
+  const hasWatchListItems = reorderItems.length > 0 || heldItemCount > 0 || requisitionOrderedItemCount > 0;
+
+  useEffect(() => {
+    if (!hasWatchListItems) {
+      return;
+    }
+
+    if (viewMode === "reorder" && reorderItems.length === 0) {
+      setViewMode(heldItemCount > 0 ? "hold" : "ordered");
+    } else if (viewMode === "hold" && heldItemCount === 0) {
+      setViewMode(reorderItems.length > 0 ? "reorder" : "ordered");
+    } else if (viewMode === "ordered" && orderedItemCount === 0) {
+      setViewMode(reorderItems.length > 0 ? "reorder" : "hold");
+    }
+  }, [hasWatchListItems, heldItemCount, orderedItemCount, reorderItems.length, viewMode]);
+
+  const visibleReorderItems = useMemo(() => {
+    if (viewMode === "hold") {
+      return data.items.filter((it) => it.reorderHold).slice(0, 8);
+    }
+
+    if (viewMode === "ordered") {
+      return data.items.filter((it) => it.orderPlaced && isReorderNeeded(it, data.settings)).slice(0, 8);
+    }
+
+    return reorderItems.slice(0, 8);
+  }, [viewMode, data.items, data.settings, reorderItems]);
+
+  const requisitionRecordByItemId = useMemo(() => {
+    const recordByItemId = new Map<string, RequisitionMadeRecord>();
+
+    data.items.forEach((item) => {
+      const record = getLinkedRequisitionMadeRecord(data, item);
+
+      if (record) {
+        recordByItemId.set(item.id, record);
+      }
+    });
+
+    return recordByItemId;
+  }, [data]);
+
+  if (isScreensaverActive) {
+    return <IdleScreensaver />;
+  }
 
   return (
     <section className="space-y-5">
@@ -4139,61 +5413,452 @@ function DashboardPage({
         </section>
       )}
 
-      <section className="panel">
-        <SectionHeader
-          action={
-            <button className="btn-small" type="button" onClick={() => setActivePage("reorder")}>
-              Open Reorder List
+      {hasWatchListItems && (
+        <section className="panel">
+          <SectionHeader
+            action={
+              <button className="btn-small" type="button" onClick={() => setActivePage("reorder")}>
+                Open Reorder List
+              </button>
+            }
+            kicker="Watch list"
+            title="Items Needing Attention"
+          />
+
+          <div className="watch-list-controls" style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+            <button className={`btn-small ${viewMode === "reorder" ? "tab-active" : "tab-button"}`} type="button" onClick={() => setViewMode("reorder")}>
+              Reorder
             </button>
-          }
-          kicker="Watch list"
-          title="Items Needing Attention"
-        />
-        <div className="watch-list-grid">
-          {visibleReorderItems.map((item) => {
-            const status = getInventoryStatus(item, data.settings);
+            <button className={`btn-small ${viewMode === "hold" ? "tab-active" : "tab-button"}`} type="button" onClick={() => setViewMode("hold")}>
+              Held
+            </button>
+            <button
+              className={`btn-small ${viewMode === "ordered" ? "tab-active" : "tab-button"}`}
+              type="button"
+              onClick={() => setViewMode("ordered")}
+            >
+              Ordered
+            </button>
+          </div>
 
-            const openStockEdit = () => onStockAction(item.id);
-            const handleCardKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
-              if (event.target !== event.currentTarget) {
-                return;
-              }
+          <div className="watch-list-grid">
+            {visibleReorderItems.map((item) => {
+              const status = getInventoryStatus(item, data.settings);
+              const requisitionRecord = requisitionRecordByItemId.get(item.id) ?? null;
 
-              if (event.key === "Enter" || event.key === " ") {
-                event.preventDefault();
-                openStockEdit();
-              }
-            };
-            return (
-              <div
-                key={item.id}
-                className={`watch-card ${statusCardClassName(status)}`}
-                role="button"
-                tabIndex={0}
-                aria-label={`Open stock edit for ${item.partNumber || item.name}`}
-                onClick={openStockEdit}
-                onKeyDown={handleCardKeyDown}
-              >
-                <div className="watch-card-top">
-                  <StatusTag status={status} showOrb={false} />
-                  <StockQuantity compact item={item} settings={data.settings} />
+              const openStockEdit = () => onStockAction(item.id);
+              const handleCardKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+                if (event.target !== event.currentTarget) {
+                  return;
+                }
+
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  openStockEdit();
+                }
+              };
+              return (
+                <div
+                  key={item.id}
+                  className={`watch-card ${statusCardClassName(status)}`}
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`Open stock edit for ${item.partNumber || item.name}`}
+                  onClick={openStockEdit}
+                  onKeyDown={handleCardKeyDown}
+                >
+                  <div className="watch-card-top">
+                    <div className="watch-card-badges">
+                      <StatusWithWatchVisibility
+                        item={item}
+                        settings={data.settings}
+                        onWatchListVisibilityClick={onWatchListVisibilityClick}
+                      />
+                      <StockQuantity compact item={item} settings={data.settings} />
+                    </div>
+                    <div className="watch-card-actions">
+                      <button
+                        className="btn-small watch-card-action-button"
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onToggleHold(item.id);
+                        }}
+                      >
+                        <PauseIcon />
+                        {item.reorderHold ? "Unhold" : "Hold"}
+                      </button>
+                      <button
+                        className="btn-small watch-card-action-button watch-card-action-button-ordered"
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onToggleOrdered(item.id);
+                        }}
+                      >
+                        <OrderCheckIcon />
+                        {item.orderPlaced ? "Ordered" : "Mark Ordered"}
+                      </button>
+                    </div>
+                  </div>
+                  <div className="watch-card-body">
+                    <h3>{item.name}</h3>
+                    <p>{item.partNumber || "No part number"}</p>
+                    {viewMode === "ordered" && (
+                      <div className="watch-card-order-details">
+                        <span>Vendor: {getVendorName(data, item.vendorId)}</span>
+                        <span>On hand: {formatStockQuantity(item)}</span>
+                        <span className={`watch-requisition-status ${requisitionRecord ? "watch-requisition-made" : "watch-requisition-missing"}`}>
+                          {requisitionRecord ? "Requisition Made" : "No Requisition Yet"}
+                        </span>
+                        {requisitionRecord && (
+                          <button
+                            className="btn-small watch-card-view-requisition"
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setSelectedRequisitionRecord(requisitionRecord);
+                            }}
+                          >
+                            View Requisition
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
                 </div>
-                <div className="watch-card-body">
-                  <h3>{item.name}</h3>
-                  <p>{item.partNumber || "No part number"}</p>
-                </div>
-              </div>
-            );
-          })}
-          {reorderItems.length === 0 && (
-            <div className="mini-card watch-empty-card">
-              <h3 className="text-base font-bold text-white">No reorder alerts</h3>
-              <p className="mt-1 text-sm text-slate-400">No items are out of stock or inside the low-alert range.</p>
-            </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
+      {selectedRequisitionRecord && (
+        <RequisitionMadeDetailDialog record={selectedRequisitionRecord} onClose={() => setSelectedRequisitionRecord(null)} />
+      )}
+    </section>
+  );
+}
+
+function formatRequisitionType(type: RequisitionMadeRecord["requisitionType"]) {
+  return type === "over100" ? "Over $100" : "Under $100";
+}
+
+function getRequisitionRecordTotal(record: RequisitionMadeRecord) {
+  return record.itemSnapshots.reduce((total, snapshot) => total + snapshot.totalCost, 0);
+}
+
+function escapeReportHtml(value: unknown) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function getPrintableReportDocument(title: string, bodyHtml: string) {
+  return `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>${escapeReportHtml(title)}</title>
+    <style>
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: #ffffff;
+        color: #111827;
+        font-family: Arial, Helvetica, sans-serif;
+        font-size: 11px;
+      }
+      .report {
+        padding: 0.35in;
+      }
+      .report-header {
+        border-bottom: 3px solid #0891b2;
+        margin-bottom: 0.18in;
+        padding-bottom: 0.14in;
+      }
+      .report-kicker {
+        color: #0e7490;
+        font-size: 10px;
+        font-weight: 900;
+        letter-spacing: 0;
+        margin: 0 0 4px;
+        text-transform: uppercase;
+      }
+      h1 {
+        color: #0f172a;
+        font-size: 20px;
+        line-height: 1.2;
+        margin: 0;
+      }
+      .report-meta {
+        display: grid;
+        gap: 5px;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        margin: 0.16in 0;
+      }
+      .report-meta div {
+        border: 1px solid #cbd5e1;
+        border-left: 4px solid #0891b2;
+        padding: 7px;
+      }
+      .report-meta span {
+        color: #475569;
+        display: block;
+        font-size: 9px;
+        font-weight: 900;
+        text-transform: uppercase;
+      }
+      .report-meta strong {
+        color: #0f172a;
+        display: block;
+        margin-top: 2px;
+        overflow-wrap: anywhere;
+      }
+      table {
+        border-collapse: collapse;
+        table-layout: fixed;
+        width: 100%;
+      }
+      .report-wide-table th,
+      .report-wide-table td {
+        font-size: 8px;
+        padding: 4px;
+      }
+      th {
+        background: #0f172a;
+        color: #e0f2fe;
+        font-size: 9px;
+        text-align: left;
+        text-transform: uppercase;
+      }
+      th, td {
+        border: 1px solid #cbd5e1;
+        padding: 6px;
+        vertical-align: top;
+        word-break: break-word;
+      }
+      tr:nth-child(even) td {
+        background: #f8fafc;
+      }
+      .text-right {
+        text-align: right;
+      }
+      @media print {
+        @page { margin: 0.25in; }
+        body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+        .report { padding: 0.25in; }
+        table { page-break-inside: auto; }
+        thead { display: table-header-group; }
+        tr { break-inside: avoid; }
+        th, td {
+          font-size: 9px;
+          overflow-wrap: anywhere;
+          word-break: normal;
+        }
+      }
+    </style>
+  </head>
+  <body>${bodyHtml}</body>
+</html>`;
+}
+
+function openPrintableReport(title: string, bodyHtml: string) {
+  const frame = document.createElement("iframe");
+
+  frame.setAttribute("aria-hidden", "true");
+  frame.style.position = "fixed";
+  frame.style.right = "0";
+  frame.style.bottom = "0";
+  frame.style.width = "0";
+  frame.style.height = "0";
+  frame.style.border = "0";
+  frame.style.opacity = "0";
+  frame.style.pointerEvents = "none";
+
+  document.body.appendChild(frame);
+
+  const cleanup = () => {
+    window.setTimeout(() => frame.remove(), 500);
+  };
+
+  try {
+    const printDocument = frame.contentDocument ?? frame.contentWindow?.document;
+    const printWindow = frame.contentWindow;
+
+    if (!printDocument || !printWindow) {
+      throw new Error("Could not generate print file.");
+    }
+
+    printDocument.open();
+    printDocument.write(getPrintableReportDocument(title, bodyHtml));
+    printDocument.close();
+
+    printWindow.addEventListener("afterprint", cleanup, { once: true });
+    printWindow.focus();
+    printWindow.print();
+    window.setTimeout(() => frame.remove(), 30000);
+  } catch (error) {
+    frame.remove();
+
+    if (error instanceof Error) {
+      throw error;
+    }
+
+    throw new Error("Could not generate print file.");
+  }
+}
+
+function printRequisitionMadeRecord(record: RequisitionMadeRecord) {
+  const total = getRequisitionRecordTotal(record);
+  const rows = record.itemSnapshots
+    .map(
+      (snapshot) => `<tr>
+        <td>${escapeReportHtml(snapshot.itemName)}</td>
+        <td>${escapeReportHtml(snapshot.partNumber || "-")}</td>
+        <td class="text-right">${escapeReportHtml(formatNumber(snapshot.quantityRequested))}</td>
+        <td class="text-right">${escapeReportHtml(formatCurrency(snapshot.unitCost))}</td>
+        <td class="text-right">${escapeReportHtml(formatCurrency(snapshot.totalCost))}</td>
+      </tr>`
+    )
+    .join("");
+
+  openPrintableReport(
+    `Maintenance Inventory Tracker - Requisition ${record.vendorName}`,
+    `<main class="report">
+      <header class="report-header">
+        <p class="report-kicker">Maintenance Inventory Tracker</p>
+        <h1>Requisition Made - ${escapeReportHtml(record.vendorName)}</h1>
+      </header>
+      <section class="report-meta">
+        <div><span>Status</span><strong>${escapeReportHtml(record.status)}</strong></div>
+        <div><span>Form Type</span><strong>${escapeReportHtml(formatRequisitionType(record.requisitionType))}</strong></div>
+        <div><span>PO Number</span><strong>${escapeReportHtml(record.poNo || "-")}</strong></div>
+        <div><span>Total Cost</span><strong>${escapeReportHtml(formatCurrency(total))}</strong></div>
+        <div><span>Created By</span><strong>${escapeReportHtml(record.createdBy || record.requisitionedBy || "-")}</strong></div>
+        <div><span>PDF Generated</span><strong>${escapeReportHtml(formatDateTime(record.pdfGeneratedAt))}</strong></div>
+        <div><span>Passed Date</span><strong>${escapeReportHtml(formatDateTime(record.passedAt))}</strong></div>
+        <div><span>Line Items</span><strong>${escapeReportHtml(formatNumber(record.itemSnapshots.length))}</strong></div>
+      </section>
+      <table>
+        <thead>
+          <tr>
+            <th>Item</th>
+            <th>Part Number</th>
+            <th>Qty Requested</th>
+            <th>Unit Cost</th>
+            <th>Total Cost</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </main>`
+  );
+}
+
+function RequisitionMadeDetailDialog({
+  onClose,
+  record
+}: {
+  onClose: () => void;
+  record: RequisitionMadeRecord;
+}) {
+  const total = getRequisitionRecordTotal(record);
+  const [printStatus, setPrintStatus] = useState("");
+  const [printStatusType, setPrintStatusType] = useState<"success" | "error">("success");
+
+  function handlePrint() {
+    try {
+      printRequisitionMadeRecord(record);
+      setPrintStatus("Print view started.");
+      setPrintStatusType("success");
+    } catch {
+      setPrintStatus("Could not generate print file.");
+      setPrintStatusType("error");
+    }
+  }
+
+  return (
+    <div className="review-modal-backdrop" role="presentation">
+      <section className="review-modal requisition-detail-modal" role="dialog" aria-modal="true" aria-labelledby="requisition-detail-title">
+        <div>
+          <p className="eyebrow">Requisition record</p>
+          <h3 id="requisition-detail-title">{record.vendorName}</h3>
+        </div>
+        <div className="requisition-detail-summary">
+          <div>
+            <span>Status</span>
+            <strong>{record.status}</strong>
+          </div>
+          <div>
+            <span>Form type</span>
+            <strong>{formatRequisitionType(record.requisitionType)}</strong>
+          </div>
+          <div>
+            <span>Total cost</span>
+            <strong>{formatCurrency(total)}</strong>
+          </div>
+          <div>
+            <span>PO number</span>
+            <strong>{record.poNo || "-"}</strong>
+          </div>
+          <div>
+            <span>Created by</span>
+            <strong>{record.createdBy || record.requisitionedBy || "-"}</strong>
+          </div>
+          <div>
+            <span>PDF generated</span>
+            <strong>{formatDateTime(record.pdfGeneratedAt)}</strong>
+          </div>
+          <div>
+            <span>Passed date</span>
+            <strong>{formatDateTime(record.passedAt)}</strong>
+          </div>
+          <div>
+            <span>Items</span>
+            <strong>{formatNumber(record.itemSnapshots.length)}</strong>
+          </div>
+        </div>
+        <div className="table-wrap requisition-detail-table">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Item</th>
+                <th>Part Number</th>
+                <th>Qty</th>
+                <th>Unit Cost</th>
+                <th>Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              {record.itemSnapshots.map((snapshot) => (
+                <tr key={`${record.id}-${snapshot.itemId}`}>
+                  <td>{snapshot.itemName}</td>
+                  <td>{snapshot.partNumber || "-"}</td>
+                  <td>{formatNumber(snapshot.quantityRequested)}</td>
+                  <td>{formatCurrency(snapshot.unitCost)}</td>
+                  <td>{formatCurrency(snapshot.totalCost)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div className="review-modal-actions">
+          <button className="btn-muted" type="button" onClick={onClose}>
+            Close
+          </button>
+          <button className="btn-primary" type="button" onClick={handlePrint}>
+            Print Record
+          </button>
+          {printStatus && (
+            <span className={`requisition-status-message requisition-status-${printStatusType}`}>
+              {printStatus}
+            </span>
           )}
         </div>
       </section>
-    </section>
+    </div>
   );
 }
 
@@ -4330,10 +5995,12 @@ function VendorAiPurposeDialog({
 function ManualUpdateNoticeDialog({
   onLater,
   onOpenFolder,
+  onUpdate,
   updateCheck
 }: {
   onLater: () => void;
   onOpenFolder: () => void;
+  onUpdate: () => void;
   updateCheck: ManualInstallerCheckResult;
 }) {
   const installer = updateCheck.newerInstaller;
@@ -4360,8 +6027,11 @@ function ManualUpdateNoticeDialog({
           <span>{installer.fileName}</span>
         </div>
         <div className="review-modal-actions">
-          <button className="btn-primary" type="button" onClick={onOpenFolder}>
-            Open Installer Folder
+          <button className="btn-primary" type="button" onClick={onUpdate}>
+            Yes, Update
+          </button>
+          <button className="btn-muted" type="button" onClick={onOpenFolder}>
+            Open Update Folder
           </button>
           <button className="btn-muted" type="button" onClick={onLater}>
             Later
@@ -4369,6 +6039,99 @@ function ManualUpdateNoticeDialog({
         </div>
       </section>
     </div>
+  );
+}
+
+function InventoryLabelDialog({
+  data,
+  item,
+  onClose,
+  onPrint
+}: {
+  data: AppData;
+  item: InventoryItem;
+  onClose: () => void;
+  onPrint: () => void;
+}) {
+  const [labelSize, setLabelSize] = useState<LabelSizeKey>("small");
+  const qrValue = getInventoryItemQrValue(item);
+
+  return (
+    <div className="label-modal-backdrop" role="presentation">
+      <section className="label-modal" role="dialog" aria-modal="true" aria-labelledby="inventory-label-title">
+        <div className="label-modal-header">
+          <div>
+            <p className="eyebrow">Printable bin label</p>
+            <h3 id="inventory-label-title">Inventory Label</h3>
+          </div>
+          <button className="settings-close" type="button" aria-label="Close label preview" onClick={onClose}>
+            X
+          </button>
+        </div>
+        <label className="field-label">
+          Label size
+          <select className="input" value={labelSize} onChange={(event) => setLabelSize(event.target.value as LabelSizeKey)}>
+            {labelSizeOptions.map((option) => (
+              <option key={option.id} value={option.id}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+          <span className="field-helper">{labelSizeOptions.find((option) => option.id === labelSize)?.description}</span>
+        </label>
+        <div className="label-preview-shell">
+          <InventoryPrintableLabel data={data} item={item} labelSize={labelSize} qrValue={qrValue} />
+        </div>
+        <div className="review-modal-actions label-modal-actions">
+          <button className="btn-primary" type="button" onClick={onPrint}>
+            Print Label
+          </button>
+          <button className="btn-muted" type="button" onClick={onClose}>
+            Close
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function InventoryPrintableLabel({
+  data,
+  item,
+  labelSize,
+  qrValue
+}: {
+  data: AppData;
+  item: InventoryItem;
+  labelSize: LabelSizeKey;
+  qrValue: string;
+}) {
+  const locationName = getLocationName(data, item.locationId);
+  const vendorName = getVendorName(data, item.vendorId);
+  const partNumber = item.partNumber || item.name || "No part number";
+  const showVendor = item.vendorId && vendorName !== "Unassigned";
+
+  return (
+    <article className={`inventory-label-print-area inventory-label-size-${labelSize}`}>
+      <div className="inventory-label-qr">
+        <QRCodeSVG
+          value={qrValue || partNumber}
+          size={142}
+          level="M"
+          bgColor="#ffffff"
+          fgColor="#000000"
+          marginSize={3}
+          title="Inventory item QR code"
+        />
+      </div>
+      <div className="inventory-label-copy">
+        <strong className="inventory-label-part">{partNumber}</strong>
+        <span className="inventory-label-name">{item.name || "Unnamed item"}</span>
+        <span>Location: {locationName}</span>
+        <span>Qty: {formatStockQuantity(item)}</span>
+        {showVendor && <span>Vendor: {vendorName}</span>}
+      </div>
+    </article>
   );
 }
 
@@ -4579,34 +6342,459 @@ function CsvImportNameList({ names, title }: { names: string[]; title: string })
 }
 
 function InventoryPage({
+  columnFilters,
   data,
   filteredItems,
-  inventorySearch,
+  onClearColumnFilters,
+  onColumnFilterChange,
   onAddItem,
   onDelete,
   onEdit,
   onExportCsv,
   onExportExcelCsv,
   onImportCsv,
-  onSearch,
+  onItemLinkOpenError,
+  onCreateRequisition,
+  onPrintLabel,
+  onScanLookupWarning,
   onStockAction,
   onStatusFilter,
+  onWatchListVisibilityClick,
   statusFilter
 }: {
+  columnFilters: InventoryColumnFilters;
   data: AppData;
   filteredItems: InventoryItem[];
-  inventorySearch: string;
+  onClearColumnFilters: () => void;
+  onColumnFilterChange: (key: InventoryColumnFilterKey, value: string) => void;
   onAddItem: () => void;
   onDelete: (itemId: string) => void;
   onEdit: (item: InventoryItem) => void;
   onExportCsv: () => void;
   onExportExcelCsv: () => void;
   onImportCsv: (file: File) => void;
-  onSearch: (value: string) => void;
+  onItemLinkOpenError: () => void;
+  onCreateRequisition: (itemIds: string[]) => void;
+  onPrintLabel: (item: InventoryItem) => void;
+  onScanLookupWarning: (message: string) => void;
   onStockAction: (itemId: string, actionType?: StockActionType | "") => void;
   onStatusFilter: (status: "All" | InventoryStatus) => void;
+  onWatchListVisibilityClick: (itemId: string) => void;
   statusFilter: "All" | InventoryStatus;
 }) {
+  const [lookupScanValue, setLookupScanValue] = useState("");
+  const [lookupMatches, setLookupMatches] = useState<InventoryItem[]>([]);
+  const [isLookupExpanded, setIsLookupExpanded] = useState(false);
+  const [activeColumnFilter, setActiveColumnFilter] = useState<InventoryColumnFilterKey | null>(null);
+  const [selectedRequisitionItemIds, setSelectedRequisitionItemIds] = useState<string[]>([]);
+  const isCompactInventoryLayout = useMediaQuery(INVENTORY_COMPACT_LAYOUT_QUERY);
+  const [inventoryPage, setInventoryPage] = useState(1);
+  const [inventoryPageSize, setInventoryPageSize] = useState(DEFAULT_INVENTORY_PAGE_SIZE);
+  const [isAutoPaging, setIsAutoPaging] = useState(false);
+  const [autoPagingTargetPage, setAutoPagingTargetPage] = useState<number | null>(null);
+  const [autoPagingDirection, setAutoPagingDirection] = useState<"previous" | "next" | null>(null);
+  const inventoryScrollRef = useRef<HTMLDivElement | null>(null);
+  const inventoryTopSentinelRef = useRef<HTMLDivElement | null>(null);
+  const inventoryBottomSentinelRef = useRef<HTMLDivElement | null>(null);
+  const inventoryAutoPagingTimeoutRef = useRef<number | null>(null);
+  const inventoryScrollResetFrameRef = useRef<number | null>(null);
+  const inventoryScrollResetTimeoutRef = useRef<number | null>(null);
+  const columnFilterPopoverRef = useRef<HTMLDivElement | null>(null);
+  const lookupInputRef = useRef<HTMLInputElement | null>(null);
+  const isAutoPagingRef = useRef(false);
+  const hasUserScrolledInventoryRef = useRef(false);
+  const shouldResetInventoryScrollRef = useRef(false);
+  const inventoryScrollResetPositionRef = useRef<"bottom" | "top">("top");
+  const totalInventoryItems = filteredItems.length;
+  const totalInventoryPages = Math.max(1, Math.ceil(totalInventoryItems / inventoryPageSize));
+  const safeInventoryPage = Math.min(inventoryPage, totalInventoryPages);
+  const safeInventoryPageRef = useRef(safeInventoryPage);
+  const totalInventoryPagesRef = useRef(totalInventoryPages);
+  const pageStartIndex = (safeInventoryPage - 1) * inventoryPageSize;
+  const paginatedItems = useMemo(
+    () => filteredItems.slice(pageStartIndex, pageStartIndex + inventoryPageSize),
+    [filteredItems, inventoryPageSize, pageStartIndex]
+  );
+  const pageStartNumber = totalInventoryItems === 0 ? 0 : pageStartIndex + 1;
+  const pageEndNumber = totalInventoryItems === 0 ? 0 : pageStartIndex + paginatedItems.length;
+  const locationNameById = useMemo(
+    () => new Map(data.locations.map((location) => [location.id, location.name])),
+    [data.locations]
+  );
+  const vendorNameById = useMemo(() => new Map(data.vendors.map((vendor) => [vendor.id, vendor.name])), [data.vendors]);
+  const getLocationLabel = (locationId: string) => locationNameById.get(locationId) || "Unassigned";
+  const getVendorLabel = (vendorId: string) => vendorNameById.get(vendorId) || "Unassigned";
+  const hasActiveColumnFilters = hasActiveInventoryColumnFilters(columnFilters);
+  const selectedRequisitionItemIdSet = useMemo(() => new Set(selectedRequisitionItemIds), [selectedRequisitionItemIds]);
+  safeInventoryPageRef.current = safeInventoryPage;
+  totalInventoryPagesRef.current = totalInventoryPages;
+
+  function scrollInventoryListToPosition(position: "bottom" | "top") {
+    const scrollContainer = inventoryScrollRef.current;
+
+    if (!scrollContainer) {
+      return;
+    }
+
+    const top =
+      position === "bottom" ? Math.max(0, scrollContainer.scrollHeight - scrollContainer.clientHeight - 96) : 0;
+
+    scrollContainer.scrollTo({ top, left: 0 });
+  }
+
+  function cancelInventoryScrollReset() {
+    if (inventoryScrollResetFrameRef.current !== null) {
+      window.cancelAnimationFrame(inventoryScrollResetFrameRef.current);
+      inventoryScrollResetFrameRef.current = null;
+    }
+
+    if (inventoryScrollResetTimeoutRef.current !== null) {
+      window.clearTimeout(inventoryScrollResetTimeoutRef.current);
+      inventoryScrollResetTimeoutRef.current = null;
+    }
+  }
+
+  function scheduleInventoryScrollReset() {
+    cancelInventoryScrollReset();
+    inventoryScrollResetFrameRef.current = window.requestAnimationFrame(() => {
+      const resetPosition = inventoryScrollResetPositionRef.current;
+      inventoryScrollResetFrameRef.current = null;
+      scrollInventoryListToPosition(resetPosition);
+
+      inventoryScrollResetFrameRef.current = window.requestAnimationFrame(() => {
+        inventoryScrollResetFrameRef.current = null;
+        scrollInventoryListToPosition(resetPosition);
+      });
+
+      inventoryScrollResetTimeoutRef.current = window.setTimeout(() => {
+        inventoryScrollResetTimeoutRef.current = null;
+        scrollInventoryListToPosition(resetPosition);
+      }, 80);
+    });
+  }
+
+  function requestInventoryScrollReset(position: "bottom" | "top" = "top") {
+    hasUserScrolledInventoryRef.current = false;
+    inventoryScrollResetPositionRef.current = position;
+    shouldResetInventoryScrollRef.current = true;
+  }
+
+  function finishInventoryAutoPaging() {
+    if (!isAutoPagingRef.current) {
+      return;
+    }
+
+    inventoryAutoPagingTimeoutRef.current = window.setTimeout(() => {
+      inventoryAutoPagingTimeoutRef.current = null;
+      isAutoPagingRef.current = false;
+      setIsAutoPaging(false);
+      setAutoPagingTargetPage(null);
+      setAutoPagingDirection(null);
+    }, 140);
+  }
+
+  function clearInventoryAutoPaging() {
+    if (inventoryAutoPagingTimeoutRef.current !== null) {
+      window.clearTimeout(inventoryAutoPagingTimeoutRef.current);
+      inventoryAutoPagingTimeoutRef.current = null;
+    }
+
+    isAutoPagingRef.current = false;
+    setIsAutoPaging(false);
+    setAutoPagingTargetPage(null);
+    setAutoPagingDirection(null);
+  }
+
+  function resetInventoryScrollTracking() {
+    requestInventoryScrollReset();
+    scheduleInventoryScrollReset();
+  }
+
+  function handleInventoryScroll() {
+    if ((inventoryScrollRef.current?.scrollTop ?? 0) > 8) {
+      hasUserScrolledInventoryRef.current = true;
+    }
+  }
+
+  function goToPreviousInventoryPage() {
+    clearInventoryAutoPaging();
+    requestInventoryScrollReset();
+    setInventoryPage((current) => Math.max(1, current - 1));
+  }
+
+  function goToNextInventoryPage() {
+    clearInventoryAutoPaging();
+    requestInventoryScrollReset();
+    setInventoryPage((current) => Math.min(totalInventoryPagesRef.current, current + 1));
+  }
+
+  function startInventoryAutoPaging(direction: "previous" | "next") {
+    const currentPage = safeInventoryPageRef.current;
+    const totalPages = totalInventoryPagesRef.current;
+    const targetPage = direction === "next" ? currentPage + 1 : currentPage - 1;
+
+    if (
+      isAutoPagingRef.current ||
+      (direction === "next" && currentPage >= totalPages) ||
+      (direction === "previous" && currentPage <= 1)
+    ) {
+      return;
+    }
+
+    isAutoPagingRef.current = true;
+    setIsAutoPaging(true);
+    setAutoPagingDirection(direction);
+    setAutoPagingTargetPage(targetPage);
+    inventoryAutoPagingTimeoutRef.current = window.setTimeout(() => {
+      inventoryAutoPagingTimeoutRef.current = null;
+      requestInventoryScrollReset(direction === "previous" ? "bottom" : "top");
+      setInventoryPage(() => targetPage);
+    }, 320);
+  }
+
+  useEffect(() => {
+    clearInventoryAutoPaging();
+    resetInventoryScrollTracking();
+    setInventoryPage(1);
+  }, [inventoryPageSize, columnFilters, statusFilter]);
+
+  useEffect(() => {
+    if (!activeColumnFilter) {
+      return;
+    }
+
+    function closeFilterOnClickAway(event: MouseEvent) {
+      const target = event.target;
+
+      if (target instanceof Node && columnFilterPopoverRef.current?.contains(target)) {
+        return;
+      }
+
+      setActiveColumnFilter(null);
+    }
+
+    document.addEventListener("mousedown", closeFilterOnClickAway);
+
+    return () => document.removeEventListener("mousedown", closeFilterOnClickAway);
+  }, [activeColumnFilter]);
+
+  useEffect(() => {
+    if (isLookupExpanded) {
+      lookupInputRef.current?.focus();
+    }
+  }, [isLookupExpanded]);
+
+  useEffect(() => {
+    setInventoryPage((current) => Math.min(current, totalInventoryPages));
+  }, [totalInventoryPages]);
+
+  useEffect(() => {
+    if (!shouldResetInventoryScrollRef.current) {
+      return;
+    }
+
+    shouldResetInventoryScrollRef.current = false;
+    scheduleInventoryScrollReset();
+    finishInventoryAutoPaging();
+  }, [inventoryPageSize, pageStartIndex, safeInventoryPage]);
+
+  useEffect(() => {
+    const inventoryItemIds = new Set(data.items.map((item) => item.id));
+    setSelectedRequisitionItemIds((current) => current.filter((itemId) => inventoryItemIds.has(itemId)));
+  }, [data.items]);
+
+  useEffect(() => {
+    return () => {
+      if (inventoryAutoPagingTimeoutRef.current !== null) {
+        window.clearTimeout(inventoryAutoPagingTimeoutRef.current);
+      }
+      cancelInventoryScrollReset();
+    };
+  }, []);
+
+  useEffect(() => {
+    const scrollContainer = inventoryScrollRef.current;
+    const bottomSentinel = inventoryBottomSentinelRef.current;
+    const topSentinel = inventoryTopSentinelRef.current;
+
+    if (!scrollContainer || !bottomSentinel || !topSentinel || totalInventoryItems === 0) {
+      return;
+    }
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const currentPage = safeInventoryPageRef.current;
+
+        entries.forEach((entry) => {
+          if (!entry.isIntersecting || !hasUserScrolledInventoryRef.current || isAutoPagingRef.current) {
+            return;
+          }
+
+          if (entry.target === bottomSentinel) {
+            startInventoryAutoPaging("next");
+          }
+
+          if (entry.target === topSentinel && currentPage > 1) {
+            startInventoryAutoPaging("previous");
+          }
+        });
+      },
+      {
+        root: scrollContainer,
+        rootMargin: "56px 0px 56px 0px",
+        threshold: 0.01
+      }
+    );
+
+    observer.observe(topSentinel);
+    observer.observe(bottomSentinel);
+
+    return () => observer.disconnect();
+  }, [isCompactInventoryLayout, totalInventoryItems, inventoryPageSize, columnFilters, statusFilter]);
+
+  function handleInventoryPageSizeChange(event: React.ChangeEvent<HTMLSelectElement>) {
+    const nextPageSize = Number(event.target.value);
+
+    setInventoryPageSize(
+      INVENTORY_PAGE_SIZE_OPTIONS.some((option) => option === nextPageSize)
+        ? nextPageSize
+        : DEFAULT_INVENTORY_PAGE_SIZE
+    );
+  }
+
+  function handleLookupScan() {
+    const scanValue = cleanScanValue(lookupScanValue);
+
+    if (!scanValue) {
+      return;
+    }
+
+    const matches = findItemsByScannedValue(data.items, scanValue);
+
+    if (matches.length === 1) {
+      setLookupMatches([]);
+      onEdit(matches[0]);
+      return;
+    }
+
+    if (matches.length > 1) {
+      setLookupMatches(matches);
+      return;
+    }
+
+    setLookupMatches([]);
+    onScanLookupWarning("No inventory item found for this QR code.");
+  }
+
+  function handleLookupScanKeyDown(event: React.KeyboardEvent<HTMLInputElement>) {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      handleLookupScan();
+    }
+  }
+
+  function updateColumnFilter(key: InventoryColumnFilterKey, value: string) {
+    onColumnFilterChange(key, value);
+  }
+
+  function clearColumnFilter(key: InventoryColumnFilterKey) {
+    onColumnFilterChange(key, "");
+  }
+
+  function toggleInventoryRequisitionSelection(itemId: string) {
+    setSelectedRequisitionItemIds((current) =>
+      current.includes(itemId) ? current.filter((selectedId) => selectedId !== itemId) : [...current, itemId]
+    );
+  }
+
+  function createInventoryRequisition() {
+    if (selectedRequisitionItemIds.length === 0) {
+      return;
+    }
+
+    onCreateRequisition(selectedRequisitionItemIds);
+    setSelectedRequisitionItemIds([]);
+  }
+
+  const inventoryHeaders: React.ReactNode[] = [
+    "Req",
+    <InventoryColumnFilterHeader
+      key="location"
+      filterKey="location"
+      isOpen={activeColumnFilter === "location"}
+      label="Location"
+      popoverRef={activeColumnFilter === "location" ? columnFilterPopoverRef : undefined}
+      value={columnFilters.location}
+      onChange={updateColumnFilter}
+      onClear={clearColumnFilter}
+      onClose={() => setActiveColumnFilter(null)}
+      onToggle={setActiveColumnFilter}
+    />,
+    <InventoryColumnFilterHeader
+      key="partNumber"
+      filterKey="partNumber"
+      isOpen={activeColumnFilter === "partNumber"}
+      label="Part Number"
+      popoverRef={activeColumnFilter === "partNumber" ? columnFilterPopoverRef : undefined}
+      value={columnFilters.partNumber}
+      onChange={updateColumnFilter}
+      onClear={clearColumnFilter}
+      onClose={() => setActiveColumnFilter(null)}
+      onToggle={setActiveColumnFilter}
+    />,
+    <InventoryColumnFilterHeader
+      key="category"
+      filterKey="category"
+      isOpen={activeColumnFilter === "category"}
+      label="Category"
+      popoverRef={activeColumnFilter === "category" ? columnFilterPopoverRef : undefined}
+      value={columnFilters.category}
+      onChange={updateColumnFilter}
+      onClear={clearColumnFilter}
+      onClose={() => setActiveColumnFilter(null)}
+      onToggle={setActiveColumnFilter}
+    />,
+    <InventoryColumnFilterHeader
+      key="description"
+      filterKey="description"
+      isOpen={activeColumnFilter === "description"}
+      label="Description"
+      popoverRef={activeColumnFilter === "description" ? columnFilterPopoverRef : undefined}
+      value={columnFilters.description}
+      onChange={updateColumnFilter}
+      onClear={clearColumnFilter}
+      onClose={() => setActiveColumnFilter(null)}
+      onToggle={setActiveColumnFilter}
+    />,
+    "Stock On Hand",
+    "Status",
+    <InventoryColumnFilterHeader
+      key="vendor"
+      filterKey="vendor"
+      isOpen={activeColumnFilter === "vendor"}
+      label="Vendor"
+      popoverRef={activeColumnFilter === "vendor" ? columnFilterPopoverRef : undefined}
+      value={columnFilters.vendor}
+      onChange={updateColumnFilter}
+      onClear={clearColumnFilter}
+      onClose={() => setActiveColumnFilter(null)}
+      onToggle={setActiveColumnFilter}
+    />,
+    "Cost",
+    "Actions"
+  ];
+
+  const inventoryAutoPagingStatus =
+    isAutoPaging && autoPagingTargetPage !== null ? (
+      <div className="inventory-auto-page-status" role="status" aria-live="polite">
+        <span className="inventory-auto-page-dot" aria-hidden="true" />
+        Loading page {formatNumber(autoPagingTargetPage)}...
+      </div>
+    ) : null;
+
+  const inventoryTopPagingSentinel = <div ref={inventoryTopSentinelRef} className="inventory-auto-page-sentinel" aria-hidden="true" />;
+  const inventoryBottomPagingSentinel = <div ref={inventoryBottomSentinelRef} className="inventory-auto-page-sentinel" aria-hidden="true" />;
+
   return (
     <section className="panel inventory-panel">
       <div className="inventory-panel-header">
@@ -4616,6 +6804,7 @@ function InventoryPage({
         </div>
         <div className="inventory-header-actions">
           <button className="inventory-add-button" type="button" onClick={onAddItem}>
+            <span aria-hidden="true">+</span>
             Add Item
           </button>
           <InventoryCsvMenu
@@ -4625,117 +6814,603 @@ function InventoryPage({
           />
         </div>
       </div>
-      <div className="inventory-controls">
-        <input
-          className="input"
-          placeholder="Search item, part number, description, category, location, vendor, or notes"
-          value={inventorySearch}
-          onChange={(event) => onSearch(event.target.value)}
-        />
-        <div className="subtab-bar">
-          {(["All", "In Stock", "Low Stock", "Out of Stock"] as const).map((status) => (
-            <button
-              key={status}
-              className={statusFilter === status ? "subtab-active" : "subtab-button"}
-              type="button"
-              onClick={() => onStatusFilter(status)}
-            >
-              {status}
+      <div className="inventory-command-console">
+        <div className="inventory-command-row">
+          <div className={`scan-lookup-panel ${isLookupExpanded ? "scan-lookup-panel-open" : ""}`}>
+            <div className="scan-lookup-bar">
+              <button
+                className="scan-icon-button"
+                type="button"
+                aria-label={isLookupExpanded ? "QR and barcode search" : "Open QR and barcode search"}
+                aria-expanded={isLookupExpanded}
+                onClick={() => setIsLookupExpanded(true)}
+              >
+                <ScanLookupIcon />
+              </button>
+              {isLookupExpanded && (
+                <div className="scan-lookup-expansion">
+                  <input
+                    ref={lookupInputRef}
+                    className="input scan-lookup-input"
+                    placeholder="Scan or enter code..."
+                    value={lookupScanValue}
+                    onChange={(event) => setLookupScanValue(event.target.value)}
+                    onKeyDown={handleLookupScanKeyDown}
+                  />
+                  <button className="btn-small scan-lookup-button" type="button" aria-label="Search QR or barcode" onClick={handleLookupScan}>
+                    <SearchButtonIcon />
+                    Search
+                  </button>
+                  <button
+                    className="btn-small scan-collapse-button"
+                    type="button"
+                    aria-label="Collapse QR and barcode search"
+                    onClick={() => {
+                      setLookupMatches([]);
+                      setIsLookupExpanded(false);
+                    }}
+                  >
+                    X
+                  </button>
+                </div>
+              )}
+            </div>
+            {isLookupExpanded && lookupMatches.length > 1 && (
+              <div className="scan-match-list">
+                <span>{lookupMatches.length} matching items</span>
+                {lookupMatches.map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => {
+                      setLookupMatches([]);
+                      onEdit(item);
+                    }}
+                  >
+                    <strong>{item.partNumber || item.name}</strong>
+                    <small>{item.name}</small>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+          <div className="subtab-bar inventory-status-tabs">
+            {(["All", "In Stock", "Low Stock", "Out of Stock"] as const).map((status) => (
+              <button
+                key={status}
+                className={statusFilter === status ? "subtab-active" : "subtab-button"}
+                type="button"
+                onClick={() => onStatusFilter(status)}
+              >
+                {status}
+              </button>
+            ))}
+          </div>
+          {hasActiveColumnFilters && (
+            <button className="btn-small inventory-clear-filters-button" type="button" onClick={onClearColumnFilters}>
+              Clear Filters
             </button>
-          ))}
+          )}
+          <div className="inventory-requisition-tray">
+            <span>{formatNumber(selectedRequisitionItemIds.length)} selected</span>
+            <button
+              className="btn-small"
+              type="button"
+              onClick={createInventoryRequisition}
+              disabled={selectedRequisitionItemIds.length === 0}
+            >
+              Create Requisition
+            </button>
+            {selectedRequisitionItemIds.length > 0 && (
+              <button className="btn-small" type="button" onClick={() => setSelectedRequisitionItemIds([])}>
+                Clear
+              </button>
+            )}
+          </div>
+          <InventoryPagination
+            currentPage={safeInventoryPage}
+            onNextPage={goToNextInventoryPage}
+            onPageSizeChange={handleInventoryPageSizeChange}
+            onPreviousPage={goToPreviousInventoryPage}
+            pageEnd={pageEndNumber}
+            pageSize={inventoryPageSize}
+            pageStart={pageStartNumber}
+            totalItems={totalInventoryItems}
+            totalPages={totalInventoryPages}
+          />
         </div>
       </div>
-      <div className="inventory-table-desktop">
-        <SimpleTable
-          emptyText="No inventory items found."
-          headers={[
-            "Location",
-            "Part Number",
-            "Category",
-            "Description",
-            "Stock On Hand",
-            "Status",
-            "Vendor",
-            "Cost",
-            "Actions"
-          ]}
-          rows={filteredItems.map((item) => [
-            getLocationName(data, item.locationId),
-            <PartNumberCell key="part-number" item={item} />,
-            item.category || "-",
-            item.description || "-",
-            <StockQuantity
-              key="quantity"
-              item={item}
-              settings={data.settings}
-              compact
-              onClick={() => onStockAction(item.id, "Set Stock On Hand")}
-              title="Edit stock"
-              ariaLabel={`Edit stock for ${item.partNumber || item.name || "item"}`}
-            />,
-            <StatusTag
-              key="status"
-              status={getInventoryStatus(item, data.settings)}
-              onClick={() => onStockAction(item.id)}
-              title="Edit stock"
-              ariaLabel={`Edit stock status for ${item.partNumber || item.name || "item"}`}
-            />,
-            getVendorName(data, item.vendorId),
-            formatCurrency(item.costEach),
-            <InventoryRowActions key="actions" item={item} onDelete={onDelete} onEdit={onEdit} />
-          ])}
-        />
-      </div>
-      <div className="inventory-card-list">
-        {filteredItems.length === 0 && <div className="inventory-empty-card">No inventory items found.</div>}
-        {filteredItems.map((item) => (
-          <InventoryItemCard
-            key={item.id}
-            data={data}
-            item={item}
-            onDelete={onDelete}
-            onEdit={onEdit}
-            onStockAction={onStockAction}
+      {!isCompactInventoryLayout && (
+        <div className="inventory-table-desktop">
+          <SimpleTable
+            emptyText="No inventory items found."
+            leading={
+              <>
+                {inventoryTopPagingSentinel}
+                {autoPagingDirection === "previous" && inventoryAutoPagingStatus}
+              </>
+            }
+            headers={inventoryHeaders}
+            footer={
+              <>
+                {autoPagingDirection !== "previous" && inventoryAutoPagingStatus}
+                {inventoryBottomPagingSentinel}
+              </>
+            }
+            onScroll={handleInventoryScroll}
+            rowKeys={paginatedItems.map((item) => item.id)}
+            rows={paginatedItems.map((item) => [
+              <label key="req-select" className="inventory-requisition-select">
+                <input
+                  type="checkbox"
+                  checked={selectedRequisitionItemIdSet.has(item.id)}
+                  aria-label={`Select ${item.partNumber || item.name} for requisition`}
+                  onChange={() => toggleInventoryRequisitionSelection(item.id)}
+                />
+              </label>,
+              getLocationLabel(item.locationId),
+              <PartNumberCell key="part-number" item={item} onOpenError={onItemLinkOpenError} />,
+              item.category || "-",
+              item.description || "-",
+              <StockQuantity
+                key="quantity"
+                item={item}
+                settings={data.settings}
+                compact
+                onClick={() => onStockAction(item.id)}
+                title="Edit stock"
+                ariaLabel={`Edit stock for ${item.partNumber || item.name || "item"}`}
+              />,
+              <StatusWithWatchVisibility
+                key="status"
+                item={item}
+                settings={data.settings}
+                onClick={() => onStockAction(item.id)}
+                onWatchListVisibilityClick={onWatchListVisibilityClick}
+                title="Edit stock"
+                ariaLabel={`Edit stock status for ${item.partNumber || item.name || "item"}`}
+              />,
+              getVendorLabel(item.vendorId),
+              formatCurrency(item.costEach),
+              <InventoryRowActions
+                key="actions"
+                isSelectedForRequisition={selectedRequisitionItemIdSet.has(item.id)}
+                item={item}
+                onDelete={onDelete}
+                onEdit={onEdit}
+                onPrintLabel={onPrintLabel}
+                onToggleRequisition={toggleInventoryRequisitionSelection}
+              />
+            ])}
+            scrollRef={inventoryScrollRef}
           />
-        ))}
-      </div>
+        </div>
+      )}
+      {isCompactInventoryLayout && (
+        <div className="inventory-card-list" ref={inventoryScrollRef} onScroll={handleInventoryScroll}>
+          {inventoryTopPagingSentinel}
+          {autoPagingDirection === "previous" && inventoryAutoPagingStatus}
+          {totalInventoryItems === 0 && <div className="inventory-empty-card">No inventory items found.</div>}
+          {paginatedItems.map((item) => (
+            <InventoryItemCard
+              key={item.id}
+              data={data}
+              item={item}
+              onDelete={onDelete}
+              onEdit={onEdit}
+              onItemLinkOpenError={onItemLinkOpenError}
+              onPrintLabel={onPrintLabel}
+              onToggleRequisition={toggleInventoryRequisitionSelection}
+              isSelectedForRequisition={selectedRequisitionItemIdSet.has(item.id)}
+              onStockAction={onStockAction}
+              onWatchListVisibilityClick={onWatchListVisibilityClick}
+            />
+          ))}
+          {autoPagingDirection !== "previous" && inventoryAutoPagingStatus}
+          {inventoryBottomPagingSentinel}
+        </div>
+      )}
     </section>
   );
 }
 
+function InventoryColumnFilterHeader({
+  filterKey,
+  isOpen,
+  label,
+  onChange,
+  onClear,
+  onClose,
+  onToggle,
+  popoverRef,
+  value
+}: {
+  filterKey: InventoryColumnFilterKey;
+  isOpen: boolean;
+  label: string;
+  onChange: (key: InventoryColumnFilterKey, value: string) => void;
+  onClear: (key: InventoryColumnFilterKey) => void;
+  onClose: () => void;
+  onToggle: (key: InventoryColumnFilterKey | null) => void;
+  popoverRef?: React.Ref<HTMLDivElement>;
+  value: string;
+}) {
+  const hasFilter = value.trim().length > 0;
+
+  return (
+    <div className="inventory-column-filter-header" ref={popoverRef}>
+      <button
+        className={`inventory-column-filter-trigger ${hasFilter ? "inventory-column-filter-active" : ""}`}
+        type="button"
+        aria-haspopup="dialog"
+        aria-expanded={isOpen}
+        onClick={() => onToggle(isOpen ? null : filterKey)}
+      >
+        <span>{label}</span>
+        <SearchButtonIcon />
+        {hasFilter && <span className="inventory-column-filter-dot" aria-hidden="true" />}
+      </button>
+      {isOpen && (
+        <div className="inventory-column-filter-popover" role="dialog" aria-label={`${label} filter`}>
+          <label className="inventory-column-filter-input-label">
+            <span className="sr-only">Search {label}</span>
+            <input
+              autoFocus
+              className="input inventory-column-filter-input"
+              placeholder={`Search ${label}...`}
+              value={value}
+              onChange={(event) => onChange(filterKey, event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  onClose();
+                }
+              }}
+            />
+          </label>
+          <div className="inventory-column-filter-actions">
+            <button className="btn-small" type="button" onClick={() => onClear(filterKey)} disabled={!hasFilter}>
+              Clear
+            </button>
+            <button className="btn-small" type="button" onClick={onClose}>
+              Close
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function InventoryPagination({
+  currentPage,
+  onNextPage,
+  onPageSizeChange,
+  onPreviousPage,
+  pageEnd,
+  pageSize,
+  pageSizeOptions = INVENTORY_PAGE_SIZE_OPTIONS,
+  pageStart,
+  totalItems,
+  totalPages
+}: {
+  currentPage: number;
+  onNextPage: () => void;
+  onPageSizeChange: (event: React.ChangeEvent<HTMLSelectElement>) => void;
+  onPreviousPage: () => void;
+  pageEnd: number;
+  pageSize: number;
+  pageSizeOptions?: readonly number[];
+  pageStart: number;
+  totalItems: number;
+  totalPages: number;
+}) {
+  return (
+    <div className="inventory-pagination">
+      <span className="inventory-pagination-summary">
+        {totalItems === 0 ? "No items" : `Showing ${formatNumber(pageStart)}-${formatNumber(pageEnd)} of ${formatNumber(totalItems)}`}
+      </span>
+      <div className="inventory-pagination-controls">
+        <label className="inventory-pagination-select">
+          Rows
+          <select value={pageSize} onChange={onPageSizeChange}>
+            {pageSizeOptions.map((option) => (
+              <option key={option} value={option}>
+                {option}
+              </option>
+            ))}
+          </select>
+        </label>
+        <button className="btn-small inventory-page-button" type="button" onClick={onPreviousPage} disabled={currentPage <= 1}>
+          Previous
+        </button>
+        <strong className="inventory-page-status">
+          Page {formatNumber(currentPage)} of {formatNumber(totalPages)}
+        </strong>
+        <button className="btn-small inventory-page-button" type="button" onClick={onNextPage} disabled={currentPage >= totalPages}>
+          Next
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ScanLookupIcon() {
+  return (
+    <svg viewBox="0 0 24 24" role="img" aria-hidden="true">
+      <path d="M4 7V4h3" />
+      <path d="M17 4h3v3" />
+      <path d="M20 17v3h-3" />
+      <path d="M7 20H4v-3" />
+      <path d="M8 8v8" />
+      <path d="M11 8v8" />
+      <path d="M14 8v8" />
+      <path d="M17 8v8" />
+    </svg>
+  );
+}
+
+function SearchButtonIcon() {
+  return (
+    <svg viewBox="0 0 24 24" role="img" aria-hidden="true">
+      <circle cx="11" cy="11" r="6.5" />
+      <path d="m16 16 4 4" />
+    </svg>
+  );
+}
+
+function PauseIcon() {
+  return (
+    <svg viewBox="0 0 24 24" role="img" aria-hidden="true">
+      <path d="M8 6v12" />
+      <path d="M16 6v12" />
+    </svg>
+  );
+}
+
+function OrderCheckIcon() {
+  return (
+    <svg viewBox="0 0 24 24" role="img" aria-hidden="true">
+      <path d="M4 6h2l2 10h8l3-7H7" />
+      <path d="m9 12 2 2 4-4" />
+      <path d="M10 20h.01" />
+      <path d="M17 20h.01" />
+    </svg>
+  );
+}
+
 function InventoryRowActions({
+  isSelectedForRequisition = false,
   item,
   onDelete,
-  onEdit
+  onEdit,
+  onPrintLabel,
+  onToggleRequisition
 }: {
+  isSelectedForRequisition?: boolean;
   item: InventoryItem;
   onDelete: (itemId: string) => void;
   onEdit: (item: InventoryItem) => void;
+  onPrintLabel: (item: InventoryItem) => void;
+  onToggleRequisition?: (itemId: string) => void;
 }) {
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const [menuPosition, setMenuPosition] = useState({ left: 0, minWidth: 168, top: 0 });
+  const actionMenuIdRef = useRef(`inventory-action-menu-${item.id}`);
+  const menuButtonRef = useRef<HTMLButtonElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+
+  function openActionMenu() {
+    const button = menuButtonRef.current;
+
+    if (!button) {
+      return;
+    }
+
+    const rect = button.getBoundingClientRect();
+    const menuWidth = 190;
+    const menuHeight = onToggleRequisition ? 146 : 104;
+    const left = Math.min(Math.max(8, rect.left), Math.max(8, window.innerWidth - menuWidth - 8));
+    const top =
+      rect.bottom + menuHeight + 12 > window.innerHeight
+        ? Math.max(8, rect.top - menuHeight - 6)
+        : rect.bottom + 6;
+
+    window.dispatchEvent(new CustomEvent("inventory-action-menu-open", { detail: actionMenuIdRef.current }));
+    setMenuPosition({ left, minWidth: Math.max(168, rect.width), top });
+    setIsMenuOpen(true);
+  }
+
+  function closeActionMenu() {
+    setIsMenuOpen(false);
+  }
+
+  function handleActionMenuClick(event: React.MouseEvent<HTMLButtonElement>) {
+    if (isMenuOpen && event.detail === 0) {
+      closeActionMenu();
+      return;
+    }
+
+    if (!isMenuOpen) {
+      openActionMenu();
+    }
+  }
+
+  function handleActionMenuMouseEnter() {
+    if (window.matchMedia("(hover: hover)").matches) {
+      openActionMenu();
+    }
+  }
+
+  function runAction(action: () => void) {
+    closeActionMenu();
+    action();
+  }
+
+  useEffect(() => {
+    function handleOtherMenuOpen(event: Event) {
+      if ((event as CustomEvent<string>).detail !== actionMenuIdRef.current) {
+        closeActionMenu();
+      }
+    }
+
+    window.addEventListener("inventory-action-menu-open", handleOtherMenuOpen);
+
+    return () => window.removeEventListener("inventory-action-menu-open", handleOtherMenuOpen);
+  }, []);
+
+  useEffect(() => {
+    if (!isMenuOpen) {
+      return;
+    }
+
+    function handlePointerDown(event: MouseEvent) {
+      const target = event.target;
+
+      if (
+        target instanceof Node &&
+        (menuRef.current?.contains(target) || menuButtonRef.current?.contains(target))
+      ) {
+        return;
+      }
+
+      closeActionMenu();
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        closeActionMenu();
+      }
+    }
+
+    document.addEventListener("mousedown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("resize", closeActionMenu);
+    window.addEventListener("scroll", closeActionMenu, true);
+
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("resize", closeActionMenu);
+      window.removeEventListener("scroll", closeActionMenu, true);
+    };
+  }, [isMenuOpen]);
+
+  const actionMenu =
+    isMenuOpen &&
+    createPortal(
+      <div
+        ref={menuRef}
+        className="inventory-action-dropdown"
+        role="menu"
+        style={{
+          left: menuPosition.left,
+          minWidth: menuPosition.minWidth,
+          top: menuPosition.top
+        }}
+      >
+        {onToggleRequisition && (
+          <button type="button" role="menuitem" onClick={() => runAction(() => onToggleRequisition(item.id))}>
+            <RequisitionActionIcon />
+            <span>{isSelectedForRequisition ? "Remove from Requisition" : "Add to Requisition"}</span>
+          </button>
+        )}
+        <button type="button" role="menuitem" onClick={() => runAction(() => onEdit(item))}>
+          <EditActionIcon />
+          <span>Edit</span>
+        </button>
+        <button type="button" role="menuitem" onClick={() => runAction(() => onPrintLabel(item))}>
+          <PrintActionIcon />
+          <span>Print Label</span>
+        </button>
+      </div>,
+      document.body
+    );
+
   return (
     <div className="inventory-actions">
-      <button className="btn-small" type="button" onClick={() => onEdit(item)}>
-        Edit
+      <button
+        ref={menuButtonRef}
+        className="btn-small inventory-action-menu-trigger"
+        type="button"
+        aria-haspopup="menu"
+        aria-expanded={isMenuOpen}
+        onClick={handleActionMenuClick}
+        onMouseEnter={handleActionMenuMouseEnter}
+      >
+        <ActionsMenuIcon />
+        <span>Actions</span>
+        <span aria-hidden="true">v</span>
       </button>
-      <button className="btn-danger" type="button" onClick={() => onDelete(item.id)}>
+      {actionMenu}
+      <button className="btn-danger inventory-delete-button" type="button" onClick={() => onDelete(item.id)}>
         Delete
       </button>
     </div>
   );
 }
 
+function ActionsMenuIcon() {
+  return (
+    <svg viewBox="0 0 24 24" role="img" aria-hidden="true">
+      <path d="M4 7h16" />
+      <path d="M4 12h16" />
+      <path d="M4 17h16" />
+    </svg>
+  );
+}
+
+function RequisitionActionIcon() {
+  return (
+    <svg viewBox="0 0 24 24" role="img" aria-hidden="true">
+      <path d="M6 7h12l-1 11H7z" />
+      <path d="M9 7a3 3 0 0 1 6 0" />
+      <path d="M12 10v5" />
+      <path d="M9.5 12.5h5" />
+    </svg>
+  );
+}
+
+function EditActionIcon() {
+  return (
+    <svg viewBox="0 0 24 24" role="img" aria-hidden="true">
+      <path d="M4 20h4l11-11-4-4L4 16z" />
+      <path d="m13 7 4 4" />
+    </svg>
+  );
+}
+
+function PrintActionIcon() {
+  return (
+    <svg viewBox="0 0 24 24" role="img" aria-hidden="true">
+      <path d="M7 8V4h10v4" />
+      <path d="M7 17H5v-6h14v6h-2" />
+      <path d="M7 14h10v6H7z" />
+    </svg>
+  );
+}
+
 function InventoryItemCard({
   data,
+  isSelectedForRequisition,
   item,
   onDelete,
   onEdit,
-  onStockAction
+  onItemLinkOpenError,
+  onPrintLabel,
+  onToggleRequisition,
+  onStockAction,
+  onWatchListVisibilityClick
 }: {
   data: AppData;
+  isSelectedForRequisition: boolean;
   item: InventoryItem;
   onDelete: (itemId: string) => void;
   onEdit: (item: InventoryItem) => void;
+  onItemLinkOpenError: () => void;
+  onPrintLabel: (item: InventoryItem) => void;
+  onToggleRequisition: (itemId: string) => void;
   onStockAction: (itemId: string, actionType?: StockActionType | "") => void;
+  onWatchListVisibilityClick: (itemId: string) => void;
 }) {
   return (
     <article className="inventory-item-card">
@@ -4744,15 +7419,17 @@ function InventoryItemCard({
           <h3>{item.name}</h3>
           <p>{getLocationName(data, item.locationId)}</p>
         </div>
-        <StatusTag
-          status={getInventoryStatus(item, data.settings)}
+        <StatusWithWatchVisibility
+          item={item}
+          settings={data.settings}
           onClick={() => onStockAction(item.id)}
+          onWatchListVisibilityClick={onWatchListVisibilityClick}
           title="Edit stock"
           ariaLabel={`Edit stock status for ${item.partNumber || item.name || "item"}`}
         />
       </div>
       <div className="inventory-item-card-grid">
-        <InventoryCardField label="Part number" value={<PartNumberCell item={item} />} />
+        <InventoryCardField label="Part number" value={<PartNumberCell item={item} onOpenError={onItemLinkOpenError} />} />
         <InventoryCardField
           label="Stock on hand"
           value={
@@ -4760,7 +7437,7 @@ function InventoryItemCard({
               item={item}
               settings={data.settings}
               compact
-              onClick={() => onStockAction(item.id, "Set Stock On Hand")}
+              onClick={() => onStockAction(item.id)}
               title="Edit stock"
               ariaLabel={`Edit stock for ${item.partNumber || item.name || "item"}`}
             />
@@ -4769,7 +7446,14 @@ function InventoryItemCard({
         <InventoryCardField label="Vendor" value={getVendorName(data, item.vendorId)} />
         <InventoryCardField label="Cost" value={formatCurrency(item.costEach)} />
       </div>
-      <InventoryRowActions item={item} onDelete={onDelete} onEdit={onEdit} />
+      <InventoryRowActions
+        isSelectedForRequisition={isSelectedForRequisition}
+        item={item}
+        onDelete={onDelete}
+        onEdit={onEdit}
+        onPrintLabel={onPrintLabel}
+        onToggleRequisition={onToggleRequisition}
+      />
     </article>
   );
 }
@@ -4789,6 +7473,9 @@ type ItemFormProps = {
   form: ItemFormState;
   onCancel: () => void;
   onChange: (form: ItemFormState) => void;
+  onImageRemove: () => void;
+  onImageUpload: (file: File) => Promise<void>;
+  onPrintLabel: () => void;
   onSubmit: (event: FormEvent) => void;
 };
 
@@ -4802,6 +7489,9 @@ function ItemFormDrawer({
   form,
   onCancel,
   onChange,
+  onImageRemove,
+  onImageUpload,
+  onPrintLabel,
   onSubmit
 }: ItemFormProps) {
   useEffect(() => {
@@ -4844,6 +7534,9 @@ function ItemFormDrawer({
           }
           onCancel={onCancel}
           onChange={onChange}
+          onImageRemove={onImageRemove}
+          onImageUpload={onImageUpload}
+          onPrintLabel={onPrintLabel}
           onSubmit={onSubmit}
         />
       </section>
@@ -4868,8 +7561,60 @@ function ItemFormContent({
   headerAction,
   onCancel,
   onChange,
+  onImageRemove,
+  onImageUpload,
+  onPrintLabel,
   onSubmit
 }: ItemFormContentProps) {
+  const imageInputRef = useRef<HTMLInputElement | null>(null);
+  const [scanValue, setScanValue] = useState("");
+  const qrValue = getFormQrCodeValue(form, editingItemId);
+  const imageAltText = `${form.name || form.partNumber || "Inventory item"} photo`;
+  const cleanFormScanValue = cleanScanValue(scanValue);
+  const scanUrlHref = getScanUrlHref(cleanFormScanValue);
+  const scanSuggestedTarget = getScanSuggestedTarget(cleanFormScanValue);
+  const scanSuggestionText =
+    scanSuggestedTarget === "itemUrl"
+      ? "Suggested target: Hyperlink / Part Info URL"
+      : "Suggested target: Part Number";
+
+  function handleImageInputChange(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.currentTarget.files?.[0];
+    event.currentTarget.value = "";
+
+    if (file) {
+      void onImageUpload(file);
+    }
+  }
+
+  function applyScannedValue(target: ScanApplyTarget) {
+    if (!cleanFormScanValue) {
+      return;
+    }
+
+    if (target === "itemUrl") {
+      if (!scanUrlHref) {
+        return;
+      }
+
+      onChange({ ...form, itemUrl: scanUrlHref });
+      return;
+    }
+
+    onChange({ ...form, [target]: cleanFormScanValue });
+  }
+
+  function applySuggestedScannedValue() {
+    applyScannedValue(scanSuggestedTarget);
+  }
+
+  function handleFormScanKeyDown(event: React.KeyboardEvent<HTMLInputElement>) {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      applySuggestedScannedValue();
+    }
+  }
+
   return (
     <>
       <div className="item-form-header">
@@ -4897,6 +7642,38 @@ function ItemFormContent({
               onChange={(event) => onChange({ ...form, itemUrl: event.target.value })}
             />
           </label>
+          <div className="scan-apply-panel md:col-span-2 xl:col-span-4">
+            <label className="field-label">
+              Scan Part / QR
+              <input
+                className="input"
+                placeholder="Click here and scan with USB scanner"
+                value={scanValue}
+                onChange={(event) => setScanValue(event.target.value)}
+                onKeyDown={handleFormScanKeyDown}
+              />
+            </label>
+            <div className="scan-apply-actions">
+              <span>{cleanFormScanValue ? scanSuggestionText : "No scan value yet."}</span>
+              <button className="btn-small" type="button" onClick={applySuggestedScannedValue} disabled={!cleanFormScanValue}>
+                Apply Suggested
+              </button>
+              <button className="btn-small" type="button" onClick={() => applyScannedValue("partNumber")} disabled={!cleanFormScanValue}>
+                Apply to Part Number
+              </button>
+              <button
+                className="btn-small"
+                type="button"
+                onClick={() => applyScannedValue("barcodePlaceholder")}
+                disabled={!cleanFormScanValue}
+              >
+                Apply to QR Code Value
+              </button>
+              <button className="btn-small" type="button" onClick={() => applyScannedValue("itemUrl")} disabled={!scanUrlHref}>
+                Apply to URL
+              </button>
+            </div>
+          </div>
           <label className="field-label">
             Category
             <select
@@ -5024,18 +7801,40 @@ function ItemFormContent({
           </label>
           <div className="media-placeholder md:col-span-1 xl:col-span-2">
             <span>Image / Photo</span>
-            <strong>Placeholder</strong>
-            <input
-              aria-label="Image placeholder note"
-              className="input mt-3"
-              placeholder="Optional image note"
-              value={form.imagePlaceholder}
-              onChange={(event) => onChange({ ...form, imagePlaceholder: event.target.value })}
-            />
+            <div className={`image-upload-preview ${form.imageDataUrl ? "image-upload-preview-filled" : ""}`}>
+              {form.imageDataUrl ? <img src={form.imageDataUrl} alt={imageAltText} /> : <strong>No image selected</strong>}
+            </div>
+            <div className="image-upload-actions">
+              <input
+                ref={imageInputRef}
+                accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp"
+                className="image-file-input"
+                type="file"
+                onChange={handleImageInputChange}
+              />
+              <button className="btn-muted" type="button" onClick={() => imageInputRef.current?.click()}>
+                Choose Image
+              </button>
+              {form.imageDataUrl && (
+                <button className="btn-muted" type="button" onClick={onImageRemove}>
+                  Remove Image
+                </button>
+              )}
+            </div>
+            <label className="field-label mt-3">
+              Image note
+              <input
+                aria-label="Image note"
+                className="input"
+                placeholder="Optional image note"
+                value={form.imagePlaceholder}
+                onChange={(event) => onChange({ ...form, imagePlaceholder: event.target.value })}
+              />
+            </label>
           </div>
           <div className="qr-placeholder md:col-span-1 xl:col-span-2">
             <span>QR label preview</span>
-            <QrPreview value={form.barcodePlaceholder} />
+            <QrPreview value={qrValue} />
             <label className="field-label mt-3">
               QR Code Value
               <input
@@ -5044,12 +7843,39 @@ function ItemFormContent({
                 value={form.barcodePlaceholder}
                 onChange={(event) => onChange({ ...form, barcodePlaceholder: event.target.value })}
               />
+              <span className="field-helper">Leave blank to use part number.</span>
             </label>
           </div>
+          <label className="field-label">
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <input
+                type="checkbox"
+                checked={Boolean(form.orderPlaced)}
+                onChange={(event) => onChange({ ...form, orderPlaced: event.currentTarget.checked })}
+              />
+              <span>Order placed (hide from dashboard)</span>
+            </div>
+          </label>
+          <label className="field-label">
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <input
+                type="checkbox"
+                checked={Boolean(form.reorderHold)}
+                onChange={(event) => onChange({ ...form, reorderHold: event.currentTarget.checked })}
+              />
+              <span>Hold for reorder (show in held list)</span>
+            </div>
+            <span className="field-helper">If checked, this item will be excluded from the normal reorder alerts.</span>
+          </label>
           <div className="item-form-actions">
             <button className="btn-primary" type="submit">
               {editingItemId ? "Update Item" : "Add Item"}
             </button>
+            {editingItemId && (
+              <button className="btn-small" type="button" onClick={onPrintLabel}>
+                Print Label
+              </button>
+            )}
             <button className="btn-muted" type="button" onClick={onCancel}>
               {editingItemId ? "Cancel Edit" : "Cancel Add"}
             </button>
@@ -5065,36 +7891,34 @@ function StockPage({
   onChange,
   onLowStockAlertChange,
   onMinimumStockChange,
-  onSubmit
+  onPrintLabel,
+  onSubmit,
+  onWatchListVisibilityClick
 }: {
   data: AppData;
   form: StockFormState;
   onChange: (form: StockFormState) => void;
   onLowStockAlertChange: (itemId: string, lowStockAlertLevel: number) => void;
   onMinimumStockChange: (itemId: string, minimumStockLevel: number) => void;
+  onPrintLabel: (item: InventoryItem) => void;
   onSubmit: (event: FormEvent) => void;
+  onWatchListVisibilityClick: (itemId: string) => void;
 }) {
   const selectedItem = data.items.find((item) => item.id === form.itemId);
   const selectedStatus = selectedItem ? getInventoryStatus(selectedItem, data.settings) : null;
   const [minimumEdit, setMinimumEdit] = useState<{ value: string; warning: string } | null>(null);
   const [lowAlertEdit, setLowAlertEdit] = useState("");
   const skipLowAlertBlurRef = useRef(false);
-  const isSetStockOnHand = form.actionType === "Set Stock On Hand";
   const quantityText = String(form.quantity).trim();
   const parsedQuantity = quantityText ? wholeNumberValue(form.quantity, Number.NaN) : Number.NaN;
   const hasValidQuantity =
-    selectedItem !== undefined &&
-    form.actionType !== "" &&
-    Number.isFinite(parsedQuantity) &&
-    (form.actionType === "Set Stock On Hand" ? true : parsedQuantity > 0);
-  const previewQuantity =
-    selectedItem && form.actionType && hasValidQuantity
-      ? calculateStockQuantity(selectedItem.quantityOnHand, form.actionType, parsedQuantity)
-      : null;
-  const validPreviewQuantity =
-    previewQuantity !== null && (previewQuantity >= 0 || data.settings.allowNegativeStockOverride) ? previewQuantity : null;
+    selectedItem !== undefined && Number.isFinite(parsedQuantity) && parsedQuantity !== 0;
+  const previewQuantity = selectedItem && hasValidQuantity ? selectedItem.quantityOnHand + parsedQuantity : null;
+  const validPreviewQuantity = previewQuantity !== null && previewQuantity >= 0 ? previewQuantity : null;
   const previewQuantityItem =
     selectedItem && validPreviewQuantity !== null ? { ...selectedItem, quantityOnHand: validPreviewQuantity } : null;
+  const quantityChangeActionLabel =
+    hasValidQuantity && parsedQuantity > 0 ? "Add Stock" : hasValidQuantity && parsedQuantity < 0 ? "Pull Stock" : "Waiting for quantity";
 
   useEffect(() => {
     setMinimumEdit(null);
@@ -5153,10 +7977,13 @@ function StockPage({
     }
   };
 
-  const handleActionTypeChange = (actionType: StockActionType | "") => {
-    const nextQuantity = actionType === "Set Stock On Hand" ? "" : form.quantity === "" ? 1 : form.quantity;
+  const stockFlagStateForItem = (itemId: string) => {
+    const item = data.items.find((candidate) => candidate.id === itemId);
 
-    onChange({ ...form, actionType, quantity: nextQuantity });
+    return {
+      orderPlaced: Boolean(item?.orderPlaced),
+      reorderHold: Boolean(item?.reorderHold)
+    };
   };
 
   return (
@@ -5166,7 +7993,14 @@ function StockPage({
         <form className="grid gap-4" onSubmit={onSubmit}>
           <label className="field-label">
             Select item
-            <select className="input" value={form.itemId} onChange={(event) => onChange({ ...form, itemId: event.target.value })}>
+            <select
+              className="input"
+              value={form.itemId}
+              onChange={(event) => {
+                const itemId = event.target.value;
+                onChange({ ...form, itemId, ...stockFlagStateForItem(itemId) });
+              }}
+            >
               <option value="">Choose item</option>
               {data.items.map((item) => (
                 <option key={item.id} value={item.id}>
@@ -5176,40 +8010,51 @@ function StockPage({
             </select>
           </label>
           <label className="field-label">
-            Action type
-            <select
-              className="input"
-              value={form.actionType}
-              onChange={(event) => handleActionTypeChange(event.target.value as StockActionType | "")}
-            >
-              <option value="">Choose Add or Pull</option>
-              <option value="Stock In">Add Stock</option>
-              <option value="Stock Out">Pull Stock</option>
-              <option value="Set Stock On Hand">Set Stock On Hand</option>
-            </select>
-          </label>
-          <label className="field-label">
-            {getStockQuantityLabel(form.actionType)}
+            Quantity Change
             <input
               className="input"
-              min={isSetStockOnHand ? (data.settings.allowNegativeStockOverride ? undefined : "0") : "1"}
-              placeholder={getStockQuantityPlaceholder(form.actionType)}
+              placeholder="Example: 5 or -2"
               step="1"
               type="number"
               value={form.quantity}
               onChange={(event) =>
                 onChange({
                   ...form,
-                  quantity: normalizeWholeNumberInput(event.target.value, { allowNegative: isSetStockOnHand })
+                  quantity: normalizeWholeNumberInput(event.target.value, { allowNegative: true })
                 })
               }
             />
+            <span className="field-helper">Use positive numbers to add stock. Use negative numbers to pull stock.</span>
           </label>
+          {selectedItem && (
+            <div className="stock-reorder-options">
+              <label className="checkbox-card">
+                <input
+                  type="checkbox"
+                  checked={Boolean(form.orderPlaced)}
+                  onChange={(event) => onChange({ ...form, orderPlaced: event.currentTarget.checked })}
+                />
+                <span>Order placed / hide from Dashboard</span>
+              </label>
+              <label className="checkbox-card">
+                <input
+                  type="checkbox"
+                  checked={Boolean(form.reorderHold)}
+                  onChange={(event) => onChange({ ...form, reorderHold: event.currentTarget.checked })}
+                />
+                <span>Hold for reorder / show in Held list</span>
+              </label>
+            </div>
+          )}
           {selectedItem && (
             <div className="stock-count-preview">
               <div>
                 <span>Current Stock On Hand</span>
                 <strong>{formatStockQuantity(selectedItem)}</strong>
+              </div>
+              <div>
+                <span>Detected Action</span>
+                <strong>{quantityChangeActionLabel}</strong>
               </div>
               {previewQuantityItem && (
                 <div>
@@ -5223,7 +8068,7 @@ function StockPage({
             Reason
             <input
               className="input"
-              placeholder={isSetStockOnHand ? "Physical count adjustment." : ""}
+              placeholder="Repair use, restock, cycle count note..."
               value={form.reason}
               onChange={(event) => onChange({ ...form, reason: event.target.value })}
             />
@@ -5246,7 +8091,7 @@ function StockPage({
             <textarea className="input min-h-24" value={form.notes} onChange={(event) => onChange({ ...form, notes: event.target.value })} />
           </label>
           <button className="btn-primary btn-stock-save" type="submit">
-            {isSetStockOnHand ? "Save Actual Count" : "Save Stock Change"}
+            Save Stock Change
           </button>
         </form>
       </section>
@@ -5267,7 +8112,12 @@ function StockPage({
                 <span className="mt-2 block text-2xl font-black text-white">{formatNumber(selectedItem.minimumStockLevel)}</span>
               </button>
               <StatCard label="Low Alert" tone="amber" value={formatNumber(selectedItem.lowStockAlertLevel)} />
-              <StatusStatCard status={selectedStatus ?? "In Stock"} />
+              <StatusStatCard
+                item={selectedItem}
+                onWatchListVisibilityClick={onWatchListVisibilityClick}
+                settings={data.settings}
+                status={selectedStatus ?? "In Stock"}
+              />
             </div>
             {previewQuantityItem && (
               <div className="stock-preview-card">
@@ -5326,9 +8176,10 @@ function StockPage({
               <span>{getLocationName(data, selectedItem.locationId)}</span>
               <span>{getVendorName(data, selectedItem.vendorId)}</span>
             </div>
-            {!data.settings.allowNegativeStockOverride && (
-              <p className="warning-bar">Stock cannot go below 0 unless override is enabled in Settings.</p>
-            )}
+            <button className="btn-small" type="button" onClick={() => onPrintLabel(selectedItem)}>
+              Print Label
+            </button>
+            <p className="warning-bar">Signed stock changes cannot pull more than the current stock on hand.</p>
           </div>
         ) : (
           <p className="text-sm font-semibold text-slate-400">Choose an item to preview quantity and status.</p>
@@ -5344,6 +8195,7 @@ function LocationsPage({
   isAddOpen,
   onChange,
   onDelete,
+  onOpenItems,
   onSubmit,
   onToggleAdd,
   updateSettings
@@ -5353,14 +8205,37 @@ function LocationsPage({
   isAddOpen: boolean;
   onChange: (form: LocationFormState) => void;
   onDelete: (locationId: string) => void;
+  onOpenItems: (locationId: string) => void;
   onSubmit: (event: FormEvent) => void;
   onToggleAdd: () => void;
   updateSettings: (settings: AppSettings, auditSummary?: string) => void;
 }) {
+  const [locationSearch, setLocationSearch] = useState("");
+  const locationItemCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+
+    data.items.forEach((item) => {
+      counts.set(item.locationId, (counts.get(item.locationId) ?? 0) + 1);
+    });
+
+    return counts;
+  }, [data.items]);
+  const filteredLocations = useMemo(() => {
+    const search = locationSearch.trim().toLowerCase();
+
+    if (!search) {
+      return data.locations;
+    }
+
+    return data.locations.filter((location) =>
+      [location.name, location.description, location.notes].join(" ").toLowerCase().includes(search)
+    );
+  }, [data.locations, locationSearch]);
+
   return (
-    <section className="space-y-5">
-      <section className="collapsible-add-panel">
-        <button className="collapsible-add-trigger" type="button" aria-expanded={isAddOpen} onClick={onToggleAdd}>
+    <section className="space-y-5 entity-directory-page">
+      <section className={`collapsible-add-panel vendor-add-panel location-add-panel${isAddOpen ? " vendor-add-panel-open" : ""}`}>
+        <button className="collapsible-add-trigger vendor-add-trigger location-add-trigger" type="button" aria-expanded={isAddOpen} onClick={onToggleAdd}>
           <span>{isAddOpen ? "-" : "+"}</span>
           Add Location
         </button>
@@ -5388,18 +8263,38 @@ function LocationsPage({
           </form>
         )}
       </section>
-      <section className="panel">
+      <section className="panel entity-directory-panel">
         <SectionHeader kicker="Storage map" title="Locations" />
+        <div className="entity-directory-toolbar">
+          <label className="entity-search-field">
+            <span>Search locations</span>
+            <input
+              className="input"
+              placeholder="Search name, description, or notes"
+              value={locationSearch}
+              onChange={(event) => setLocationSearch(event.target.value)}
+            />
+          </label>
+        </div>
         <SimpleTable
-          emptyText="No locations saved."
+          emptyText={locationSearch.trim() ? "No location found. Add this location if needed." : "No locations saved."}
           headers={["Name", "Description", "Items", "Default", "Notes", "Actions"]}
-          rows={data.locations.map((location) => {
-            const itemCount = data.items.filter((item) => item.locationId === location.id).length;
+          rowKeys={filteredLocations.map((location) => location.id)}
+          rows={filteredLocations.map((location) => {
+            const itemCount = locationItemCounts.get(location.id) ?? 0;
 
             return [
               location.name,
               location.description || "-",
-              formatNumber(itemCount),
+              <button
+                key="items"
+                className="entity-count-button"
+                type="button"
+                onClick={() => onOpenItems(location.id)}
+                title={`Open ${location.name} inventory items`}
+              >
+                {formatNumber(itemCount)}
+              </button>,
               data.settings.defaultLocationId === location.id ? (
                 <StatusTag key="default" status="Default" />
               ) : (
@@ -5440,6 +8335,7 @@ function VendorsPage({
   onEdit,
   onFormAiHelp,
   onInlineAiHelp,
+  onOpenItems,
   onSubmit,
   onToggleAdd,
   onUpdateNotes,
@@ -5455,6 +8351,7 @@ function VendorsPage({
   onEdit: (vendor: VendorRecord) => void;
   onFormAiHelp: () => void;
   onInlineAiHelp: (vendor: VendorRecord, currentDraft: string) => Promise<string | null>;
+  onOpenItems: (vendorId: string) => void;
   onSubmit: (event: FormEvent) => void;
   onToggleAdd: () => void;
   onUpdateNotes: (vendorId: string, notes: string) => void;
@@ -5462,9 +8359,33 @@ function VendorsPage({
 }) {
   const isEditing = Boolean(editingVendorId);
   const panelTitle = isEditing ? "Edit Vendor" : "Add Vendor";
+  const [vendorSearch, setVendorSearch] = useState("");
+  const vendorItemCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+
+    data.items.forEach((item) => {
+      counts.set(item.vendorId, (counts.get(item.vendorId) ?? 0) + 1);
+    });
+
+    return counts;
+  }, [data.items]);
+  const filteredVendors = useMemo(() => {
+    const search = vendorSearch.trim().toLowerCase();
+
+    if (!search) {
+      return data.vendors;
+    }
+
+    return data.vendors.filter((vendor) =>
+      [vendor.name, vendor.contactName, vendor.contactEmail, vendor.phone, vendor.email, vendor.website, vendor.notes]
+        .join(" ")
+        .toLowerCase()
+        .includes(search)
+    );
+  }, [data.vendors, vendorSearch]);
 
   return (
-    <section className="space-y-5">
+    <section className="space-y-5 entity-directory-page">
       <section className={`collapsible-add-panel vendor-add-panel${isAddOpen ? " vendor-add-panel-open" : ""}`}>
         <button className="collapsible-add-trigger vendor-add-trigger" type="button" aria-expanded={isAddOpen} onClick={onToggleAdd}>
           <span>{isAddOpen ? "-" : "+"}</span>
@@ -5553,36 +8474,59 @@ function VendorsPage({
           </form>
         )}
       </section>
-      <section className="panel">
+      <section className="panel entity-directory-panel">
         <SectionHeader kicker="Supplier list" title="Vendors" />
+        <div className="entity-directory-toolbar">
+          <label className="entity-search-field">
+            <span>Search vendors</span>
+            <input
+              className="input"
+              placeholder="Search name, contact, phone, email, website, or notes"
+              value={vendorSearch}
+              onChange={(event) => setVendorSearch(event.target.value)}
+            />
+          </label>
+        </div>
         <div className="vendor-table">
           <SimpleTable
-            emptyText="No vendors saved."
+            emptyText={vendorSearch.trim() ? "No vendor found. Add this vendor if needed." : "No vendors saved."}
             headers={["Name", "Contact", "Phone", "General Email", "Website", "Items", "Notes", "Actions"]}
-            rowKeys={data.vendors.map((vendor) => `${vendor.id}-${vendor.updatedAt}-${vendor.notes}`)}
-            rows={data.vendors.map((vendor) => [
-              vendor.name,
-              <VendorContactCell key="contact" vendor={vendor} />,
-              vendor.phone || "-",
-              <VendorEmailCell key="email" email={vendor.email} />,
-              <VendorWebsiteCell key="website" website={vendor.website} />,
-              formatNumber(data.items.filter((item) => item.vendorId === vendor.id).length),
-              <VendorNotesCell
-                key="notes"
-                isRecentlySaved={recentlySavedVendorNoteId === vendor.id}
-                onAiHelp={onInlineAiHelp}
-                onSave={onUpdateNotes}
-                vendor={vendor}
-              />,
-              <div key="actions" className="vendor-action-group">
-                <button className="vendor-edit-button" type="button" onClick={() => onEdit(vendor)}>
-                  Edit
-                </button>
-                <button className="vendor-delete-button" type="button" onClick={() => onDelete(vendor.id)}>
-                  Delete
-                </button>
-              </div>
-            ])}
+            rowKeys={filteredVendors.map((vendor) => `${vendor.id}-${vendor.updatedAt}-${vendor.notes}`)}
+            rows={filteredVendors.map((vendor) => {
+              const itemCount = vendorItemCounts.get(vendor.id) ?? 0;
+
+              return [
+                vendor.name,
+                <VendorContactCell key="contact" vendor={vendor} />,
+                vendor.phone || "-",
+                <VendorEmailCell key="email" email={vendor.email} />,
+                <VendorWebsiteCell key="website" website={vendor.website} />,
+                <button
+                  key="items"
+                  className="entity-count-button"
+                  type="button"
+                  onClick={() => onOpenItems(vendor.id)}
+                  title={`Open ${vendor.name} inventory items`}
+                >
+                  {formatNumber(itemCount)}
+                </button>,
+                <VendorNotesCell
+                  key="notes"
+                  isRecentlySaved={recentlySavedVendorNoteId === vendor.id}
+                  onAiHelp={onInlineAiHelp}
+                  onSave={onUpdateNotes}
+                  vendor={vendor}
+                />,
+                <div key="actions" className="vendor-action-group">
+                  <button className="vendor-edit-button" type="button" onClick={() => onEdit(vendor)}>
+                    Edit
+                  </button>
+                  <button className="vendor-delete-button" type="button" onClick={() => onDelete(vendor.id)}>
+                    Delete
+                  </button>
+                </div>
+              ];
+            })}
           />
         </div>
       </section>
@@ -5740,38 +8684,398 @@ function VendorNotesCell({
   );
 }
 
-function ReorderPage({
+type PartsReportColumn = {
+  header: string;
+  value: (item: InventoryItem) => string;
+};
+
+function printPartsReport({
+  columns,
+  entityName,
+  entityType,
+  itemCount,
+  items
+}: {
+  columns: PartsReportColumn[];
+  entityName: string;
+  entityType: "Vendor" | "Location";
+  itemCount: number;
+  items: InventoryItem[];
+}) {
+  const generatedAt = nowIso();
+  const tableRows = items
+    .map(
+      (item) => `<tr>${columns
+        .map((column) => `<td>${escapeReportHtml(column.value(item))}</td>`)
+        .join("")}</tr>`
+    )
+    .join("");
+
+  openPrintableReport(
+    `Maintenance Inventory Tracker - ${entityType} Parts - ${entityName}`,
+    `<main class="report">
+      <header class="report-header">
+        <p class="report-kicker">Maintenance Inventory Tracker</p>
+        <h1>${escapeReportHtml(entityName)} Parts List</h1>
+      </header>
+      <section class="report-meta">
+        <div><span>${escapeReportHtml(entityType)}</span><strong>${escapeReportHtml(entityName)}</strong></div>
+        <div><span>Generated</span><strong>${escapeReportHtml(formatDateTime(generatedAt))}</strong></div>
+        <div><span>Total Items</span><strong>${escapeReportHtml(formatNumber(itemCount))}</strong></div>
+      </section>
+      <table>
+        <thead>
+          <tr>${columns.map((column) => `<th>${escapeReportHtml(column.header)}</th>`).join("")}</tr>
+        </thead>
+        <tbody>${tableRows || `<tr><td colspan="${columns.length}">No inventory items found.</td></tr>`}</tbody>
+      </table>
+    </main>`
+  );
+}
+
+function EntityDetailField({ label, value }: { label: string; value: React.ReactNode }) {
+  return (
+    <div className="entity-detail-field">
+      <span>{label}</span>
+      <strong>{value || "-"}</strong>
+    </div>
+  );
+}
+
+function VendorItemsDialog({
   data,
-  items,
-  onDataChange,
-  onStockAction
+  onClose,
+  onWatchListVisibilityClick,
+  vendorId
 }: {
   data: AppData;
+  onClose: () => void;
+  onWatchListVisibilityClick: (itemId: string) => void;
+  vendorId: string;
+}) {
+  const vendor = data.vendors.find((candidate) => candidate.id === vendorId);
+  const items = useMemo(
+    () => data.items.filter((item) => item.vendorId === vendorId).sort((a, b) => a.name.localeCompare(b.name)),
+    [data.items, vendorId]
+  );
+  const [printStatus, setPrintStatus] = useState("");
+  const [printStatusType, setPrintStatusType] = useState<"success" | "error">("success");
+
+  if (!vendor) {
+    return null;
+  }
+
+  const vendorName = vendor.name;
+  const websiteHref = getExternalHref(vendor.website);
+  const title = `${vendorName} - ${formatNumber(items.length)} Inventory Items`;
+
+  function handlePrint() {
+    try {
+      printPartsReport({
+        entityName: vendorName,
+        entityType: "Vendor",
+        itemCount: items.length,
+        items,
+        columns: [
+          { header: "Location", value: (item) => getLocationName(data, item.locationId) },
+          { header: "Part Number", value: (item) => item.partNumber || "-" },
+          { header: "Category", value: (item) => item.category || "-" },
+          { header: "Description / Name", value: (item) => item.description || item.name },
+          { header: "Stock On Hand", value: formatStockQuantity },
+          { header: "Status", value: (item) => getInventoryStatus(item, data.settings) },
+          { header: "Cost", value: (item) => formatCurrency(item.costEach) }
+        ]
+      });
+      setPrintStatus("Vendor parts print view started.");
+      setPrintStatusType("success");
+    } catch (error) {
+      setPrintStatus(error instanceof Error ? error.message : "Could not generate print file.");
+      setPrintStatusType("error");
+    }
+  }
+
+  return (
+    <div className="review-modal-backdrop" role="presentation">
+      <section className="review-modal entity-detail-modal" role="dialog" aria-modal="true" aria-labelledby="vendor-items-title">
+        <div className="entity-detail-header">
+          <div>
+            <p className="eyebrow">Vendor parts</p>
+            <h3 id="vendor-items-title">{title}</h3>
+          </div>
+          <div className="entity-detail-actions">
+            {websiteHref && (
+              <a className="btn-muted entity-website-button" href={websiteHref} target="_blank" rel="noreferrer">
+                Website
+              </a>
+            )}
+            <button className="btn-primary" type="button" onClick={handlePrint}>
+              Print Vendor Parts PDF
+            </button>
+            <button className="btn-muted" type="button" onClick={onClose}>
+              Close
+            </button>
+            {printStatus && (
+              <span className={`requisition-status-message requisition-status-${printStatusType}`}>
+                {printStatus}
+              </span>
+            )}
+          </div>
+        </div>
+        <div className="entity-detail-grid">
+          <EntityDetailField label="Contact" value={vendor.contactName || "-"} />
+          <EntityDetailField label="Phone" value={vendor.phone || "-"} />
+          <EntityDetailField label="Email" value={vendor.email || vendor.contactEmail || "-"} />
+          <EntityDetailField label="Items" value={formatNumber(items.length)} />
+          <EntityDetailField label="Notes" value={vendor.notes || "-"} />
+        </div>
+        <SimpleTable
+          emptyText="No inventory items assigned to this vendor."
+          headers={["Location", "Part Number", "Category", "Description / Name", "Stock On Hand", "Status", "Cost"]}
+          rowKeys={items.map((item) => item.id)}
+          rows={items.map((item) => [
+            getLocationName(data, item.locationId),
+            item.partNumber || "-",
+            item.category || "-",
+            item.description || item.name,
+            formatStockQuantity(item),
+            <StatusWithWatchVisibility
+              key="status"
+              item={item}
+              settings={data.settings}
+              onWatchListVisibilityClick={onWatchListVisibilityClick}
+            />,
+            formatCurrency(item.costEach)
+          ])}
+        />
+      </section>
+    </div>
+  );
+}
+
+function LocationItemsDialog({
+  data,
+  locationId,
+  onClose,
+  onWatchListVisibilityClick
+}: {
+  data: AppData;
+  locationId: string;
+  onClose: () => void;
+  onWatchListVisibilityClick: (itemId: string) => void;
+}) {
+  const location = data.locations.find((candidate) => candidate.id === locationId);
+  const items = useMemo(
+    () => data.items.filter((item) => item.locationId === locationId).sort((a, b) => a.name.localeCompare(b.name)),
+    [data.items, locationId]
+  );
+  const [printStatus, setPrintStatus] = useState("");
+  const [printStatusType, setPrintStatusType] = useState<"success" | "error">("success");
+
+  if (!location) {
+    return null;
+  }
+
+  const locationName = location.name;
+  const title = `${locationName} - ${formatNumber(items.length)} Inventory Items`;
+
+  function handlePrint() {
+    try {
+      printPartsReport({
+        entityName: locationName,
+        entityType: "Location",
+        itemCount: items.length,
+        items,
+        columns: [
+          { header: "Vendor", value: (item) => getVendorName(data, item.vendorId) },
+          { header: "Part Number", value: (item) => item.partNumber || "-" },
+          { header: "Category", value: (item) => item.category || "-" },
+          { header: "Description / Name", value: (item) => item.description || item.name },
+          { header: "Stock On Hand", value: formatStockQuantity },
+          { header: "Status", value: (item) => getInventoryStatus(item, data.settings) },
+          { header: "Cost", value: (item) => formatCurrency(item.costEach) }
+        ]
+      });
+      setPrintStatus("Location parts print view started.");
+      setPrintStatusType("success");
+    } catch (error) {
+      setPrintStatus(error instanceof Error ? error.message : "Could not generate print file.");
+      setPrintStatusType("error");
+    }
+  }
+
+  return (
+    <div className="review-modal-backdrop" role="presentation">
+      <section className="review-modal entity-detail-modal" role="dialog" aria-modal="true" aria-labelledby="location-items-title">
+        <div className="entity-detail-header">
+          <div>
+            <p className="eyebrow">Location parts</p>
+            <h3 id="location-items-title">{title}</h3>
+          </div>
+          <div className="entity-detail-actions">
+            <button className="btn-primary" type="button" onClick={handlePrint}>
+              Print Location Parts PDF
+            </button>
+            <button className="btn-muted" type="button" onClick={onClose}>
+              Close
+            </button>
+            {printStatus && (
+              <span className={`requisition-status-message requisition-status-${printStatusType}`}>
+                {printStatus}
+              </span>
+            )}
+          </div>
+        </div>
+        <div className="entity-detail-grid">
+          <EntityDetailField label="Description" value={location.description || "-"} />
+          <EntityDetailField label="Items" value={formatNumber(items.length)} />
+          <EntityDetailField label="Notes" value={location.notes || "-"} />
+        </div>
+        <SimpleTable
+          emptyText="No inventory items assigned to this location."
+          headers={["Vendor", "Part Number", "Category", "Description / Name", "Stock On Hand", "Status", "Cost"]}
+          rowKeys={items.map((item) => item.id)}
+          rows={items.map((item) => [
+            getVendorName(data, item.vendorId),
+            item.partNumber || "-",
+            item.category || "-",
+            item.description || item.name,
+            formatStockQuantity(item),
+            <StatusWithWatchVisibility
+              key="status"
+              item={item}
+              settings={data.settings}
+              onWatchListVisibilityClick={onWatchListVisibilityClick}
+            />,
+            formatCurrency(item.costEach)
+          ])}
+        />
+      </section>
+    </div>
+  );
+}
+
+function printReorderHistoryReport(
+  historyRows: { record: RequisitionMadeRecord; snapshot: RequisitionMadeRecord["itemSnapshots"][number] }[],
+  historyFilters: { year: string; vendor: string; poNo: string; partNumber: string; itemName: string }
+) {
+  const activeFilters = [
+    historyFilters.year.trim() ? `Year: ${historyFilters.year.trim()}` : "",
+    historyFilters.vendor.trim() ? `Vendor: ${historyFilters.vendor.trim()}` : "",
+    historyFilters.poNo.trim() ? `PO: ${historyFilters.poNo.trim()}` : "",
+    historyFilters.partNumber.trim() ? `Part Number: ${historyFilters.partNumber.trim()}` : "",
+    historyFilters.itemName.trim() ? `Item: ${historyFilters.itemName.trim()}` : ""
+  ].filter(Boolean);
+  const rows = historyRows
+    .map(({ record, snapshot }) => `<tr>
+      <td>${escapeReportHtml(formatDateTime(getRequisitionRecordDate(record)))}</td>
+      <td>${escapeReportHtml(getRequisitionRecordYear(record) || "-")}</td>
+      <td>${escapeReportHtml(record.vendorName)}</td>
+      <td>${escapeReportHtml(record.poNo || "-")}</td>
+      <td>${escapeReportHtml(formatRequisitionType(record.requisitionType))}</td>
+      <td>${escapeReportHtml(record.status)}</td>
+      <td>${escapeReportHtml(snapshot.itemName)}</td>
+      <td>${escapeReportHtml(snapshot.partNumber || "-")}</td>
+      <td class="text-right">${escapeReportHtml(formatNumber(snapshot.quantityRequested))}</td>
+      <td class="text-right">${escapeReportHtml(formatCurrency(snapshot.unitCost))}</td>
+      <td class="text-right">${escapeReportHtml(formatCurrency(snapshot.totalCost))}</td>
+      <td>${escapeReportHtml(record.createdBy || record.requisitionedBy || "-")}</td>
+    </tr>`)
+    .join("");
+
+  openPrintableReport(
+    "Maintenance Inventory Tracker - Reorder History",
+    `<main class="report">
+      <header class="report-header">
+        <p class="report-kicker">Maintenance Inventory Tracker</p>
+        <h1>Reorder History</h1>
+      </header>
+      <section class="report-meta">
+        <div><span>Generated</span><strong>${escapeReportHtml(formatDateTime(nowIso()))}</strong></div>
+        <div><span>Filters</span><strong>${escapeReportHtml(activeFilters.join(" | ") || "None")}</strong></div>
+        <div><span>Records</span><strong>${escapeReportHtml(formatNumber(historyRows.length))}</strong></div>
+      </section>
+      <table class="report-wide-table">
+        <thead>
+          <tr>
+            <th>Created</th>
+            <th>Year</th>
+            <th>Vendor</th>
+            <th>PO</th>
+            <th>Form Type</th>
+            <th>Status</th>
+            <th>Item</th>
+            <th>Part Number</th>
+            <th>Qty</th>
+            <th>Unit Cost</th>
+            <th>Total Cost</th>
+            <th>Created By</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </main>`
+  );
+}
+
+function ReorderPage({
+  data,
+  inventoryRequisitionLaunch,
+  items,
+  onDataChange,
+  onStockAction,
+  onWatchListVisibilityClick
+}: {
+  data: AppData;
+  inventoryRequisitionLaunch: { id: string; itemIds: string[] } | null;
   items: InventoryItem[];
   onDataChange: (updater: (current: AppData) => AppData) => void;
   onStockAction: (itemId: string, actionType?: StockActionType | "") => void;
+  onWatchListVisibilityClick: (itemId: string) => void;
 }) {
-  const [reorderView, setReorderView] = useState<"items" | "forms" | "made">("items");
+  const [reorderView, setReorderView] = useState<"items" | "forms" | "made" | "history">("items");
   const [selectedReorderItemIds, setSelectedReorderItemIds] = useState<string[]>([]);
+  const [manualRequisitionDraft, setManualRequisitionDraft] = useState<ManualRequisitionDraft>(() => blankManualRequisitionDraft());
+  const [manualRequisitionItems, setManualRequisitionItems] = useState<InventoryItem[]>([]);
+  const [isManualRequisitionOpen, setIsManualRequisitionOpen] = useState(false);
+  const [requisitionInventorySearch, setRequisitionInventorySearch] = useState("");
   const [requisitionLines, setRequisitionLines] = useState<Record<string, RequisitionLineDraft>>({});
   const [requisitionHeaders, setRequisitionHeaders] = useState<Record<string, RequisitionHeaderDraft>>({});
   const [activeRequisitionGroupIndex, setActiveRequisitionGroupIndex] = useState(0);
   const [completedRequisitionVendorKeys, setCompletedRequisitionVendorKeys] = useState<string[]>([]);
   const [pendingReviewVendorKey, setPendingReviewVendorKey] = useState<string | null>(null);
   const [pendingReviewPdfGeneratedAt, setPendingReviewPdfGeneratedAt] = useState("");
+  const [selectedMadeRecord, setSelectedMadeRecord] = useState<RequisitionMadeRecord | null>(null);
+  const [historyFilters, setHistoryFilters] = useState<RequisitionHistoryFilters>(() => blankRequisitionHistoryFilters());
+  const [historyPrintStatus, setHistoryPrintStatus] = useState("");
+  const [historyPrintStatusType, setHistoryPrintStatusType] = useState<"success" | "error">("success");
+  const [requisitionHistoryPage, setRequisitionHistoryPage] = useState(1);
+  const [requisitionHistoryPageSize, setRequisitionHistoryPageSize] = useState(DEFAULT_REQUISITION_HISTORY_PAGE_SIZE);
   const [reorderWarning, setReorderWarning] = useState("");
 
-  const activeMadeRecords = useMemo(() => pruneRequisitionMadeRecords(data).requisitionMadeRecords, [data]);
+  const activeMadeRecords = useMemo(() => getActiveRequisitionMadeRecords(data), [data]);
   const activeRequisitionMadeItemIds = useMemo(() => getActiveRequisitionMadeItemIds(data), [data]);
   const selectedItemIdSet = useMemo(() => new Set(selectedReorderItemIds), [selectedReorderItemIds]);
+  const requisitionSourceItems = useMemo(() => {
+    const reorderItemIds = new Set(items.map((item) => item.id));
+    const selectedExtraItems = data.items.filter((item) => selectedItemIdSet.has(item.id) && !reorderItemIds.has(item.id));
+
+    return [...manualRequisitionItems, ...selectedExtraItems, ...items];
+  }, [data.items, items, manualRequisitionItems, selectedItemIdSet]);
+  const requisitionSourceItemById = useMemo(
+    () => new Map(requisitionSourceItems.map((item) => [item.id, item])),
+    [requisitionSourceItems]
+  );
   const selectedItems = useMemo(
-    () => items.filter((item) => selectedItemIdSet.has(item.id) && !activeRequisitionMadeItemIds.has(item.id)),
-    [activeRequisitionMadeItemIds, items, selectedItemIdSet]
+    () =>
+      requisitionSourceItems.filter(
+        (item) => selectedItemIdSet.has(item.id) && (isManualRequisitionItem(item) || !activeRequisitionMadeItemIds.has(item.id))
+      ),
+    [activeRequisitionMadeItemIds, requisitionSourceItems, selectedItemIdSet]
   );
   const vendorGroups = useMemo(() => groupItemsByVendor(data, selectedItems), [data, selectedItems]);
   const activeVendorGroup = vendorGroups[activeRequisitionGroupIndex];
   const activeRequisitionHeader = activeVendorGroup
-    ? (requisitionHeaders[activeVendorGroup.vendorKey] ?? createDefaultRequisitionHeader(activeVendorGroup.vendor))
+    ? (requisitionHeaders[activeVendorGroup.vendorKey] ?? createDefaultRequisitionHeaderForGroup(activeVendorGroup))
     : null;
   const activeVendorGroupCompleted = activeVendorGroup ? completedRequisitionVendorKeys.includes(activeVendorGroup.vendorKey) : false;
   const allSelectedVendorFormsReviewed =
@@ -5789,22 +9093,56 @@ function ReorderPage({
       ),
     [activeMadeRecords]
   );
+  const historyYears = useMemo(() => getRequisitionHistoryYears(data.requisitionMadeRecords), [data.requisitionMadeRecords]);
+  const historyRows = useMemo(
+    () => getFilteredRequisitionHistoryRows(data.requisitionMadeRecords, historyFilters),
+    [data.requisitionMadeRecords, historyFilters]
+  );
+  const totalRequisitionHistoryItems = historyRows.length;
+  const totalRequisitionHistoryPages = Math.max(1, Math.ceil(totalRequisitionHistoryItems / requisitionHistoryPageSize));
+  const safeRequisitionHistoryPage = Math.min(requisitionHistoryPage, totalRequisitionHistoryPages);
+  const requisitionHistoryPageStartIndex = (safeRequisitionHistoryPage - 1) * requisitionHistoryPageSize;
+  const paginatedHistoryRows = historyRows.slice(
+    requisitionHistoryPageStartIndex,
+    requisitionHistoryPageStartIndex + requisitionHistoryPageSize
+  );
+  const requisitionHistoryPageStartNumber =
+    totalRequisitionHistoryItems === 0 ? 0 : requisitionHistoryPageStartIndex + 1;
+  const requisitionHistoryPageEndNumber =
+    totalRequisitionHistoryItems === 0 ? 0 : requisitionHistoryPageStartIndex + paginatedHistoryRows.length;
+  const inventoryPickerResults = useMemo(
+    () => getRequisitionInventoryPickerResults(data, requisitionInventorySearch, selectedItemIdSet),
+    [data, requisitionInventorySearch, selectedItemIdSet]
+  );
 
   useEffect(() => {
-    const reorderItemIds = new Set(items.filter((item) => !activeRequisitionMadeItemIds.has(item.id)).map((item) => item.id));
-    setSelectedReorderItemIds((current) => current.filter((itemId) => reorderItemIds.has(itemId)));
-  }, [activeRequisitionMadeItemIds, items]);
+    if (!inventoryRequisitionLaunch?.itemIds.length) {
+      return;
+    }
+
+    setSelectedReorderItemIds((current) => Array.from(new Set([...current, ...inventoryRequisitionLaunch.itemIds])));
+    setReorderView("forms");
+    setReorderWarning("");
+  }, [inventoryRequisitionLaunch]);
+
+  useEffect(() => {
+    const availableInventoryItemIds = new Set(
+      data.items.filter((item) => !activeRequisitionMadeItemIds.has(item.id)).map((item) => item.id)
+    );
+    const manualItemIds = new Set(manualRequisitionItems.map((item) => item.id));
+
+    setSelectedReorderItemIds((current) => current.filter((itemId) => availableInventoryItemIds.has(itemId) || manualItemIds.has(itemId)));
+  }, [activeRequisitionMadeItemIds, data.items, manualRequisitionItems]);
 
   useEffect(() => {
     const selectedIds = new Set(selectedReorderItemIds);
-    const itemLookup = new Map(items.map((item) => [item.id, item]));
 
     setRequisitionLines((current) => {
       let changed = false;
       const next = { ...current };
 
       selectedReorderItemIds.forEach((itemId) => {
-        const item = itemLookup.get(itemId);
+        const item = requisitionSourceItemById.get(itemId);
 
         if (item && !next[itemId]) {
           next[itemId] = createRequisitionLineDraft(item);
@@ -5821,7 +9159,7 @@ function ReorderPage({
 
       return changed ? next : current;
     });
-  }, [items, selectedReorderItemIds]);
+  }, [requisitionSourceItemById, selectedReorderItemIds]);
 
   useEffect(() => {
     setActiveRequisitionGroupIndex((current) => {
@@ -5842,6 +9180,35 @@ function ReorderPage({
   }, [vendorGroups]);
 
   useEffect(() => {
+    setRequisitionHistoryPage(1);
+  }, [historyFilters, requisitionHistoryPageSize]);
+
+  useEffect(() => {
+    setRequisitionHistoryPage((current) => Math.min(current, totalRequisitionHistoryPages));
+  }, [totalRequisitionHistoryPages]);
+
+  function handleRequisitionHistoryPageSizeChange(event: React.ChangeEvent<HTMLSelectElement>) {
+    const nextPageSize = Number(event.target.value);
+
+    setRequisitionHistoryPageSize(
+      REQUISITION_HISTORY_PAGE_SIZE_OPTIONS.some((option) => option === nextPageSize)
+        ? nextPageSize
+        : DEFAULT_REQUISITION_HISTORY_PAGE_SIZE
+    );
+  }
+
+  function handlePrintReorderHistory() {
+    try {
+      printReorderHistoryReport(historyRows, historyFilters);
+      setHistoryPrintStatus("Print view started.");
+      setHistoryPrintStatusType("success");
+    } catch {
+      setHistoryPrintStatus("Could not generate print file.");
+      setHistoryPrintStatusType("error");
+    }
+  }
+
+  useEffect(() => {
     const vendorKeys = new Set(vendorGroups.map((group) => group.vendorKey));
 
     setRequisitionHeaders((current) => {
@@ -5850,7 +9217,7 @@ function ReorderPage({
 
       vendorGroups.forEach((group) => {
         if (!next[group.vendorKey]) {
-          next[group.vendorKey] = createDefaultRequisitionHeader(group.vendor);
+          next[group.vendorKey] = createDefaultRequisitionHeaderForGroup(group);
           changed = true;
         }
       });
@@ -5867,7 +9234,13 @@ function ReorderPage({
   }, [vendorGroups]);
 
   function toggleReorderItemSelection(itemId: string) {
-    if (activeRequisitionMadeItemIds.has(itemId)) {
+    const item = requisitionSourceItemById.get(itemId);
+
+    if (!item) {
+      return;
+    }
+
+    if (!isManualRequisitionItem(item) && activeRequisitionMadeItemIds.has(itemId)) {
       setReorderWarning("This item already has a requisition made.");
       return;
     }
@@ -5879,10 +9252,14 @@ function ReorderPage({
   }
 
   function selectAllReorderItems() {
-    const selectableItemIds = items.filter((item) => !activeRequisitionMadeItemIds.has(item.id)).map((item) => item.id);
+    const selectableItemIds = requisitionSourceItems
+      .filter((item) => isManualRequisitionItem(item) || !activeRequisitionMadeItemIds.has(item.id))
+      .map((item) => item.id);
 
     setSelectedReorderItemIds(selectableItemIds);
-    setReorderWarning(selectableItemIds.length === 0 && items.length > 0 ? "All reorder items already have requisitions made." : "");
+    setReorderWarning(
+      selectableItemIds.length === 0 && requisitionSourceItems.length > 0 ? "All reorder items already have requisitions made." : ""
+    );
   }
 
   function clearSelectedReorderItems() {
@@ -5891,11 +9268,19 @@ function ReorderPage({
   }
 
   function createRequisitionForms() {
+    if (!hasPermission(readAuthRecord()?.role, "requisitions:create")) {
+      setReorderWarning(PERMISSION_DENIED_MESSAGE);
+      return;
+    }
+
     if (selectedReorderItemIds.length === 0) {
       return;
     }
 
-    const selectableItemIds = selectedReorderItemIds.filter((itemId) => !activeRequisitionMadeItemIds.has(itemId));
+    const selectableItemIds = selectedReorderItemIds.filter((itemId) => {
+      const item = requisitionSourceItemById.get(itemId);
+      return item && (isManualRequisitionItem(item) || !activeRequisitionMadeItemIds.has(itemId));
+    });
 
     if (selectableItemIds.length === 0) {
       setReorderWarning("Selected items already have requisitions made.");
@@ -5913,7 +9298,7 @@ function ReorderPage({
   }
 
   function updateRequisitionLine(itemId: string, patch: Partial<RequisitionLineDraft>) {
-    const item = items.find((candidate) => candidate.id === itemId);
+    const item = requisitionSourceItemById.get(itemId);
 
     if (!item) {
       return;
@@ -5929,6 +9314,39 @@ function ReorderPage({
     }));
   }
 
+  function addManualRequisitionLine() {
+    const item = createManualRequisitionItem(manualRequisitionDraft);
+
+    if (!item) {
+      setReorderWarning("Type an item name, description, or part number before adding a manual requisition line.");
+      return;
+    }
+
+    setManualRequisitionItems((current) => [item, ...current]);
+    setSelectedReorderItemIds((current) => (current.includes(item.id) ? current : [item.id, ...current]));
+    setRequisitionLines((current) => ({
+      ...current,
+      [item.id]: createRequisitionLineDraft(item)
+    }));
+    setManualRequisitionDraft(blankManualRequisitionDraft());
+    setIsManualRequisitionOpen(false);
+    setReorderWarning("");
+  }
+
+  function removeManualRequisitionLine(itemId: string) {
+    setManualRequisitionItems((current) => current.filter((item) => item.id !== itemId));
+    setSelectedReorderItemIds((current) => current.filter((selectedId) => selectedId !== itemId));
+    setRequisitionLines((current) => {
+      if (!current[itemId]) {
+        return current;
+      }
+
+      const next = { ...current };
+      delete next[itemId];
+      return next;
+    });
+  }
+
   function updateRequisitionHeader(vendorKey: string, updater: SetStateAction<RequisitionHeaderDraft>) {
     const group = vendorGroups.find((candidate) => candidate.vendorKey === vendorKey);
 
@@ -5937,7 +9355,7 @@ function ReorderPage({
     }
 
     setRequisitionHeaders((current) => {
-      const currentHeader = current[vendorKey] ?? createDefaultRequisitionHeader(group.vendor);
+      const currentHeader = current[vendorKey] ?? createDefaultRequisitionHeaderForGroup(group);
       const nextHeader = typeof updater === "function" ? updater(currentHeader) : updater;
 
       return {
@@ -5963,8 +9381,15 @@ function ReorderPage({
   }
 
   function passRequisitionForVendor(vendorKey: string) {
+    if (!hasPermission(readAuthRecord()?.role, "requisitions:create")) {
+      setReorderWarning(PERMISSION_DENIED_MESSAGE);
+      setPendingReviewVendorKey(null);
+      setPendingReviewPdfGeneratedAt("");
+      return;
+    }
+
     const group = vendorGroups.find((candidate) => candidate.vendorKey === vendorKey);
-    const header = group ? (requisitionHeaders[vendorKey] ?? createDefaultRequisitionHeader(group.vendor)) : null;
+    const header = group ? (requisitionHeaders[vendorKey] ?? createDefaultRequisitionHeaderForGroup(group)) : null;
 
     if (!group || !header) {
       setPendingReviewVendorKey(null);
@@ -5982,17 +9407,17 @@ function ReorderPage({
     const currentIndex = vendorGroups.findIndex((candidate) => candidate.vendorKey === vendorKey);
     const hasNextVendor = currentIndex >= 0 && currentIndex < vendorGroups.length - 1;
 
-    onDataChange((current) =>
-      pruneRequisitionMadeRecords({
+    onDataChange((current) => {
+      const updatedAt = nowIso();
+
+      return {
         ...current,
-        requisitionMadeRecords: [
-          record,
-          ...current.requisitionMadeRecords.filter((existingRecord) =>
-            existingRecord.itemIds.every((itemId) => !passedItemIds.has(itemId))
-          )
-        ]
-      })
-    );
+        items: current.items.map((item) =>
+          passedItemIds.has(item.id) ? { ...item, orderPlaced: true, orderRequisitionId: record.id, updatedAt } : item
+        ),
+        requisitionMadeRecords: [record, ...current.requisitionMadeRecords]
+      };
+    });
 
     setCompletedRequisitionVendorKeys((current) =>
       current.includes(group.vendorKey) ? current : [...current, group.vendorKey]
@@ -6000,6 +9425,7 @@ function ReorderPage({
     setPendingReviewVendorKey(null);
     setPendingReviewPdfGeneratedAt("");
     setSelectedReorderItemIds((current) => current.filter((itemId) => !passedItemIds.has(itemId)));
+    setManualRequisitionItems((current) => current.filter((item) => !passedItemIds.has(item.id)));
 
     if (hasNextVendor) {
       setActiveRequisitionGroupIndex(currentIndex);
@@ -6041,11 +9467,19 @@ function ReorderPage({
           >
             Requisition Made
           </button>
+          <button
+            className={`reorder-tab-button ${reorderView === "history" ? "reorder-tab-active" : ""}`}
+            type="button"
+            aria-pressed={reorderView === "history"}
+            onClick={() => setReorderView("history")}
+          >
+            History
+          </button>
         </div>
-        {reorderView !== "made" && (
+        {reorderView !== "made" && reorderView !== "history" && (
           <div className="reorder-selection-toolbar no-print">
             <span>{selectedReorderItemIds.length} selected</span>
-            <button className="btn-small" type="button" onClick={selectAllReorderItems} disabled={items.length === 0}>
+            <button className="btn-small" type="button" onClick={selectAllReorderItems} disabled={requisitionSourceItems.length === 0}>
               Select All Reorder Items
             </button>
             <button className="btn-small" type="button" onClick={clearSelectedReorderItems} disabled={selectedReorderItemIds.length === 0}>
@@ -6068,66 +9502,178 @@ function ReorderPage({
       </div>
 
       {reorderView === "items" && (
-        <SimpleTable
-          emptyText="No low or out of stock items."
-          headers={[
-            "Select",
-            "Status",
-            "Requisition",
-            "Item",
-            "Part number",
-            "On hand",
-            "Minimum",
-            "Location",
-            "Vendor",
-            "Unit Cost",
-            "Actions"
-          ]}
-          rowKeys={items.map((item) => item.id)}
-          rows={items.map((item) => {
-            const hasRequisitionMade = activeRequisitionMadeItemIds.has(item.id);
-
-            return [
-              <label
-                key="select"
-                className="reorder-select-cell"
-                title={hasRequisitionMade ? "This item already has a requisition made." : undefined}
-                onClick={(event) => {
-                  if (hasRequisitionMade) {
-                    event.preventDefault();
-                    setReorderWarning("This item already has a requisition made.");
-                  }
-                }}
+        <>
+          {isManualRequisitionOpen ? (
+            <div className="manual-requisition-panel no-print" id="manual-requisition-line-panel">
+              <span>Manual requisition line</span>
+              <input
+                className="input"
+                placeholder="Item name / description"
+                value={manualRequisitionDraft.description}
+                onChange={(event) => setManualRequisitionDraft((current) => ({ ...current, description: event.target.value }))}
+              />
+              <input
+                className="input"
+                placeholder="Part number"
+                value={manualRequisitionDraft.partNumber}
+                onChange={(event) => setManualRequisitionDraft((current) => ({ ...current, partNumber: event.target.value }))}
+              />
+              <input
+                className="input"
+                placeholder="Vendor"
+                value={manualRequisitionDraft.vendorName}
+                onChange={(event) => setManualRequisitionDraft((current) => ({ ...current, vendorName: event.target.value }))}
+              />
+              <input
+                className="input"
+                inputMode="numeric"
+                placeholder="Qty"
+                value={manualRequisitionDraft.quantity}
+                onChange={(event) =>
+                  setManualRequisitionDraft((current) => ({ ...current, quantity: normalizeWholeNumberInput(event.target.value) }))
+                }
+              />
+              <input
+                className="input"
+                inputMode="decimal"
+                placeholder="Cost"
+                value={manualRequisitionDraft.costEach}
+                onChange={(event) => setManualRequisitionDraft((current) => ({ ...current, costEach: event.target.value }))}
+              />
+              <input
+                className="input manual-requisition-notes"
+                placeholder="Notes"
+                value={manualRequisitionDraft.notes}
+                onChange={(event) => setManualRequisitionDraft((current) => ({ ...current, notes: event.target.value }))}
+              />
+              <div className="manual-requisition-actions">
+                <button className="btn-small" type="button" onClick={addManualRequisitionLine}>
+                  Add Manual Line
+                </button>
+                <button className="btn-small btn-muted" type="button" onClick={() => setIsManualRequisitionOpen(false)}>
+                  Collapse
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="manual-requisition-toggle-row no-print">
+              <button
+                className="btn-small manual-requisition-toggle"
+                type="button"
+                aria-controls="manual-requisition-line-panel"
+                aria-expanded={false}
+                onClick={() => setIsManualRequisitionOpen(true)}
               >
-                <input
-                  type="checkbox"
-                  checked={selectedItemIdSet.has(item.id)}
-                  disabled={hasRequisitionMade}
-                  aria-label={`Select ${item.name} for requisition`}
-                  onChange={() => toggleReorderItemSelection(item.id)}
-                />
-              </label>,
-              <StatusTag key="status" status={getInventoryStatus(item, data.settings)} />,
-              hasRequisitionMade ? (
-                <span key="made" className="requisition-made-badge requisition-made-badge-green">
-                  Requisition Made
-                </span>
-              ) : (
-                "-"
-              ),
-              item.name,
-              item.partNumber || "-",
-              formatStockQuantity(item),
-              formatNumber(item.minimumStockLevel),
-              getLocationName(data, item.locationId),
-              getVendorName(data, item.vendorId),
-              formatCurrency(item.costEach),
-              <button key="stock" className="btn-small" type="button" onClick={() => onStockAction(item.id)}>
-                Stock Edit
+                + Add Manual Requisition Line
               </button>
-            ];
-          })}
-        />
+            </div>
+          )}
+          <div className="requisition-inventory-picker no-print">
+            <label className="entity-search-field requisition-inventory-search-field">
+              <span>Search inventory for requisition</span>
+              <input
+                className="input"
+                placeholder="Search part, item, description, vendor, or location"
+                value={requisitionInventorySearch}
+                onChange={(event) => setRequisitionInventorySearch(event.target.value)}
+              />
+            </label>
+            {requisitionInventorySearch.trim() && (
+              <div className="requisition-picker-results">
+                {inventoryPickerResults.length === 0 && <span>No matching inventory items.</span>}
+                {inventoryPickerResults.map((item) => (
+                  <div key={item.id} className="requisition-picker-row">
+                    <div>
+                      <strong>{item.partNumber || item.name}</strong>
+                      <span>{item.name} / {getVendorName(data, item.vendorId)} / {getLocationName(data, item.locationId)}</span>
+                    </div>
+                    <button className="btn-small" type="button" onClick={() => toggleReorderItemSelection(item.id)}>
+                      Add
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+          <SimpleTable
+            emptyText="No low/out of stock items. Add a manual requisition line if needed."
+            headers={[
+              "Select",
+              "Status",
+              "Requisition",
+              "Item",
+              "Part number",
+              "On hand",
+              "Minimum",
+              "Location",
+              "Vendor",
+              "Unit Cost",
+              "Actions"
+            ]}
+            rowKeys={requisitionSourceItems.map((item) => item.id)}
+            rows={requisitionSourceItems.map((item) => {
+              const isManual = isManualRequisitionItem(item);
+              const hasRequisitionMade = !isManual && activeRequisitionMadeItemIds.has(item.id);
+
+              return [
+                <label
+                  key="select"
+                  className="reorder-select-cell"
+                  title={hasRequisitionMade ? "This item already has a requisition made." : undefined}
+                  onClick={(event) => {
+                    if (hasRequisitionMade) {
+                      event.preventDefault();
+                      setReorderWarning("This item already has a requisition made.");
+                    }
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={selectedItemIdSet.has(item.id)}
+                    disabled={hasRequisitionMade}
+                    aria-label={`Select ${item.name} for requisition`}
+                    onChange={() => toggleReorderItemSelection(item.id)}
+                  />
+                </label>,
+                isManual ? (
+                  <span key="manual" className="requisition-made-badge requisition-manual-badge">
+                    Manual
+                  </span>
+                ) : (
+                  <StatusWithWatchVisibility
+                    key="status"
+                    item={item}
+                    settings={data.settings}
+                    onWatchListVisibilityClick={onWatchListVisibilityClick}
+                  />
+                ),
+                hasRequisitionMade ? (
+                  <span key="made" className="requisition-made-badge requisition-made-badge-green">
+                    Requisition Made
+                  </span>
+                ) : (
+                  "-"
+                ),
+                item.name,
+                item.partNumber || "-",
+                isManual ? "-" : formatStockQuantity(item),
+                isManual ? "-" : formatNumber(item.minimumStockLevel),
+                isManual ? "-" : getLocationName(data, item.locationId),
+                getRequisitionItemVendorName(data, item),
+                formatCurrency(item.costEach),
+                isManual ? (
+                  <button key="remove" className="btn-small" type="button" onClick={() => removeManualRequisitionLine(item.id)}>
+                    Remove
+                  </button>
+                ) : (
+                  <button key="stock" className="btn-small" type="button" onClick={() => onStockAction(item.id)}>
+                    Stock Edit
+                  </button>
+                )
+              ];
+            })}
+          />
+        </>
       )}
 
       {reorderView === "made" && (
@@ -6159,17 +9705,142 @@ function ReorderPage({
             formatCurrency(snapshot.totalCost),
             formatDateTime(record.pdfGeneratedAt),
             formatDateTime(record.passedAt),
-            <button key="stock" className="btn-small" type="button" onClick={() => onStockAction(snapshot.itemId)}>
-              Stock Edit
-            </button>
+            <div key="actions" className="requisition-made-actions">
+              <button className="btn-small" type="button" onClick={() => setSelectedMadeRecord(record)}>
+                View
+              </button>
+              <button className="btn-small" type="button" onClick={() => onStockAction(snapshot.itemId)}>
+                Stock Edit
+              </button>
+            </div>
           ])}
         />
+      )}
+
+      {reorderView === "history" && (
+        <div className="requisition-history-section">
+          <div className="requisition-history-year-row">
+            <button
+              className={`btn-small ${historyFilters.year === "All" ? "reorder-tab-active" : ""}`}
+              type="button"
+              onClick={() => setHistoryFilters((current) => ({ ...current, year: "All" }))}
+            >
+              All Years
+            </button>
+            {historyYears.map((year) => (
+              <button
+                key={year}
+                className={`btn-small ${historyFilters.year === year ? "reorder-tab-active" : ""}`}
+                type="button"
+                onClick={() => setHistoryFilters((current) => ({ ...current, year }))}
+              >
+                {year}
+              </button>
+            ))}
+          </div>
+          <div className="requisition-history-filters">
+            <label className="field-label">
+              From
+              <input
+                className="input"
+                type="date"
+                value={historyFilters.dateFrom}
+                onChange={(event) => setHistoryFilters((current) => ({ ...current, dateFrom: event.target.value }))}
+              />
+            </label>
+            <label className="field-label">
+              To
+              <input
+                className="input"
+                type="date"
+                value={historyFilters.dateTo}
+                onChange={(event) => setHistoryFilters((current) => ({ ...current, dateTo: event.target.value }))}
+              />
+            </label>
+            <label className="field-label">
+              Vendor
+              <input
+                className="input"
+                value={historyFilters.vendor}
+                onChange={(event) => setHistoryFilters((current) => ({ ...current, vendor: event.target.value }))}
+              />
+            </label>
+            <label className="field-label">
+              PO Number
+              <input
+                className="input"
+                value={historyFilters.poNo}
+                onChange={(event) => setHistoryFilters((current) => ({ ...current, poNo: event.target.value }))}
+              />
+            </label>
+            <label className="field-label">
+              Part Number
+              <input
+                className="input"
+                value={historyFilters.partNumber}
+                onChange={(event) => setHistoryFilters((current) => ({ ...current, partNumber: event.target.value }))}
+              />
+            </label>
+            <label className="field-label">
+              Item Name
+              <input
+                className="input"
+                value={historyFilters.itemName}
+                onChange={(event) => setHistoryFilters((current) => ({ ...current, itemName: event.target.value }))}
+              />
+            </label>
+            <button className="btn-small" type="button" onClick={handlePrintReorderHistory}>
+              Print Reorder History
+            </button>
+            {historyPrintStatus && (
+              <span className={`requisition-status-message requisition-status-${historyPrintStatusType}`}>
+                {historyPrintStatus}
+              </span>
+            )}
+            <button className="btn-small" type="button" onClick={() => setHistoryFilters(blankRequisitionHistoryFilters())}>
+              Clear History Filters
+            </button>
+          </div>
+          <InventoryPagination
+            currentPage={safeRequisitionHistoryPage}
+            onNextPage={() => setRequisitionHistoryPage((current) => Math.min(totalRequisitionHistoryPages, current + 1))}
+            onPageSizeChange={handleRequisitionHistoryPageSizeChange}
+            onPreviousPage={() => setRequisitionHistoryPage((current) => Math.max(1, current - 1))}
+            pageEnd={requisitionHistoryPageEndNumber}
+            pageSize={requisitionHistoryPageSize}
+            pageSizeOptions={REQUISITION_HISTORY_PAGE_SIZE_OPTIONS}
+            pageStart={requisitionHistoryPageStartNumber}
+            totalItems={totalRequisitionHistoryItems}
+            totalPages={totalRequisitionHistoryPages}
+          />
+          <SimpleTable
+            emptyText="No requisition history matches those filters."
+            headers={["Created", "Year", "Vendor", "PO", "Item / Part Number", "Qty", "Unit Cost", "Created By", "Actions"]}
+            rowKeys={paginatedHistoryRows.map(({ record, snapshot }) => `${record.id}-${snapshot.itemId}`)}
+            rows={paginatedHistoryRows.map(({ record, snapshot }) => [
+              formatDateTime(getRequisitionRecordDate(record)),
+              getRequisitionRecordYear(record) || "-",
+              record.vendorName,
+              record.poNo || "-",
+              <span key="item" className="requisition-made-item">
+                <strong>{snapshot.itemName}</strong>
+                <span>{snapshot.partNumber || "-"}</span>
+              </span>,
+              formatNumber(snapshot.quantityRequested),
+              formatCurrency(snapshot.unitCost),
+              record.createdBy || record.requisitionedBy || "-",
+              <button key="view" className="btn-small" type="button" onClick={() => setSelectedMadeRecord(record)}>
+                View
+              </button>
+            ])}
+          />
+        </div>
       )}
 
       {reorderView === "forms" && (
         <div className="requisition-builder">
           {selectedItems.length === 0 ? (
-            <div className="warning-bar">Select reorder items first, then create requisition forms.</div>
+            <div className="warning-bar">Select reorder items or add a manual line first, then create requisition forms.</div>
           ) : activeVendorGroup && activeRequisitionHeader ? (
             <>
               <div className="requisition-workflow-toolbar no-requisition-print">
@@ -6218,7 +9889,7 @@ function ReorderPage({
               />
             </>
           ) : (
-            <div className="warning-bar">Select reorder items first, then create requisition forms.</div>
+            <div className="warning-bar">Select reorder items or add a manual line first, then create requisition forms.</div>
           )}
         </div>
       )}
@@ -6261,12 +9932,190 @@ function ReorderPage({
           </section>
         </div>
       )}
+      {selectedMadeRecord && <RequisitionMadeDetailDialog record={selectedMadeRecord} onClose={() => setSelectedMadeRecord(null)} />}
     </section>
   );
 }
 
 function getRecommendedReorderQuantity(item: InventoryItem) {
   return Math.max(1, item.minimumStockLevel - item.quantityOnHand);
+}
+
+function blankManualRequisitionDraft(): ManualRequisitionDraft {
+  return {
+    costEach: "",
+    description: "",
+    notes: "",
+    partNumber: "",
+    quantity: "1",
+    vendorName: ""
+  };
+}
+
+function blankRequisitionHistoryFilters(): RequisitionHistoryFilters {
+  return {
+    dateFrom: "",
+    dateTo: "",
+    itemName: "",
+    partNumber: "",
+    poNo: "",
+    vendor: "",
+    year: "All"
+  };
+}
+
+function getRequisitionRecordDate(record: RequisitionMadeRecord) {
+  return record.createdAt || record.passedAt || record.pdfGeneratedAt;
+}
+
+function getRequisitionRecordYear(record: RequisitionMadeRecord) {
+  const date = new Date(getRequisitionRecordDate(record));
+  return Number.isNaN(date.getTime()) ? "" : String(date.getFullYear());
+}
+
+function getRequisitionHistoryYears(records: RequisitionMadeRecord[]) {
+  return Array.from(new Set(records.map(getRequisitionRecordYear).filter(Boolean))).sort((a, b) => Number(b) - Number(a));
+}
+
+function getDateInputTime(value: string, endOfDay = false) {
+  if (!value) {
+    return null;
+  }
+
+  const date = new Date(`${value}T${endOfDay ? "23:59:59.999" : "00:00:00.000"}`);
+  return Number.isNaN(date.getTime()) ? null : date.getTime();
+}
+
+function getFilteredRequisitionHistoryRows(records: RequisitionMadeRecord[], filters: RequisitionHistoryFilters) {
+  const vendorFilter = filters.vendor.trim().toLowerCase();
+  const poFilter = filters.poNo.trim().toLowerCase();
+  const partFilter = filters.partNumber.trim().toLowerCase();
+  const itemFilter = filters.itemName.trim().toLowerCase();
+  const fromTime = getDateInputTime(filters.dateFrom);
+  const toTime = getDateInputTime(filters.dateTo, true);
+
+  return records
+    .flatMap((record) => {
+      const recordTime = new Date(getRequisitionRecordDate(record)).getTime();
+
+      if (filters.year !== "All" && getRequisitionRecordYear(record) !== filters.year) {
+        return [];
+      }
+
+      if (fromTime !== null && Number.isFinite(recordTime) && recordTime < fromTime) {
+        return [];
+      }
+
+      if (toTime !== null && Number.isFinite(recordTime) && recordTime > toTime) {
+        return [];
+      }
+
+      if (vendorFilter && !record.vendorName.toLowerCase().includes(vendorFilter)) {
+        return [];
+      }
+
+      if (poFilter && !(record.poNo ?? "").toLowerCase().includes(poFilter)) {
+        return [];
+      }
+
+      return record.itemSnapshots
+        .filter((snapshot) => {
+          if (partFilter && !snapshot.partNumber.toLowerCase().includes(partFilter)) {
+            return false;
+          }
+
+          if (itemFilter && !snapshot.itemName.toLowerCase().includes(itemFilter)) {
+            return false;
+          }
+
+          return true;
+        })
+        .map((snapshot) => ({ record, snapshot }));
+    })
+    .sort((a, b) => getRequisitionRecordDate(b.record).localeCompare(getRequisitionRecordDate(a.record)));
+}
+
+function getRequisitionInventoryPickerResults(data: AppData, searchValue: string, selectedItemIds: Set<string>) {
+  const search = searchValue.trim().toLowerCase();
+
+  if (!search) {
+    return [];
+  }
+
+  return data.items
+    .filter((item) => {
+      if (selectedItemIds.has(item.id)) {
+        return false;
+      }
+
+      const vendorName = getVendorName(data, item.vendorId);
+      const locationName = getLocationName(data, item.locationId);
+
+      return [item.partNumber, item.name, item.description, vendorName, locationName]
+        .join(" ")
+        .toLowerCase()
+        .includes(search);
+    })
+    .slice(0, 8);
+}
+
+function isManualRequisitionItem(item: Pick<InventoryItem, "id">) {
+  return item.id.startsWith(MANUAL_REQUISITION_ITEM_PREFIX);
+}
+
+function getManualRequisitionVendorName(item: Pick<InventoryItem, "vendorId">) {
+  return item.vendorId.startsWith(MANUAL_REQUISITION_VENDOR_PREFIX)
+    ? item.vendorId.slice(MANUAL_REQUISITION_VENDOR_PREFIX.length).trim()
+    : "";
+}
+
+function getRequisitionItemVendorName(data: AppData, item: InventoryItem) {
+  return getManualRequisitionVendorName(item) || (item.vendorId ? getVendorName(data, item.vendorId) : "Unassigned Vendor");
+}
+
+function getRequisitionLineDescription(item: InventoryItem) {
+  const description = item.description || item.name;
+  const notes = isManualRequisitionItem(item) ? item.notes.trim() : "";
+
+  return notes ? `${description} - Notes: ${notes}` : description;
+}
+
+function createManualRequisitionItem(draft: ManualRequisitionDraft): InventoryItem | null {
+  const description = draft.description.trim();
+  const partNumber = draft.partNumber.trim();
+
+  if (!description && !partNumber) {
+    return null;
+  }
+
+  const quantity = Math.max(1, wholeNumberValue(draft.quantity, 1));
+  const vendorName = draft.vendorName.trim();
+  const now = nowIso();
+
+  return {
+    id: `${MANUAL_REQUISITION_ITEM_PREFIX}${createId()}`,
+    name: description || partNumber,
+    partNumber,
+    description: description || partNumber,
+    category: "Manual",
+    quantityOnHand: 0,
+    stockUnit: DEFAULT_STOCK_UNIT,
+    minimumStockLevel: quantity,
+    lowStockAlertLevel: 0,
+    locationId: "",
+    vendorId: vendorName ? `${MANUAL_REQUISITION_VENDOR_PREFIX}${vendorName}` : "",
+    costEach: Math.max(0, numberValue(draft.costEach)),
+    itemUrl: "",
+    notes: draft.notes.trim(),
+    imagePlaceholder: "",
+    imageDataUrl: "",
+    barcodePlaceholder: "",
+    reorderHold: false,
+    orderPlaced: false,
+    orderRequisitionId: "",
+    createdAt: now,
+    updatedAt: now
+  };
 }
 
 function createRequisitionLineDraft(item: InventoryItem): RequisitionLineDraft {
@@ -6281,7 +10130,7 @@ function groupItemsByVendor(data: AppData, selectedItems: InventoryItem[]): Requ
   const groups = new Map<string, InventoryItem[]>();
 
   selectedItems.forEach((item) => {
-    const vendorName = item.vendorId ? getVendorName(data, item.vendorId) : "Unassigned Vendor";
+    const vendorName = getRequisitionItemVendorName(data, item);
     const key = item.vendorId || `unassigned-${vendorName}`;
 
     groups.set(key, [...(groups.get(key) ?? []), item]);
@@ -6289,12 +10138,15 @@ function groupItemsByVendor(data: AppData, selectedItems: InventoryItem[]): Requ
 
   return Array.from(groups.entries()).map(([vendorKey, groupItems]) => {
     const vendorId = groupItems[0]?.vendorId || "";
-    const vendor = data.vendors.find((candidate) => candidate.id === vendorId);
+    const vendor = vendorId.startsWith(MANUAL_REQUISITION_VENDOR_PREFIX)
+      ? undefined
+      : data.vendors.find((candidate) => candidate.id === vendorId);
+    const manualVendorName = groupItems[0] ? getManualRequisitionVendorName(groupItems[0]) : "";
 
     return {
       vendorKey,
       vendor,
-      vendorName: vendor?.name || "Unassigned Vendor",
+      vendorName: vendor?.name || manualVendorName || "Unassigned Vendor",
       items: groupItems
     };
   });
@@ -6344,6 +10196,19 @@ function createDefaultRequisitionHeader(vendor?: VendorRecord): RequisitionHeade
   };
 }
 
+function createDefaultRequisitionHeaderForGroup(group: RequisitionVendorGroup): RequisitionHeaderDraft {
+  const header = createDefaultRequisitionHeader(group.vendor);
+
+  if (header.vendorName || group.vendorName === "Unassigned Vendor") {
+    return header;
+  }
+
+  return {
+    ...header,
+    vendorName: group.vendorName
+  };
+}
+
 function getRequisitionLineQuantity(item: InventoryItem, lineDrafts: Record<string, RequisitionLineDraft>) {
   const value = lineDrafts[item.id]?.quantity;
 
@@ -6365,7 +10230,7 @@ function getAutoRequisitionType(total: number): "under100" | "over100" {
 }
 
 function getActiveRequisitionMadeItemIds(data: AppData) {
-  return new Set(pruneRequisitionMadeRecords(data).requisitionMadeRecords.flatMap((record) => record.itemIds));
+  return new Set(getActiveRequisitionMadeRecords(data).flatMap((record) => record.itemIds));
 }
 
 function createRequisitionMadeRecord({
@@ -6399,12 +10264,16 @@ function createRequisitionMadeRecord({
     id: createId(),
     vendorKey: group.vendorKey,
     vendorName: header.vendorName || group.vendorName,
+    createdAt: passedAt,
+    createdBy: header.requisitionedBy || header.poInitiator || "User",
     itemIds: itemSnapshots.map((snapshot) => snapshot.itemId),
     itemSnapshots,
+    poNo: header.poNo,
     totalCost,
     requisitionType: getAutoRequisitionType(totalCost),
     pdfGeneratedAt: pdfGeneratedAt || passedAt,
     passedAt,
+    requisitionedBy: header.requisitionedBy,
     status: "Made"
   };
 }
@@ -6433,7 +10302,7 @@ function buildRequisitionFormText({
   const lines = group.items.map((item, index) => {
     const quantity = getRequisitionLineQuantity(item, lineDrafts);
     const itemNumber = item.partNumber || item.name;
-    const description = item.description || item.name;
+    const description = getRequisitionLineDescription(item);
     const total = quantity * item.costEach;
 
     return `${index + 1}. ${quantity} ${normalizeStockUnit(item.stockUnit)} ${itemNumber} - ${description} - ${formatCurrency(
@@ -6787,7 +10656,7 @@ function RequisitionFormPreview({
                   </td>
                   <td>{normalizeStockUnit(item.stockUnit)}</td>
                   <td>{item.partNumber || item.name}</td>
-                  <td>{item.description || item.name}</td>
+                  <td>{getRequisitionLineDescription(item)}</td>
                   <td>
                     <input
                       className="input requisition-date-input"
@@ -6894,24 +10763,143 @@ function StockBeforeAfter({
   return (
     <span className={`stock-before-after ${toneClass}`}>
       <span>{formatNumber(before)}</span>
-      <span className="stock-before-after-arrow">â†’</span>
+      <span className="stock-before-after-arrow">/</span>
       <span>{formatNumber(after)}</span>
     </span>
   );
 }
 
+function printStockHistoryReport(data: AppData, stockRows: StockChange[]) {
+  const rows = stockRows
+    .map((change) => {
+      const item = data.items.find((candidate) => candidate.id === change.itemId);
+      const vendorName = change.vendorNameSnapshot || (item ? getVendorName(data, item.vendorId) : "-");
+      const reason = [change.reason, change.notes].filter(Boolean).join(" - ") || "-";
+
+      return `<tr>
+        <td>${escapeReportHtml(formatDateTime(change.occurredAt))}</td>
+        <td>${escapeReportHtml(change.itemNameSnapshot)}</td>
+        <td>${escapeReportHtml(change.partNumberSnapshot || item?.partNumber || "-")}</td>
+        <td>${escapeReportHtml(vendorName)}</td>
+        <td>${escapeReportHtml(change.actionType)}</td>
+        <td class="text-right">${escapeReportHtml(getStockMovement(change))}</td>
+        <td>${escapeReportHtml(`${formatNumber(change.previousQuantity)} / ${formatNumber(change.newQuantity)}`)}</td>
+        <td>${escapeReportHtml(reason)}</td>
+        <td>${escapeReportHtml(change.actor || "-")}</td>
+      </tr>`;
+    })
+    .join("");
+
+  openPrintableReport(
+    "Maintenance Inventory Tracker - Stock Change Ledger",
+    `<main class="report">
+      <header class="report-header">
+        <p class="report-kicker">Maintenance Inventory Tracker</p>
+        <h1>Stock Change Ledger</h1>
+      </header>
+      <section class="report-meta">
+        <div><span>Generated</span><strong>${escapeReportHtml(formatDateTime(nowIso()))}</strong></div>
+        <div><span>Filters</span><strong>Current result set</strong></div>
+        <div><span>Records</span><strong>${escapeReportHtml(formatNumber(stockRows.length))}</strong></div>
+      </section>
+      <table>
+        <thead>
+          <tr>
+            <th>Date / Time</th>
+            <th>Item</th>
+            <th>Part Number</th>
+            <th>Vendor</th>
+            <th>Action</th>
+            <th>Change</th>
+            <th>Before / After</th>
+            <th>Reason / Notes</th>
+            <th>By</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </main>`
+  );
+}
+
 function HistoryPage({ data }: { data: AppData }) {
+  const [historyPage, setHistoryPage] = useState(1);
+  const [historyPageSize, setHistoryPageSize] = useState(DEFAULT_HISTORY_LOG_PAGE_SIZE);
+  const [printStatus, setPrintStatus] = useState("");
+  const [printStatusType, setPrintStatusType] = useState<"success" | "error">("success");
   const stockRows = data.stockChanges.slice().sort((a, b) => b.occurredAt.localeCompare(a.occurredAt));
+  const totalHistoryPages = Math.max(1, Math.ceil(stockRows.length / historyPageSize));
+  const safeHistoryPage = Math.min(historyPage, totalHistoryPages);
+  const historyPageStartIndex = (safeHistoryPage - 1) * historyPageSize;
+  const paginatedStockRows = stockRows.slice(historyPageStartIndex, historyPageStartIndex + historyPageSize);
+  const pageStartNumber = stockRows.length === 0 ? 0 : historyPageStartIndex + 1;
+  const pageEndNumber = stockRows.length === 0 ? 0 : historyPageStartIndex + paginatedStockRows.length;
+
+  useEffect(() => {
+    setHistoryPage(1);
+  }, [historyPageSize]);
+
+  useEffect(() => {
+    setHistoryPage((current) => Math.min(current, totalHistoryPages));
+  }, [totalHistoryPages]);
+
+  function handleHistoryPageSizeChange(event: React.ChangeEvent<HTMLSelectElement>) {
+    const nextPageSize = Number(event.target.value);
+
+    setHistoryPageSize(
+      HISTORY_LOG_PAGE_SIZE_OPTIONS.some((option) => option === nextPageSize)
+        ? nextPageSize
+        : DEFAULT_HISTORY_LOG_PAGE_SIZE
+    );
+  }
+
+  function handlePrintHistory() {
+    try {
+      printStockHistoryReport(data, stockRows);
+      setPrintStatus("Print view started.");
+      setPrintStatusType("success");
+    } catch {
+      setPrintStatus("Could not generate print file.");
+      setPrintStatusType("error");
+    }
+  }
 
   return (
     <section className="space-y-5">
       <section className="panel">
-        <SectionHeader kicker="History logs" title="Stock Change Ledger" />
+        <SectionHeader
+          kicker="History logs"
+          title="Stock Change Ledger"
+          action={
+            <div className="report-action-stack">
+              <button className="btn-small" type="button" onClick={handlePrintHistory}>
+                Print History Logs
+              </button>
+              {printStatus && (
+                <span className={`requisition-status-message requisition-status-${printStatusType}`}>
+                  {printStatus}
+                </span>
+              )}
+            </div>
+          }
+        />
+        <InventoryPagination
+          currentPage={safeHistoryPage}
+          onNextPage={() => setHistoryPage((current) => Math.min(totalHistoryPages, current + 1))}
+          onPageSizeChange={handleHistoryPageSizeChange}
+          onPreviousPage={() => setHistoryPage((current) => Math.max(1, current - 1))}
+          pageEnd={pageEndNumber}
+          pageSize={historyPageSize}
+          pageStart={pageStartNumber}
+          pageSizeOptions={HISTORY_LOG_PAGE_SIZE_OPTIONS}
+          totalItems={stockRows.length}
+          totalPages={totalHistoryPages}
+        />
         <div className="history-table">
           <SimpleTable
             emptyText="No stock changes saved."
-            headers={["Date / Time", "Item", "Vendor", "Action", "Change", "Before â†’ After", "Reason", "By"]}
-            rows={stockRows.map((change) => {
+            headers={["Date / Time", "Item", "Vendor", "Action", "Change", "Before / After", "Reason", "By"]}
+            rows={paginatedStockRows.map((change) => {
               const item = data.items.find((candidate) => candidate.id === change.itemId);
               const vendorName = change.vendorNameSnapshot || (item ? getVendorName(data, item.vendorId) : "-");
 
@@ -6953,7 +10941,11 @@ function SettingsPage({
   onExportJson,
   onImportCsv,
   onImportJson,
+  onDeleteDeletedRecordForever,
+  onPurgeExpiredDeletedRecords,
+  onRestoreDeletedRecord,
   onRunBackup,
+  onStartScreensaver,
   saveHealthRows,
   updateSettings
 }: {
@@ -6972,7 +10964,11 @@ function SettingsPage({
   onExportJson: () => void;
   onImportCsv: (file: File) => void;
   onImportJson: (file: File) => void;
+  onDeleteDeletedRecordForever: (deletedRecordId: string) => void;
+  onPurgeExpiredDeletedRecords: () => void;
+  onRestoreDeletedRecord: (deletedRecordId: string) => void;
   onRunBackup: () => void;
+  onStartScreensaver: () => void;
   saveHealthRows: SaveHealthRow[];
   updateSettings: (settings: AppSettings, auditSummary?: string) => void;
 }) {
@@ -6984,10 +10980,17 @@ function SettingsPage({
   const [updateCheck, setUpdateCheck] = useState<ManualInstallerCheckResult | null>(null);
   const [updateStatus, setUpdateStatus] = useState("Manual update mode is active.");
   const [isCheckingUpdateFolder, setIsCheckingUpdateFolder] = useState(false);
+  const [isOpeningInstallerFile, setIsOpeningInstallerFile] = useState(false);
   const [isOpeningUpdateFolder, setIsOpeningUpdateFolder] = useState(false);
   const [isChoosingUpdateFolder, setIsChoosingUpdateFolder] = useState(false);
+
+  useEffect(() => {
+    onPurgeExpiredDeletedRecords();
+  }, []);
+
   const pdfStatusLabel = isCheckingPdfEngine ? "Checking..." : pdfEngineStatus ? (pdfEngineStatus.ready ? "Ready" : "Needs setup") : "Not checked";
   const pdfStatusClass = pdfEngineStatus?.ready ? "pdf-engine-ready" : "pdf-engine-warning";
+  const currentRankLabel = getRoleLabel(readAuthRecord()?.role);
 
   useEffect(() => {
     void refreshPdfEngineStatus();
@@ -7043,6 +11046,26 @@ function SettingsPage({
       setUpdateStatus(error instanceof Error ? error.message : "Could not open installer folder.");
     } finally {
       setIsOpeningUpdateFolder(false);
+    }
+  }
+
+  async function handleOpenNewestInstaller() {
+    const installer = updateCheck?.newerInstaller;
+
+    if (!installer) {
+      setUpdateStatus("No newer installer file was found.");
+      return;
+    }
+
+    setIsOpeningInstallerFile(true);
+
+    try {
+      await openInstallerFile(updateCheck.folderPath, installer.fileName);
+      setUpdateStatus(`Installer selected: ${installer.fileName}`);
+    } catch (error) {
+      setUpdateStatus(error instanceof Error ? error.message : "Could not open installer file.");
+    } finally {
+      setIsOpeningInstallerFile(false);
     }
   }
 
@@ -7151,7 +11174,17 @@ function SettingsPage({
             </select>
           </label>
         </div>
+        <div className="settings-status-card">
+          <div className="pdf-engine-row">
+            <span>Current rank</span>
+            <strong>{currentRankLabel}</strong>
+          </div>
+        </div>
         <div className="settings-menu-row" aria-label="Settings sections">
+          <button className="btn-primary settings-screensaver-action" type="button" onClick={onStartScreensaver}>
+            <ScreensaverModeIcon />
+            Start Screensaver Mode
+          </button>
           <a className="btn-muted" href="#app-update">
             App Update
           </a>
@@ -7230,8 +11263,13 @@ function SettingsPage({
           <button className="btn-primary" type="button" onClick={() => void handleCheckInstallerFolder()} disabled={isCheckingUpdateFolder}>
             {isCheckingUpdateFolder ? "Checking Installer Folder..." : "Check Installer Folder"}
           </button>
+          {updateCheck?.newerInstaller && (
+            <button className="btn-primary" type="button" onClick={() => void handleOpenNewestInstaller()} disabled={isOpeningInstallerFile}>
+              {isOpeningInstallerFile ? "Selecting Installer..." : "Yes, Update"}
+            </button>
+          )}
           <button className="btn-muted" type="button" onClick={() => void handleOpenInstallerFolder()} disabled={isOpeningUpdateFolder}>
-            {isOpeningUpdateFolder ? "Opening Folder..." : "Open Installer Folder"}
+            {isOpeningUpdateFolder ? "Opening Folder..." : "Open Update Folder"}
           </button>
           <button className="btn-muted" type="button" onClick={() => void handleChooseUpdateFolder()} disabled={isChoosingUpdateFolder}>
             {isChoosingUpdateFolder ? "Choosing Folder..." : "Choose Update Folder"}
@@ -7382,6 +11420,12 @@ function SettingsPage({
         </div>
       </section>
 
+      <RecentlyDeletedPanel
+        deletedRecords={data.deletedRecords ?? []}
+        onDeleteForever={onDeleteDeletedRecordForever}
+        onPurgeExpired={onPurgeExpiredDeletedRecords}
+        onRestore={onRestoreDeletedRecord}
+      />
       <SaveHealthPanel rows={saveHealthRows} />
 
       <section className="panel">
@@ -7441,18 +11485,36 @@ function StatCard({ label, tone, value }: { label: string; tone: "cyan" | "green
   );
 }
 
-function StatusStatCard({ status }: { status: InventoryStatus }) {
+function StatusStatCard({
+  item,
+  onWatchListVisibilityClick,
+  settings,
+  status
+}: {
+  item?: InventoryItem;
+  onWatchListVisibilityClick?: (itemId: string) => void;
+  settings?: AppSettings;
+  status: InventoryStatus;
+}) {
   return (
     <div className={`metric-card status-metric-card ${statusMetricClassName(status)}`}>
       <p className="text-xs font-bold uppercase text-slate-400">Status</p>
       <div className="mt-3">
-        <StatusTag status={status} showOrb={false} />
+        {item && settings && onWatchListVisibilityClick ? (
+          <StatusWithWatchVisibility
+            item={item}
+            settings={settings}
+            onWatchListVisibilityClick={onWatchListVisibilityClick}
+          />
+        ) : (
+          <StatusTag status={status} />
+        )}
       </div>
     </div>
   );
 }
 
-function PartNumberCell({ item }: { item: InventoryItem }) {
+function PartNumberCell({ item, onOpenError }: { item: InventoryItem; onOpenError?: () => void }) {
   const partNumber = item.partNumber || "No part number";
   const href = getItemUrlHref(item.itemUrl);
 
@@ -7460,10 +11522,24 @@ function PartNumberCell({ item }: { item: InventoryItem }) {
     return <span>{item.partNumber || "-"}</span>;
   }
 
+  async function openItemLink() {
+    try {
+      await openUrl(href);
+    } catch {
+      onOpenError?.();
+    }
+  }
+
   return (
-    <a className="part-link" href={href} target="_blank" rel="noreferrer">
+    <button
+      className="part-link"
+      type="button"
+      title="Open item link"
+      aria-label={`Open item link for ${partNumber}`}
+      onClick={() => void openItemLink()}
+    >
       {partNumber}
-    </a>
+    </button>
   );
 }
 
@@ -7508,12 +11584,85 @@ function StockQuantity({
 }
 
 function QrPreview({ value }: { value: string }) {
+  const qrValue = value.trim();
+
   return (
-    <div className={`qr-preview ${value.trim() ? "qr-preview-filled" : "qr-preview-empty"}`} aria-hidden="true">
-      {Array.from({ length: 81 }, (_, index) => (
-        <span key={index} className={isQrCellActive(value, index) ? "qr-cell-active" : ""} />
-      ))}
+    <div className={`qr-preview ${qrValue ? "qr-preview-filled" : "qr-preview-empty"}`} aria-label="QR code preview">
+      {qrValue ? (
+        <QRCodeSVG
+          value={qrValue}
+          size={120}
+          level="M"
+          bgColor="#f8fafc"
+          fgColor="#020617"
+          marginSize={4}
+          title="Item QR code"
+        />
+      ) : (
+        <span className="qr-preview-empty-mark">No QR value yet.</span>
+      )}
     </div>
+  );
+}
+
+function formatDeletedRecordTimeRemaining(record: DeletedRecord) {
+  const expiresAt = new Date(record.expiresAt).getTime();
+
+  if (!Number.isFinite(expiresAt)) {
+    return "Unknown";
+  }
+
+  const remainingMs = Math.max(0, expiresAt - Date.now());
+  const minutes = Math.ceil(remainingMs / 60000);
+
+  return minutes <= 0 ? "Expired" : `${formatNumber(minutes)} min`;
+}
+
+function RecentlyDeletedPanel({
+  deletedRecords,
+  onDeleteForever,
+  onPurgeExpired,
+  onRestore
+}: {
+  deletedRecords: DeletedRecord[];
+  onDeleteForever: (deletedRecordId: string) => void;
+  onPurgeExpired: () => void;
+  onRestore: (deletedRecordId: string) => void;
+}) {
+  const activeDeletedRecords = purgeExpiredDeletedRecords(deletedRecords).sort((a, b) => b.deletedAt.localeCompare(a.deletedAt));
+
+  return (
+    <section className="panel recently-deleted-panel">
+      <SectionHeader
+        kicker="Undo deletes"
+        title="Recently Deleted"
+        action={
+          <button className="btn-small" type="button" onClick={onPurgeExpired}>
+            Refresh
+          </button>
+        }
+      />
+      <SimpleTable
+        emptyText="No recently deleted records."
+        headers={["Deleted", "Type", "Record", "Details", "Time Left", "Actions"]}
+        rowKeys={activeDeletedRecords.map((record) => record.id)}
+        rows={activeDeletedRecords.map((record) => [
+          formatDateTime(record.deletedAt),
+          record.type,
+          record.title,
+          record.details || "-",
+          formatDeletedRecordTimeRemaining(record),
+          <span key="actions" className="trash-actions">
+            <button className="btn-small" type="button" onClick={() => onRestore(record.id)}>
+              Restore
+            </button>
+            <button className="btn-danger" type="button" onClick={() => onDeleteForever(record.id)}>
+              Delete Forever
+            </button>
+          </span>
+        ])}
+      />
+    </section>
   );
 }
 
@@ -7558,30 +11707,18 @@ function StatusDot({ state }: { state: BackupIndicatorState }) {
   return <span className={`status-dot status-dot-${state}`} aria-label={`Backup ${state}`} />;
 }
 
-function BackupStatusDot({ status }: { status: BackupStatusInfo }) {
-  return (
-    <span
-      className={`backup-health-dot backup-health-dot-${status.tone} ${status.pulse ? "backup-health-dot-pulse" : ""}`}
-      aria-label={status.tooltip}
-      title={status.tooltip}
-    />
-  );
-}
-
 function StatusTag({
   ariaLabel,
   onClick,
-  showOrb = true,
   status,
   title
 }: {
   ariaLabel?: string;
   onClick?: () => void;
-  showOrb?: boolean;
   status: string;
   title?: string;
 }) {
-  const className = `tag ${statusTagClassName(status)} ${onClick ? "tag-action" : ""} ${showOrb ? "" : "tag-no-orb"}`;
+  const className = `tag ${statusTagClassName(status)} ${onClick ? "tag-action" : ""}`;
 
   if (onClick) {
     return (
@@ -7594,28 +11731,203 @@ function StatusTag({
   return <span className={className}>{status}</span>;
 }
 
-function Toast({ text, tone }: { text: string; tone: "success" | "warning" | "danger" }) {
-  return <div className={`toast toast-${tone}`}>{text}</div>;
+function StatusWithWatchVisibility({
+  ariaLabel,
+  item,
+  onClick,
+  onWatchListVisibilityClick,
+  settings,
+  title
+}: {
+  ariaLabel?: string;
+  item: InventoryItem;
+  onClick?: () => void;
+  onWatchListVisibilityClick: (itemId: string) => void;
+  settings: AppSettings;
+  title?: string;
+}) {
+  const status = getInventoryStatus(item, settings);
+  const isHidden = isHiddenFromDashboardWatchList(item, settings);
+
+  return (
+    <span className="status-with-watch-visibility">
+      <StatusTag ariaLabel={ariaLabel} onClick={onClick} status={status} title={title} />
+      {isHidden && (
+        <button
+          className="hidden-watch-indicator"
+          type="button"
+          aria-label={`Show ${item.name} on Dashboard Watch List`}
+          title="Hidden from Dashboard Watch List"
+          onClick={(event) => {
+            event.stopPropagation();
+            onWatchListVisibilityClick(item.id);
+          }}
+        >
+          <EyeOffIcon />
+        </button>
+      )}
+    </span>
+  );
+}
+
+function EyeOffIcon() {
+  return (
+    <svg viewBox="0 0 24 24" role="img" aria-hidden="true">
+      <path d="M3 3l18 18" />
+      <path d="M10.6 10.6a3 3 0 0 0 3.8 3.8" />
+      <path d="M9.8 5.2A10.7 10.7 0 0 1 12 5c5 0 8.5 4.2 10 7-.5 1-1.4 2.2-2.5 3.3" />
+      <path d="M6.1 6.8C4.3 8 3 10 2 12c1.5 2.8 5 7 10 7 1.4 0 2.7-.3 3.8-.9" />
+    </svg>
+  );
+}
+
+function NewItemWatchListSettingDialog({
+  onCancel,
+  onChoose
+}: {
+  onCancel: () => void;
+  onChoose: (choice: WatchListVisibilityChoice) => void;
+}) {
+  const [selectedChoice, setSelectedChoice] = useState<WatchListVisibilityChoice>("hidden");
+  const choices: Array<{ description: string; label: string; value: WatchListVisibilityChoice }> = [
+    {
+      description: "Default for new items.",
+      label: "Hide from Dashboard Watch List",
+      value: "hidden"
+    },
+    {
+      description: "Use normal low-stock and out-of-stock alerts.",
+      label: "Show on Dashboard when Low/Out of Stock",
+      value: "visible"
+    },
+    {
+      description: "Keep it in the held reorder group.",
+      label: "Hold for Reorder List",
+      value: "held"
+    }
+  ];
+
+  return (
+    <div className="review-modal-backdrop">
+      <section
+        className="review-modal watch-list-setting-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="watch-list-setting-title"
+      >
+        <h3 id="watch-list-setting-title">Dashboard Watch List Setting</h3>
+        <p>Choose how this item should appear when it reaches low stock or out of stock.</p>
+        <div className="watch-list-choice-grid">
+          {choices.map((choice) => (
+            <button
+              key={choice.value}
+              className={`watch-list-choice-button ${selectedChoice === choice.value ? "watch-list-choice-button-selected" : ""}`}
+              type="button"
+              aria-pressed={selectedChoice === choice.value}
+              onClick={() => setSelectedChoice(choice.value)}
+            >
+              <strong>{choice.label}</strong>
+              <span>{choice.description}</span>
+            </button>
+          ))}
+        </div>
+        <div className="review-modal-actions">
+          <button className="btn-primary" type="button" onClick={() => onChoose(selectedChoice)}>
+            Save Watch List Setting
+          </button>
+          <button className="btn-muted" type="button" onClick={onCancel}>
+            Cancel
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function ShowWatchListDialog({
+  item,
+  onClose,
+  onMoveToHeld,
+  onShow
+}: {
+  item: InventoryItem;
+  onClose: () => void;
+  onMoveToHeld: () => void;
+  onShow: () => void;
+}) {
+  return (
+    <div className="review-modal-backdrop">
+      <section
+        className="review-modal show-watch-list-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="show-watch-list-title"
+      >
+        <h3 id="show-watch-list-title">Show on Watch List?</h3>
+        <p>
+          This item is currently hidden from the Dashboard Watch List. Do you want it to show when Low Stock or Out of
+          Stock?
+        </p>
+        <div className="review-modal-summary">
+          <span>{item.name}</span>
+          <strong>{item.partNumber || "No part number"}</strong>
+        </div>
+        <div className="review-modal-actions">
+          <button className="btn-primary" type="button" onClick={onShow}>
+            Show on Watch List
+          </button>
+          <button className="btn-muted" type="button" onClick={onMoveToHeld}>
+            Move to Held
+          </button>
+          <button className="btn-muted" type="button" onClick={onClose}>
+            Keep Hidden
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function Toast({ actionLabel, onAction, text, tone }: Exclude<ToastState, null>) {
+  return (
+    <div className={`toast toast-${tone}`}>
+      <span>{text}</span>
+      {actionLabel && onAction && (
+        <button className="toast-action" type="button" onClick={onAction}>
+          {actionLabel}
+        </button>
+      )}
+    </div>
+  );
 }
 
 function SimpleTable({
   emptyText,
+  footer,
   headers,
+  leading,
+  onScroll,
   rowKeys,
-  rows
+  rows,
+  scrollRef
 }: {
   emptyText: string;
-  headers: string[];
+  footer?: React.ReactNode;
+  headers: React.ReactNode[];
+  leading?: React.ReactNode;
+  onScroll?: () => void;
   rowKeys?: string[];
   rows: React.ReactNode[][];
+  scrollRef?: React.Ref<HTMLDivElement>;
 }) {
   return (
-    <div className="table-wrap">
+    <div className="table-wrap" ref={scrollRef} onScroll={onScroll}>
+      {leading}
       <table className="data-table">
         <thead>
           <tr>
-            {headers.map((header) => (
-              <th key={header}>{header}</th>
+            {headers.map((header, index) => (
+              <th key={index}>{header}</th>
             ))}
           </tr>
         </thead>
@@ -7636,6 +11948,7 @@ function SimpleTable({
           )}
         </tbody>
       </table>
+      {footer}
     </div>
   );
 }

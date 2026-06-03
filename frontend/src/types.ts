@@ -49,6 +49,7 @@ export type AppSettings = {
   lastBackupTimestamp: string;
   lastAutoImportTimestamp: string;
   backupStatus: string;
+  watchListDefaultsMigratedAt: string;
   createdAt: string;
   updatedAt: string;
 };
@@ -93,10 +94,28 @@ export type InventoryItem = {
   itemUrl: string;
   notes: string;
   imagePlaceholder: string;
+  imageDataUrl: string;
   barcodePlaceholder: string;
+  reorderHold?: boolean;
+  orderPlaced?: boolean;
+  orderRequisitionId?: string;
   isDemo?: boolean;
   createdAt: string;
   updatedAt: string;
+};
+
+export type DeletedRecordType = "Inventory" | "Vendor" | "Location";
+
+export type DeletedRecord = {
+  id: string;
+  originalId: string;
+  type: DeletedRecordType;
+  title: string;
+  details: string;
+  deletedAt: string;
+  expiresAt: string;
+  actor: string;
+  payload: InventoryItem | VendorRecord | LocationRecord;
 };
 
 export type RequisitionLineDraft = {
@@ -144,6 +163,8 @@ export type RequisitionMadeRecord = {
   id: string;
   vendorKey: string;
   vendorName: string;
+  createdAt?: string;
+  createdBy?: string;
   itemIds: string[];
   itemSnapshots: {
     itemId: string;
@@ -153,10 +174,12 @@ export type RequisitionMadeRecord = {
     unitCost: number;
     totalCost: number;
   }[];
+  poNo?: string;
   totalCost: number;
   requisitionType: "under100" | "over100";
   pdfGeneratedAt: string;
   passedAt: string;
+  requisitionedBy?: string;
   status: "Made";
 };
 
@@ -200,6 +223,7 @@ export type AppData = {
   vendors: VendorRecord[];
   stockChanges: StockChange[];
   requisitionMadeRecords: RequisitionMadeRecord[];
+  deletedRecords?: DeletedRecord[];
   auditLog: AuditEntry[];
   settings: AppSettings;
 };

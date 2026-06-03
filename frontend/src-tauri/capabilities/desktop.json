@@ -9,6 +9,7 @@
     "main"
   ],
   "permissions": [
+    "opener:default",
     "sql:default",
     "sql:allow-execute"
   ]
