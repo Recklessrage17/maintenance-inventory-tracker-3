@@ -15,12 +15,20 @@ use tauri_plugin_sql::{Migration, MigrationKind};
 const SQLITE_CONNECTION: &str = "sqlite:maintenance_inventory_3.db";
 
 fn sqlite_migrations() -> Vec<Migration> {
-    vec![Migration {
-        version: 1,
-        description: "initial_schema",
-        sql: include_str!("../migrations/001_initial_schema.sql"),
-        kind: MigrationKind::Up,
-    }]
+    vec![
+        Migration {
+            version: 1,
+            description: "initial_schema",
+            sql: include_str!("../migrations/001_initial_schema.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 2,
+            description: "vendor_contact_email",
+            sql: include_str!("../migrations/002_vendor_contact_email.sql"),
+            kind: MigrationKind::Up,
+        },
+    ]
 }
 
 #[derive(serde::Serialize)]

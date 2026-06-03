@@ -51,7 +51,10 @@ import {
 } from "./lib/historyLog";
 import { getRoleLabel, hasPermission, PERMISSION_DENIED_MESSAGE, type Permission } from "./lib/permissions";
 import { checkPdfExportEngines, type PdfEngineStatus } from "./lib/pdfEngineStatus";
-import { getSqliteVendorLocationStatus } from "./lib/sqliteVendorsLocations";
+import {
+  activateVendorLocationSqliteState,
+  getSqliteVendorLocationStatus
+} from "./lib/sqliteVendorsLocations";
 import { IdleScreensaver } from "./components/layout/IdleScreensaver";
 import jbtLogo from "./assets/jbt-logo.png";
 import type {
@@ -2683,7 +2686,7 @@ function InventoryApp() {
     let cancelled = false;
 
     loadAppData()
-      .then((savedData) => {
+      .then(async (savedData) => {
         if (cancelled) {
           return;
         }
@@ -2700,7 +2703,36 @@ function InventoryApp() {
               .filter(Boolean) as DeletedRecord[]
           )
         };
-        const loadedData = shouldPersistWatchListDefaultsMigration ? stampData(normalizedData) : normalizedData;
+        let loadedData = shouldPersistWatchListDefaultsMigration ? stampData(normalizedData) : normalizedData;
+
+        try {
+          const sqliteState = await activateVendorLocationSqliteState(loadedData.vendors, loadedData.locations);
+
+          if (cancelled) {
+            return;
+          }
+
+          if (!sqliteState.skipped) {
+            loadedData = {
+              ...loadedData,
+              locations: sqliteState.locations,
+              vendors: sqliteState.vendors
+            };
+
+            if (import.meta.env.DEV) {
+              console.info("[sqlite-vendor-location-mirror]", sqliteState);
+            }
+          }
+        } catch (error) {
+          if (cancelled) {
+            return;
+          }
+
+          console.warn(
+            "[sqlite-vendor-location-mirror] Vendor/location SQLite activation failed. JSON remains available.",
+            error
+          );
+        }
 
         setData(loadedData);
         latestDataRef.current = loadedData;
@@ -2772,7 +2804,7 @@ function InventoryApp() {
   }, [data]);
 
   useEffect(() => {
-    if (!data || !import.meta.env.DEV) {
+    if (!data) {
       return;
     }
 
@@ -2794,7 +2826,9 @@ function InventoryApp() {
           return;
         }
 
-        console.info("[sqlite-vendor-location-mirror]", status);
+        if (import.meta.env.DEV) {
+          console.info("[sqlite-vendor-location-mirror]", status);
+        }
       })
       .catch((error) => {
         if (cancelled) {
@@ -2802,7 +2836,7 @@ function InventoryApp() {
         }
 
         console.warn(
-          "[sqlite-vendor-location-mirror] Vendor/location mirror failed. JSON remains source of truth.",
+          "[sqlite-vendor-location-mirror] Vendor/location SQLite sync failed. JSON fallback remains available.",
           error
         );
       });

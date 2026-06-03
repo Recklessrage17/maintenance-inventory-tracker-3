@@ -2,7 +2,7 @@
 
 ## Current Live Data Flow
 
-JSON/current app data remains the live data source. The app loads and saves the whole `AppData` object through `frontend/src/lib/db.ts`, which currently stores one `app` record in IndexedDB.
+JSON/current app data remains the live data source for inventory, history, requisitions, settings, backup, and restore. Vendors and locations are now the first SQLite live-read/write pilot on desktop, with IndexedDB still saving the full `AppData` object as fallback/export compatibility.
 
 - App load: `frontend/src/App.tsx` calls `loadAppData()` during startup, normalizes the result, and falls back to demo data when no saved data is found.
 - App save: `frontend/src/App.tsx` watches `data` state and calls `saveAppData(data)` after changes.
@@ -29,10 +29,12 @@ Website V3 will need a backend/API for server-side data access. The website data
 - `SqliteDesktopDataAdapter`: future desktop adapter using Tauri + SQLite.
 - `WebApiDataAdapter`: future website adapter using HTTP calls to a backend/API.
 
-Keep `JsonLocalDataAdapter` as the only live behavior until a separate migration pass is planned and tested.
+Keep `JsonLocalDataAdapter` as the live behavior for everything except the vendor/location SQLite pilot until each later migration pass is planned and tested.
 
 ## SQLite Pilot - Vendors And Locations
 
-The first SQLite pilot mirrors only current JSON vendors and locations into SQLite during dev/Tauri runtime. JSON/IndexedDB remains the source of truth, and React screens still read and write the existing `AppData` object.
+The first SQLite pilot now covers only vendors and locations. On desktop load, the app still loads the existing JSON/IndexedDB data first, backfills SQLite if the vendor/location tables are empty, then uses SQLite vendors and locations in app state.
 
-The mirror uses stable vendor/location IDs, upserts current records, removes mirror rows that no longer exist in JSON, and logs JSON versus SQLite counts for validation. Inventory, stock history, requisitions, PDF, print, backup, and restore behavior are unchanged.
+Vendor/location state changes continue through the existing React flows, then sync to SQLite with stable IDs, upserts, and delete-by-absence pruning. The full `AppData` object still saves to IndexedDB so JSON backup/export and fallback behavior remain available.
+
+Inventory, stock history, requisitions, PDF, print, backup, and restore behavior are unchanged. Restore/import replaces app state through the existing JSON path, and the vendor/location sync effect writes the restored vendors and locations into SQLite after state updates.
