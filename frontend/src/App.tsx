@@ -51,6 +51,7 @@ import {
 } from "./lib/historyLog";
 import { getRoleLabel, hasPermission, PERMISSION_DENIED_MESSAGE, type Permission } from "./lib/permissions";
 import { checkPdfExportEngines, type PdfEngineStatus } from "./lib/pdfEngineStatus";
+import { getSqliteVendorLocationStatus } from "./lib/sqliteVendorsLocations";
 import { IdleScreensaver } from "./components/layout/IdleScreensaver";
 import jbtLogo from "./assets/jbt-logo.png";
 import type {
@@ -2674,6 +2675,7 @@ function InventoryApp() {
   const suppressNextAutoBackupRef = useRef(false);
   const pendingTimedBackupRef = useRef(false);
   const latestDataRef = useRef<AppData | null>(null);
+  const sqliteVendorLocationMirrorSignatureRef = useRef("");
   const skipHeaderBadgeSaveRef = useRef(false);
   const vendorAiPromptResolveRef = useRef<((note: string | null) => void) | null>(null);
 
@@ -2768,6 +2770,47 @@ function InventoryApp() {
   useEffect(() => {
     latestDataRef.current = data;
   }, [data]);
+
+  useEffect(() => {
+    if (!data || !import.meta.env.DEV) {
+      return;
+    }
+
+    const mirrorSignature = JSON.stringify({
+      locations: data.locations.map((location) => [location.id, location.updatedAt]),
+      vendors: data.vendors.map((vendor) => [vendor.id, vendor.updatedAt])
+    });
+
+    if (sqliteVendorLocationMirrorSignatureRef.current === mirrorSignature) {
+      return;
+    }
+
+    sqliteVendorLocationMirrorSignatureRef.current = mirrorSignature;
+    let cancelled = false;
+
+    getSqliteVendorLocationStatus(data.vendors, data.locations)
+      .then((status) => {
+        if (cancelled || status.skipped) {
+          return;
+        }
+
+        console.info("[sqlite-vendor-location-mirror]", status);
+      })
+      .catch((error) => {
+        if (cancelled) {
+          return;
+        }
+
+        console.warn(
+          "[sqlite-vendor-location-mirror] Vendor/location mirror failed. JSON remains source of truth.",
+          error
+        );
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [data?.locations, data?.vendors]);
 
   useEffect(() => {
     if (!data) {

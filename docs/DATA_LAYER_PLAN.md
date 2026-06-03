@@ -30,3 +30,9 @@ Website V3 will need a backend/API for server-side data access. The website data
 - `WebApiDataAdapter`: future website adapter using HTTP calls to a backend/API.
 
 Keep `JsonLocalDataAdapter` as the only live behavior until a separate migration pass is planned and tested.
+
+## SQLite Pilot - Vendors And Locations
+
+The first SQLite pilot mirrors only current JSON vendors and locations into SQLite during dev/Tauri runtime. JSON/IndexedDB remains the source of truth, and React screens still read and write the existing `AppData` object.
+
+The mirror uses stable vendor/location IDs, upserts current records, removes mirror rows that no longer exist in JSON, and logs JSON versus SQLite counts for validation. Inventory, stock history, requisitions, PDF, print, backup, and restore behavior are unchanged.
