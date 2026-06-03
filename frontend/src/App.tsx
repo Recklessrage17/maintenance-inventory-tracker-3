@@ -63,6 +63,7 @@ import {
   activateStockLedgerSqliteState,
   getSqliteStockLedgerMirrorStatus
 } from "./lib/sqliteStockLedgerMirror";
+import { getSqliteRequisitionMirrorStatus } from "./lib/sqliteRequisitionMirror";
 import { IdleScreensaver } from "./components/layout/IdleScreensaver";
 import jbtLogo from "./assets/jbt-logo.png";
 import type {
@@ -2688,6 +2689,7 @@ function InventoryApp() {
   const latestDataRef = useRef<AppData | null>(null);
   const sqliteInventoryMirrorSignatureRef = useRef("");
   const sqliteStockLedgerMirrorSignatureRef = useRef("");
+  const sqliteRequisitionMirrorSignatureRef = useRef("");
   const sqliteVendorLocationMirrorSignatureRef = useRef("");
   const skipHeaderBadgeSaveRef = useRef(false);
   const vendorAiPromptResolveRef = useRef<((note: string | null) => void) | null>(null);
@@ -3012,6 +3014,81 @@ function InventoryApp() {
       cancelled = true;
     };
   }, [data?.stockChanges]);
+
+  useEffect(() => {
+    if (!data) {
+      return;
+    }
+
+    const mirrorSignature = JSON.stringify({
+      requisitionMadeRecords: data.requisitionMadeRecords.map((record) => [
+        record.id,
+        record.createdAt,
+        record.passedAt,
+        record.pdfGeneratedAt,
+        record.poNo,
+        record.totalCost,
+        record.itemSnapshots.map((snapshot) => [
+          snapshot.itemId,
+          snapshot.partNumber,
+          snapshot.quantityRequested,
+          snapshot.unitCost,
+          snapshot.totalCost
+        ])
+      ])
+    });
+
+    if (sqliteRequisitionMirrorSignatureRef.current === mirrorSignature) {
+      return;
+    }
+
+    sqliteRequisitionMirrorSignatureRef.current = mirrorSignature;
+    let cancelled = false;
+
+    getSqliteRequisitionMirrorStatus(data)
+      .then((status) => {
+        if (cancelled) {
+          return;
+        }
+
+        if (import.meta.env.DEV) {
+          console.info("[sqlite-requisition-mirror]", status);
+        }
+      })
+      .catch((error) => {
+        if (cancelled) {
+          return;
+        }
+
+        if (import.meta.env.DEV) {
+          console.info("[sqlite-requisition-mirror]", {
+            error: error instanceof Error ? error.message : String(error),
+            jsonReorderHistoryCount: data.requisitionMadeRecords.reduce(
+              (total, record) => total + record.itemSnapshots.length,
+              0
+            ),
+            jsonRequisitionCount: data.requisitionMadeRecords.length,
+            jsonRequisitionLineCount: data.requisitionMadeRecords.reduce(
+              (total, record) => total + record.itemSnapshots.length,
+              0
+            ),
+            reorderHistoryMatch: false,
+            requisitionLinesMatch: false,
+            requisitionsMatch: false,
+            samplePartNumbers: [],
+            sampleRequisitionNumbers: [],
+            sqliteAvailable: false,
+            sqliteReorderHistoryCount: 0,
+            sqliteRequisitionCount: 0,
+            sqliteRequisitionLineCount: 0
+          });
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [data?.requisitionMadeRecords]);
 
   useEffect(() => {
     if (!data) {

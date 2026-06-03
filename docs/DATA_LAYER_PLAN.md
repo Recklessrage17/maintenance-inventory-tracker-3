@@ -50,3 +50,9 @@ Inventory changes still flow through the existing React app state, then sync to 
 Stock ledger/history now uses SQLite as the active desktop read/write pilot. On desktop load, the app loads JSON/IndexedDB first for fallback compatibility, backfills SQLite history when needed, then uses SQLite stock ledger rows in `data.stockChanges`.
 
 Stock edit still creates history through the existing React app state flow, then syncs to SQLite with stable IDs, upserts, and stale-row pruning. History Logs UI, history pagination, history print/export, backup/restore, and requisitions keep their existing behavior.
+
+## SQLite Mirror - Requisitions
+
+Requisitions are mirror-only in this pass. The live Reorder List, Requisition Made view, requisition history, official PDF generation, backup/export, and restore/import flows still use JSON `data.requisitionMadeRecords`.
+
+On desktop, `frontend/src/lib/sqliteRequisitionMirror.ts` mirrors those JSON records into SQLite `requisitions`, `requisition_lines`, and `reorder_history` rows with stable source IDs. This prepares the future SQLite requisition migration without switching the UI or backup behavior yet.

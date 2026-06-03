@@ -40,6 +40,12 @@ fn sqlite_migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/004_stock_ledger_mirror_fields.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 5,
+            description: "requisition_mirror_fields",
+            sql: include_str!("../migrations/005_requisition_mirror_fields.sql"),
+            kind: MigrationKind::Up,
+        },
     ]
 }
 
