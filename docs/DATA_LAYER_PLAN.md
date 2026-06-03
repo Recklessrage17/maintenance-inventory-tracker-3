@@ -38,3 +38,7 @@ The first SQLite pilot now covers only vendors and locations. On desktop load, t
 Vendor/location state changes continue through the existing React flows, then sync to SQLite with stable IDs, upserts, and delete-by-absence pruning. The full `AppData` object still saves to IndexedDB so JSON backup/export and fallback behavior remain available.
 
 Inventory, stock history, requisitions, PDF, print, backup, and restore behavior are unchanged. Restore/import replaces app state through the existing JSON path, and the vendor/location sync effect writes the restored vendors and locations into SQLite after state updates.
+
+## SQLite Mirror - Inventory
+
+Inventory has started as a SQLite mirror only. In development desktop runs, `data.items` is upserted into `inventory_items` with stable IDs and stale mirror rows are pruned. The Inventory UI, stock edit flow, CSV import, backup/restore, stock history, and requisitions still use the existing JSON/IndexedDB app state path.

@@ -51,6 +51,7 @@ import {
 } from "./lib/historyLog";
 import { getRoleLabel, hasPermission, PERMISSION_DENIED_MESSAGE, type Permission } from "./lib/permissions";
 import { checkPdfExportEngines, type PdfEngineStatus } from "./lib/pdfEngineStatus";
+import { getSqliteInventoryMirrorStatus } from "./lib/sqliteInventoryMirror";
 import {
   activateVendorLocationSqliteState,
   getSqliteVendorLocationStatus
@@ -2678,6 +2679,7 @@ function InventoryApp() {
   const suppressNextAutoBackupRef = useRef(false);
   const pendingTimedBackupRef = useRef(false);
   const latestDataRef = useRef<AppData | null>(null);
+  const sqliteInventoryMirrorSignatureRef = useRef("");
   const sqliteVendorLocationMirrorSignatureRef = useRef("");
   const skipHeaderBadgeSaveRef = useRef(false);
   const vendorAiPromptResolveRef = useRef<((note: string | null) => void) | null>(null);
@@ -2845,6 +2847,56 @@ function InventoryApp() {
       cancelled = true;
     };
   }, [data?.locations, data?.vendors]);
+
+  useEffect(() => {
+    if (!data || !import.meta.env.DEV) {
+      return;
+    }
+
+    const mirrorSignature = JSON.stringify({
+      items: data.items.map((item) => [
+        item.id,
+        item.updatedAt,
+        item.quantityOnHand,
+        item.orderPlaced,
+        item.reorderHold
+      ])
+    });
+
+    if (sqliteInventoryMirrorSignatureRef.current === mirrorSignature) {
+      return;
+    }
+
+    sqliteInventoryMirrorSignatureRef.current = mirrorSignature;
+    let cancelled = false;
+
+    getSqliteInventoryMirrorStatus(data.items)
+      .then((status) => {
+        if (cancelled) {
+          return;
+        }
+
+        console.info("[sqlite-inventory-mirror]", status);
+      })
+      .catch((error) => {
+        if (cancelled) {
+          return;
+        }
+
+        console.info("[sqlite-inventory-mirror]", {
+          error: error instanceof Error ? error.message : String(error),
+          inventoryMatch: false,
+          jsonInventoryCount: data.items.length,
+          samplePartNumbers: [],
+          sqliteAvailable: false,
+          sqliteInventoryCount: 0
+        });
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [data?.items]);
 
   useEffect(() => {
     if (!data) {
