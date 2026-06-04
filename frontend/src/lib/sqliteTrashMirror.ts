@@ -1,4 +1,4 @@
-import type { DeletedRecord } from "../types";
+import type { DeletedRecord, DeletedRecordType } from "../types";
 import { openMaintenanceSqliteDatabase } from "./sqliteRuntime";
 
 type SqliteDatabase = Awaited<ReturnType<typeof openMaintenanceSqliteDatabase>>;
@@ -17,6 +17,11 @@ type TrashMirrorSampleRow = {
   title: string | null;
 };
 
+type SqliteDeletedRecordRow = TrashMirrorSampleRow & {
+  details: string | null;
+  payload_json: string;
+};
+
 export type TrashMirrorSample = {
   deletedAt: string;
   deletedBy: string;
@@ -28,6 +33,7 @@ export type TrashMirrorSample = {
 };
 
 export type SqliteTrashMirrorStatus = {
+  activeTrashSource: "json" | "sqlite";
   deletedRecordsMatch: boolean;
   error?: string;
   jsonDeletedRecordCount: number;
@@ -36,6 +42,12 @@ export type SqliteTrashMirrorStatus = {
   sqliteAvailable: boolean;
   sqliteDeletedRecordCount: number;
 };
+
+export type TrashSqliteActivationResult = SqliteTrashMirrorStatus & {
+  records: DeletedRecord[];
+};
+
+const TRASH_RETENTION_MS = 30 * 60 * 1000;
 
 function hasTauriRuntime() {
   return typeof window !== "undefined" && Boolean((window as Window & { __TAURI__?: unknown }).__TAURI__);
@@ -65,6 +77,80 @@ function deletedBy(record: DeletedRecord) {
   const raw = record as unknown as { deletedBy?: unknown };
 
   return textValue(raw.deletedBy) || textValue(record.actor);
+}
+
+function deletedRecordType(value: string): DeletedRecordType {
+  return value === "Vendor" || value === "Location" ? value : "Inventory";
+}
+
+function parsePayload(value: string): DeletedRecord["payload"] {
+  try {
+    const parsed = JSON.parse(value);
+
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as DeletedRecord["payload"])
+      : ({} as DeletedRecord["payload"]);
+  } catch {
+    return {} as DeletedRecord["payload"];
+  }
+}
+
+function fallbackExpiresAt(deletedAt: string) {
+  const deletedAtMs = new Date(deletedAt).getTime();
+
+  return new Date((Number.isFinite(deletedAtMs) ? deletedAtMs : Date.now()) + TRASH_RETENTION_MS).toISOString();
+}
+
+function deletedRecordFromSqlite(row: SqliteDeletedRecordRow): DeletedRecord {
+  const payload = parsePayload(row.payload_json);
+  const payloadRecord = payload as unknown as Record<string, unknown>;
+
+  return {
+    id: row.id,
+    originalId: row.record_id,
+    type: deletedRecordType(row.record_type),
+    title: row.title ?? (textValue(payloadRecord.name) || row.record_id),
+    details: row.details ?? "",
+    deletedAt: row.deleted_at,
+    expiresAt: row.expires_at ?? fallbackExpiresAt(row.deleted_at),
+    actor: row.deleted_by ?? "User",
+    payload
+  };
+}
+
+function orderBySource<T extends { id: string }>(source: T[], loaded: T[]) {
+  const sourceOrder = new Map(source.map((record, index) => [record.id, index]));
+
+  return [...loaded].sort((left, right) => {
+    const leftIndex = sourceOrder.get(left.id) ?? Number.MAX_SAFE_INTEGER;
+    const rightIndex = sourceOrder.get(right.id) ?? Number.MAX_SAFE_INTEGER;
+
+    return leftIndex - rightIndex || left.id.localeCompare(right.id);
+  });
+}
+
+function recordsDiffer(jsonRecords: DeletedRecord[], sqliteRecords: DeletedRecord[]) {
+  if (jsonRecords.length !== sqliteRecords.length) {
+    return true;
+  }
+
+  const sqliteById = new Map(sqliteRecords.map((record) => [record.id, record]));
+
+  return jsonRecords.some((jsonRecord) => {
+    const sqliteRecord = sqliteById.get(jsonRecord.id);
+
+    return (
+      !sqliteRecord ||
+      jsonRecord.type !== sqliteRecord.type ||
+      jsonRecord.originalId !== sqliteRecord.originalId ||
+      jsonRecord.deletedAt !== sqliteRecord.deletedAt ||
+      jsonRecord.expiresAt !== sqliteRecord.expiresAt ||
+      jsonRecord.title !== sqliteRecord.title ||
+      jsonRecord.details !== sqliteRecord.details ||
+      deletedBy(jsonRecord) !== sqliteRecord.actor ||
+      JSON.stringify(jsonRecord.payload) !== JSON.stringify(sqliteRecord.payload)
+    );
+  });
 }
 
 async function deleteTrashRowsNotIn(db: SqliteDatabase, ids: string[]) {
@@ -131,6 +217,48 @@ export async function syncDeletedRecordsToSqlite(records: DeletedRecord[]) {
   return countSqliteDeletedRecords();
 }
 
+export async function loadDeletedRecordsFromSqlite(): Promise<DeletedRecord[]> {
+  if (!hasTauriRuntime()) {
+    return [];
+  }
+
+  const db = await openMaintenanceSqliteDatabase();
+  const rows = await db.select<SqliteDeletedRecordRow[]>(
+    `SELECT
+      id,
+      record_type,
+      record_id,
+      deleted_at,
+      expires_at,
+      payload_json,
+      title,
+      details,
+      deleted_by
+    FROM deleted_records
+    ORDER BY deleted_at DESC, id ASC`
+  );
+
+  return rows.map(deletedRecordFromSqlite);
+}
+
+export async function saveDeletedRecordToSqlite(record: DeletedRecord) {
+  if (!hasTauriRuntime()) {
+    return;
+  }
+
+  const db = await openMaintenanceSqliteDatabase();
+  await saveDeletedRecordWithDb(db, record);
+}
+
+export async function deleteDeletedRecordFromSqlite(recordId: string) {
+  if (!hasTauriRuntime()) {
+    return;
+  }
+
+  const db = await openMaintenanceSqliteDatabase();
+  await db.execute("DELETE FROM deleted_records WHERE id = ?", [recordId]);
+}
+
 export async function countSqliteDeletedRecords() {
   if (!hasTauriRuntime()) {
     return 0;
@@ -178,6 +306,7 @@ export async function loadTrashMirrorSample(limit = 5): Promise<TrashMirrorSampl
 export async function getSqliteTrashMirrorStatus(records: DeletedRecord[]): Promise<SqliteTrashMirrorStatus> {
   if (!hasTauriRuntime()) {
     return {
+      activeTrashSource: "json",
       deletedRecordsMatch: false,
       jsonDeletedRecordCount: records.length,
       sampleRecordIds: [],
@@ -192,6 +321,7 @@ export async function getSqliteTrashMirrorStatus(records: DeletedRecord[]): Prom
     const sample = await loadTrashMirrorSample();
 
     return {
+      activeTrashSource: "sqlite",
       deletedRecordsMatch: sqliteDeletedRecordCount === records.length,
       jsonDeletedRecordCount: records.length,
       sampleRecordIds: sample.map((record) => record.recordId).filter(Boolean),
@@ -201,9 +331,60 @@ export async function getSqliteTrashMirrorStatus(records: DeletedRecord[]): Prom
     };
   } catch (error) {
     return {
+      activeTrashSource: "json",
       deletedRecordsMatch: false,
       error: errorMessage(error),
       jsonDeletedRecordCount: records.length,
+      sampleRecordIds: [],
+      sampleRecordTypes: [],
+      sqliteAvailable: false,
+      sqliteDeletedRecordCount: 0
+    };
+  }
+}
+
+export async function activateTrashSqliteState(jsonRecords: DeletedRecord[]): Promise<TrashSqliteActivationResult> {
+  if (!hasTauriRuntime()) {
+    return {
+      activeTrashSource: "json",
+      deletedRecordsMatch: false,
+      jsonDeletedRecordCount: jsonRecords.length,
+      records: jsonRecords,
+      sampleRecordIds: [],
+      sampleRecordTypes: [],
+      sqliteAvailable: false,
+      sqliteDeletedRecordCount: 0
+    };
+  }
+
+  try {
+    let sqliteRecords = await loadDeletedRecordsFromSqlite();
+
+    if (recordsDiffer(jsonRecords, sqliteRecords)) {
+      await syncDeletedRecordsToSqlite(jsonRecords);
+      sqliteRecords = await loadDeletedRecordsFromSqlite();
+    }
+
+    const orderedSqliteRecords = orderBySource(jsonRecords, sqliteRecords);
+    const sample = await loadTrashMirrorSample();
+
+    return {
+      activeTrashSource: "sqlite",
+      deletedRecordsMatch: orderedSqliteRecords.length === jsonRecords.length,
+      jsonDeletedRecordCount: jsonRecords.length,
+      records: orderedSqliteRecords,
+      sampleRecordIds: sample.map((record) => record.recordId).filter(Boolean),
+      sampleRecordTypes: sample.map((record) => record.recordType).filter(Boolean),
+      sqliteAvailable: true,
+      sqliteDeletedRecordCount: orderedSqliteRecords.length
+    };
+  } catch (error) {
+    return {
+      activeTrashSource: "json",
+      deletedRecordsMatch: false,
+      error: errorMessage(error),
+      jsonDeletedRecordCount: jsonRecords.length,
+      records: jsonRecords,
       sampleRecordIds: [],
       sampleRecordTypes: [],
       sqliteAvailable: false,

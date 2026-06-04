@@ -2,7 +2,7 @@
 
 ## Current Live Data Flow
 
-JSON/current app data remains the live data source for settings, backup, and restore. Vendors, locations, inventory, stock ledger/history, and requisitions are now SQLite live-read/write pilots on desktop, with IndexedDB still saving the full `AppData` object as fallback/export compatibility.
+JSON/current app data remains the live data source for settings, backup, and restore. Vendors, locations, inventory, stock ledger/history, requisitions, and Recently Deleted/trash are now SQLite live-read/write pilots on desktop, with IndexedDB still saving the full `AppData` object as fallback/export compatibility.
 
 - App load: `frontend/src/App.tsx` calls `loadAppData()` during startup, normalizes the result, and falls back to demo data when no saved data is found.
 - App save: `frontend/src/App.tsx` watches `data` state and calls `saveAppData(data)` after changes.
@@ -56,3 +56,9 @@ Stock edit still creates history through the existing React app state flow, then
 Requisitions now use SQLite as the active desktop read/write pilot. On desktop load, the app loads JSON/IndexedDB first for fallback compatibility, backfills SQLite requisition data when needed, then uses SQLite requisition rows in `data.requisitionMadeRecords`.
 
 The Reorder List, Requisition Made view, requisition history, and official PDF generation still use the same React state shape and UI flow. Backup/export/import still uses the full JSON `AppData` payload, and restore/import syncs restored requisition records back into SQLite.
+
+## SQLite Pilot - Recently Deleted / Trash
+
+Recently Deleted/trash now uses SQLite as the active desktop read/write pilot. On desktop load, the app loads JSON/IndexedDB first for fallback compatibility, syncs JSON deleted records into SQLite when needed, then uses SQLite deleted records in `data.deletedRecords`.
+
+Delete, undo/restore, Delete Forever, and the 30-minute purge keep the same React UI flow while also saving or removing the matching SQLite `deleted_records` rows. Backup/export/import still uses the full JSON `AppData` payload, and restore/import syncs restored deleted records back into SQLite before app state is replaced.

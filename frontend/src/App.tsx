@@ -69,7 +69,13 @@ import {
   saveRequisitionToSqlite,
   syncRequisitionsToSqlite
 } from "./lib/sqliteRequisitionMirror";
-import { getSqliteTrashMirrorStatus } from "./lib/sqliteTrashMirror";
+import {
+  activateTrashSqliteState,
+  deleteDeletedRecordFromSqlite,
+  getSqliteTrashMirrorStatus,
+  saveDeletedRecordToSqlite,
+  syncDeletedRecordsToSqlite
+} from "./lib/sqliteTrashMirror";
 import { IdleScreensaver } from "./components/layout/IdleScreensaver";
 import jbtLogo from "./assets/jbt-logo.png";
 import type {
@@ -2819,6 +2825,28 @@ function InventoryApp() {
           );
         }
 
+        const trashSqliteState = await activateTrashSqliteState(loadedData.deletedRecords ?? []);
+
+        if (cancelled) {
+          return;
+        }
+
+        if (trashSqliteState.sqliteAvailable) {
+          loadedData = {
+            ...loadedData,
+            deletedRecords: purgeExpiredDeletedRecords(trashSqliteState.records)
+          };
+
+          if (import.meta.env.DEV) {
+            console.info("[sqlite-trash-mirror]", trashSqliteState);
+          }
+        } else if (trashSqliteState.error && import.meta.env.DEV) {
+          console.warn(
+            "[sqlite-trash-mirror] Trash SQLite activation failed. JSON trash remains available.",
+            trashSqliteState.error
+          );
+        }
+
         setData(loadedData);
         latestDataRef.current = loadedData;
         setLastBackupAt(loadedData.settings.lastBackupTimestamp || null);
@@ -2929,6 +2957,7 @@ function InventoryApp() {
         }
 
         console.info("[sqlite-trash-mirror]", {
+          activeTrashSource: "json",
           deletedRecordsMatch: false,
           error: error instanceof Error ? error.message : String(error),
           jsonDeletedRecordCount: deletedRecords.length,
@@ -3528,6 +3557,30 @@ function InventoryApp() {
     };
   }
 
+  function warnTrashSqliteFailure(message: string, error: unknown) {
+    if (import.meta.env.DEV) {
+      console.warn("[sqlite-trash-mirror]", message, error);
+    }
+  }
+
+  function saveDeletedRecordLive(record: DeletedRecord) {
+    void saveDeletedRecordToSqlite(record).catch((error) => {
+      warnTrashSqliteFailure("Deleted record SQLite save failed. JSON fallback remains available.", error);
+    });
+  }
+
+  function deleteDeletedRecordLive(recordId: string) {
+    void deleteDeletedRecordFromSqlite(recordId).catch((error) => {
+      warnTrashSqliteFailure("Deleted record SQLite delete failed. JSON fallback remains available.", error);
+    });
+  }
+
+  function syncDeletedRecordsLive(records: DeletedRecord[], message: string) {
+    void syncDeletedRecordsToSqlite(records).catch((error) => {
+      warnTrashSqliteFailure(message, error);
+    });
+  }
+
   function restoreDeletedRecord(deletedRecordId: string) {
     const currentData = data;
     const record = currentData?.deletedRecords?.find((candidate) => candidate.id === deletedRecordId);
@@ -3558,6 +3611,8 @@ function InventoryApp() {
       showToast("warning", "Could not restore because a matching record already exists.");
       return;
     }
+
+    deleteDeletedRecordLive(deletedRecordId);
 
     commitData((current) => {
       const deletedRecord = current.deletedRecords?.find((candidate) => candidate.id === deletedRecordId);
@@ -3599,14 +3654,24 @@ function InventoryApp() {
   }
 
   function purgeExpiredDeletedRecordsFromData() {
+    let activeRecords: DeletedRecord[] | null = null;
+
     commitData((current) => {
       const deletedRecords = current.deletedRecords ?? [];
       const activeDeletedRecords = purgeExpiredDeletedRecords(deletedRecords);
 
-      return activeDeletedRecords.length === deletedRecords.length
-        ? current
-        : { ...current, deletedRecords: activeDeletedRecords };
+      if (activeDeletedRecords.length === deletedRecords.length) {
+        return current;
+      }
+
+      activeRecords = activeDeletedRecords;
+
+      return { ...current, deletedRecords: activeDeletedRecords };
     });
+
+    if (activeRecords) {
+      syncDeletedRecordsLive(activeRecords, "Expired trash SQLite purge failed. JSON fallback remains available.");
+    }
   }
 
   function deleteDeletedRecordForever(deletedRecordId: string) {
@@ -3626,6 +3691,8 @@ function InventoryApp() {
     if (!confirmed) {
       return;
     }
+
+    deleteDeletedRecordLive(deletedRecordId);
 
     commitData((current) =>
       addAudit(
@@ -3978,7 +4045,7 @@ function InventoryApp() {
       const localTimestamp = getLocalDataUpdatedAt(snapshot);
 
       if (isBackupNewerThanLocal(backupTimestamp, localTimestamp)) {
-        applyImportedBackup(payload, "auto", BACKUP_LATEST_FILENAME, "Backup imported successfully.");
+        await applyImportedBackup(payload, "auto", BACKUP_LATEST_FILENAME, "Backup imported successfully.");
         return;
       }
 
@@ -4004,7 +4071,7 @@ function InventoryApp() {
     }
   }
 
-  function applyImportedBackup(
+  async function applyImportedBackup(
     payload: InventoryBackupPayload,
     source: BackupImportSource,
     fileName: string,
@@ -4022,6 +4089,23 @@ function InventoryApp() {
           console.warn("[sqlite-requisition-mirror] Imported requisition sync failed. JSON import remains available.", error);
         }
       });
+
+      const trashSqliteState = await activateTrashSqliteState(imported.deletedRecords ?? []);
+      const importedWithTrash = {
+        ...imported,
+        deletedRecords: purgeExpiredDeletedRecords(trashSqliteState.records)
+      };
+
+      if (import.meta.env.DEV) {
+        if (trashSqliteState.sqliteAvailable) {
+          console.info("[sqlite-trash-mirror]", trashSqliteState);
+        } else if (trashSqliteState.error) {
+          console.warn(
+            "[sqlite-trash-mirror] Imported trash SQLite sync failed. JSON import remains available.",
+            trashSqliteState.error
+          );
+        }
+      }
 
       suppressNextAutoBackupRef.current = true;
       setData((current) => {
@@ -4046,7 +4130,7 @@ function InventoryApp() {
         return stampData(
           addAudit(
             {
-              ...imported,
+              ...importedWithTrash,
               settings: nextSettings
             },
             createAuditEntry("Import", source, importAction, `${fileName} was imported.`, importActor, importedAt)
@@ -4058,8 +4142,8 @@ function InventoryApp() {
         setLastAutoImportAt(importedAt);
       }
 
-      setItemForm(blankItemForm(imported.settings.defaultLocationId));
-      setStockForm(blankStockForm(imported.items[0]?.id ?? ""));
+      setItemForm(blankItemForm(importedWithTrash.settings.defaultLocationId));
+      setStockForm(blankStockForm(importedWithTrash.items[0]?.id ?? ""));
       setBackupIndicator("done");
       setBackupMessage(successMessage);
       setBackupDialog(null);
@@ -4221,6 +4305,8 @@ function InventoryApp() {
     if (!confirmed) {
       return;
     }
+
+    saveDeletedRecordLive(deletedRecord);
 
     commitData((current) =>
       addAudit(
@@ -4601,6 +4687,8 @@ function InventoryApp() {
       return;
     }
 
+    saveDeletedRecordLive(deletedRecord);
+
     commitData((current) =>
       addAudit(
         {
@@ -4914,6 +5002,8 @@ function InventoryApp() {
       return;
     }
 
+    saveDeletedRecordLive(deletedRecord);
+
     commitData((current) =>
       addAudit(
         {
@@ -5018,7 +5108,7 @@ function InventoryApp() {
 
     const message = dialog.source === "manual" ? "JSON import complete." : "Backup imported successfully.";
 
-    applyImportedBackup(dialog.payload, dialog.source, dialog.fileName, message);
+    void applyImportedBackup(dialog.payload, dialog.source, dialog.fileName, message);
   }
 
   async function handleCreateRecoveryCode() {
