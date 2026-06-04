@@ -82,6 +82,7 @@ import {
   loadAppSettingsFromSqlite,
   syncAppSettingsToSqlite
 } from "./lib/sqliteSettingsMirror";
+import { runSqliteHealthCheck } from "./lib/sqliteHealthCheck";
 import { IdleScreensaver } from "./components/layout/IdleScreensaver";
 import jbtLogo from "./assets/jbt-logo.png";
 import type {
@@ -2710,6 +2711,7 @@ function InventoryApp() {
   const sqliteRequisitionMirrorSignatureRef = useRef("");
   const sqliteTrashMirrorSignatureRef = useRef("");
   const sqliteSettingsMirrorSignatureRef = useRef("");
+  const sqliteHealthCheckLoggedRef = useRef(false);
   const sqliteVendorLocationMirrorSignatureRef = useRef("");
   const skipHeaderBadgeSaveRef = useRef(false);
   const vendorAiPromptResolveRef = useRef<((note: string | null) => void) | null>(null);
@@ -2951,6 +2953,57 @@ function InventoryApp() {
 
   useEffect(() => {
     latestDataRef.current = data;
+  }, [data]);
+
+  useEffect(() => {
+    if (!import.meta.env.DEV) {
+      return;
+    }
+
+    const devWindow = window as Window & { __mitSqliteHealthCheck?: typeof runSqliteHealthCheck };
+
+    devWindow.__mitSqliteHealthCheck = runSqliteHealthCheck;
+
+    return () => {
+      delete devWindow.__mitSqliteHealthCheck;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!data || !import.meta.env.DEV || sqliteHealthCheckLoggedRef.current) {
+      return;
+    }
+
+    sqliteHealthCheckLoggedRef.current = true;
+    let cancelled = false;
+
+    runSqliteHealthCheck()
+      .then((result) => {
+        if (cancelled) {
+          return;
+        }
+
+        console.info("[sqlite-health-check]", result);
+      })
+      .catch((error) => {
+        if (cancelled) {
+          return;
+        }
+
+        console.info("[sqlite-health-check]", {
+          checkedAt: new Date().toISOString(),
+          counts: {},
+          errors: [error instanceof Error ? error.message : String(error)],
+          metadataTableExists: false,
+          schemaVersion: null,
+          sqliteAvailable: false,
+          tableNames: []
+        });
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [data]);
 
   useEffect(() => {

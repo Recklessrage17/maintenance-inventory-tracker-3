@@ -10,6 +10,7 @@ JSON/current app data remains the live data source for backup and restore. Vendo
 - Restore/import: `frontend/src/App.tsx` reads JSON files or folder backups, validates with `validateBackupPayload()`, normalizes through the existing import path, and replaces current app state.
 - CSV import: `frontend/src/App.tsx` parses CSV with `parseCsv()`, previews changes, then updates in-memory inventory/vendors/locations before the existing save effect persists data.
 - SQLite runtime check: `frontend/src/main.tsx` calls `runDevSqliteRuntimeCheck()` from `frontend/src/lib/sqliteRuntime.ts`; this only verifies the Tauri SQLite foundation in development.
+- SQLite health check: `frontend/src/App.tsx` logs `[sqlite-health-check]` in development after app data loads, using `frontend/src/lib/sqliteHealthCheck.ts` to report table names, row counts, schema status, and errors without row values.
 
 ## Desktop V3
 
