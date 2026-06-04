@@ -76,6 +76,7 @@ import {
   saveDeletedRecordToSqlite,
   syncDeletedRecordsToSqlite
 } from "./lib/sqliteTrashMirror";
+import { getSqliteSettingsMirrorStatus } from "./lib/sqliteSettingsMirror";
 import { IdleScreensaver } from "./components/layout/IdleScreensaver";
 import jbtLogo from "./assets/jbt-logo.png";
 import type {
@@ -2703,6 +2704,7 @@ function InventoryApp() {
   const sqliteStockLedgerMirrorSignatureRef = useRef("");
   const sqliteRequisitionMirrorSignatureRef = useRef("");
   const sqliteTrashMirrorSignatureRef = useRef("");
+  const sqliteSettingsMirrorSignatureRef = useRef("");
   const sqliteVendorLocationMirrorSignatureRef = useRef("");
   const skipHeaderBadgeSaveRef = useRef(false);
   const vendorAiPromptResolveRef = useRef<((note: string | null) => void) | null>(null);
@@ -2915,6 +2917,56 @@ function InventoryApp() {
   useEffect(() => {
     latestDataRef.current = data;
   }, [data]);
+
+  useEffect(() => {
+    if (!data || !import.meta.env.DEV) {
+      return;
+    }
+
+    const mirrorSignature = JSON.stringify(
+      Object.entries(data.settings)
+        .sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey))
+        .map(([key, value]) => [
+          key,
+          typeof value,
+          value && typeof value === "object" ? Boolean(value) : value
+        ])
+    );
+
+    if (sqliteSettingsMirrorSignatureRef.current === mirrorSignature) {
+      return;
+    }
+
+    sqliteSettingsMirrorSignatureRef.current = mirrorSignature;
+    let cancelled = false;
+
+    getSqliteSettingsMirrorStatus(data.settings)
+      .then((status) => {
+        if (cancelled) {
+          return;
+        }
+
+        console.info("[sqlite-settings-mirror]", status);
+      })
+      .catch((error) => {
+        if (cancelled) {
+          return;
+        }
+
+        console.info("[sqlite-settings-mirror]", {
+          error: error instanceof Error ? error.message : String(error),
+          jsonSettingsKeyCount: Object.keys(data.settings).length,
+          sampleSettingKeys: [],
+          settingsMatch: false,
+          sqliteAvailable: false,
+          sqliteSettingsKeyCount: 0
+        });
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [data?.settings]);
 
   useEffect(() => {
     if (!data || !import.meta.env.DEV) {
