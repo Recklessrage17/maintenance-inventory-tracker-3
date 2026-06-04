@@ -46,6 +46,7 @@ export type AppSettings = {
   backupDirectoryName: string;
   backupDirectoryPath: string;
   backupDirectoryHandle: BackupDirectoryHandle | null;
+  customCategories: string[];
   lastBackupTimestamp: string;
   lastAutoImportTimestamp: string;
   backupStatus: string;

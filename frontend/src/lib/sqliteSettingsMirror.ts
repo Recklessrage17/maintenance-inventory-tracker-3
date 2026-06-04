@@ -30,6 +30,7 @@ const SQLITE_APP_SETTING_KEYS = [
   "autoImportEnabled",
   "backupDirectoryName",
   "backupDirectoryPath",
+  "customCategories",
   "lastBackupTimestamp",
   "lastAutoImportTimestamp",
   "backupStatus",
@@ -86,6 +87,27 @@ function backupIntervalSetting(value: unknown, fallback: BackupInterval): Backup
   return value === "manual" || value === "5min" || value === "15min" || value === "change" ? value : fallback;
 }
 
+function customCategoriesSetting(value: unknown, fallback: string[]) {
+  const categories = Array.isArray(value) ? value : fallback;
+  const categoriesByKey = new Map<string, string>();
+
+  categories.forEach((category) => {
+    const cleanCategory = String(category ?? "").replace(/\s+/g, " ").trim();
+
+    if (cleanCategory) {
+      const key = cleanCategory.toLowerCase();
+
+      if (!categoriesByKey.has(key)) {
+        categoriesByKey.set(key, cleanCategory);
+      }
+    }
+  });
+
+  return Array.from(categoriesByKey.values()).sort((first, second) =>
+    first.localeCompare(second, undefined, { sensitivity: "base" })
+  );
+}
+
 function parseJson(value: string | null) {
   if (!value) {
     return null;
@@ -120,6 +142,8 @@ function normalizeSettingValue(key: SqliteAppSettingKey, value: unknown, fallbac
       return booleanSetting(value, fallbackSettings[key]);
     case "backupInterval":
       return backupIntervalSetting(value, fallbackSettings.backupInterval);
+    case "customCategories":
+      return customCategoriesSetting(value, fallbackSettings.customCategories);
     case "companyShopName":
     case "headerBadgeText":
     case "defaultLocationId":

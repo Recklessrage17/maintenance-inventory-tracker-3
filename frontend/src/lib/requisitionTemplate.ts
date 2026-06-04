@@ -254,19 +254,11 @@ function getComments(header: RequisitionHeaderDraft) {
   return normalizedComments ? `HIGH PRIORITY - ${normalizedComments}` : "HIGH PRIORITY -";
 }
 
-function getVendorContactLines(group: RequisitionVendorGroup, header: RequisitionHeaderDraft) {
-  const headerLines = header.vendorAddress
+function getVendorContactLines(header: RequisitionHeaderDraft) {
+  const contactLines = header.vendorAddress
     .split(/\r?\n/)
     .map((line) => cleanText(line))
     .filter(Boolean);
-
-  const contactLines = headerLines.length
-    ? headerLines
-    : [
-        group.vendor?.phone ? `Phone: ${group.vendor.phone}` : "",
-        group.vendor?.email ? `Email: ${group.vendor.email}` : "",
-        group.vendor?.website ? `Website: ${group.vendor.website}` : ""
-      ].filter(Boolean);
 
   if (contactLines.length <= 2) {
     return contactLines;
@@ -288,7 +280,7 @@ function clearCellFully(cell: XlsxCell) {
 }
 
 function writeHeader(sheet: XlsxSheet, map: HeaderCellMap, group: RequisitionVendorGroup, header: RequisitionHeaderDraft) {
-  const [vendorAddressLine1 = "", vendorAddressLine2 = ""] = getVendorContactLines(group, header);
+  const [vendorAddressLine1 = "", vendorAddressLine2 = ""] = getVendorContactLines(header);
 
   setWrappedCellValue(sheet.cell(map.poNo), header.poNo, 18);
   setWrappedCellValue(sheet.cell(map.poInitiator), header.poInitiator, 20);

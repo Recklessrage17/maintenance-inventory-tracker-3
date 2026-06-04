@@ -131,6 +131,8 @@ const INVENTORY_SEARCH_DEBOUNCE_MS = 180;
 const INVENTORY_PAGE_SIZE_OPTIONS = [25, 50, 100] as const;
 const DEFAULT_INVENTORY_PAGE_SIZE = 50;
 const INVENTORY_COMPACT_LAYOUT_QUERY = "(max-width: 1024px)";
+const INVENTORY_AUTO_PAGE_EDGE_PX = 56;
+const INVENTORY_SCROLL_RESET_SUPPRESS_MS = 260;
 const REQUISITION_HISTORY_PAGE_SIZE_OPTIONS = [10, 20, 50, 100] as const;
 const DEFAULT_REQUISITION_HISTORY_PAGE_SIZE = 20;
 const DASHBOARD_SCREENSAVER_TIMEOUT_MS = 5 * 60 * 1000;
@@ -257,6 +259,10 @@ type ToastState = {
 } | null;
 
 type ToastTone = NonNullable<ToastState>["tone"];
+type CategoryAddResult = {
+  ok: boolean;
+  message: string;
+};
 type ScanApplyTarget = "partNumber" | "barcodePlaceholder" | "itemUrl";
 type LabelSizeKey = "brady" | "small" | "large";
 type InventoryColumnFilterKey = "location" | "partNumber" | "category" | "description" | "vendor";
@@ -404,6 +410,46 @@ const stringValue = (value: unknown, fallback = "") =>
     : value === undefined || value === null
       ? fallback
       : cleanDisplayText(String(value)) || fallback;
+
+function normalizeCategoryName(value: unknown) {
+  return stringValue(value).replace(/\s+/g, " ").trim();
+}
+
+function normalizeCustomCategories(value: unknown) {
+  const categories = Array.isArray(value) ? value : [];
+  const categoriesByKey = new Map<string, string>();
+
+  categories.forEach((category) => {
+    const cleanCategory = normalizeCategoryName(category);
+
+    if (cleanCategory) {
+      const key = cleanCategory.toLowerCase();
+
+      if (!categoriesByKey.has(key)) {
+        categoriesByKey.set(key, cleanCategory);
+      }
+    }
+  });
+
+  return Array.from(categoriesByKey.values()).sort((first, second) =>
+    first.localeCompare(second, undefined, { sensitivity: "base" })
+  );
+}
+
+function getInventoryCategoryOptions(data: AppData, selectedCategory = "") {
+  return normalizeCustomCategories([
+    ...categoryOptions,
+    ...data.items.map((item) => item.category),
+    ...data.settings.customCategories,
+    selectedCategory
+  ]);
+}
+
+function hasCategoryMatch(categories: string[], categoryName: string) {
+  const normalizedCategory = normalizeCategoryName(categoryName).toLowerCase();
+
+  return normalizedCategory.length > 0 && categories.some((category) => category.toLowerCase() === normalizedCategory);
+}
 
 const numberValue = (value: unknown, fallback = 0) => {
   const parsed = Number(value);
@@ -629,6 +675,7 @@ function createDefaultSettings(now = nowIso()): AppSettings {
     backupDirectoryName: "",
     backupDirectoryPath: "",
     backupDirectoryHandle: null,
+    customCategories: [],
     lastBackupTimestamp: "",
     lastAutoImportTimestamp: "",
     backupStatus: "Choose backup folder to enable auto backup and auto import.",
@@ -892,6 +939,7 @@ function normalizeSettings(value: unknown): AppSettings {
     backupDirectoryPath: stringValue(raw.backupDirectoryPath),
     backupDirectoryHandle:
       "backupDirectoryHandle" in raw ? (raw.backupDirectoryHandle as AppSettings["backupDirectoryHandle"]) : null,
+    customCategories: normalizeCustomCategories(raw.customCategories),
     lastBackupTimestamp: stringValue(raw.lastBackupTimestamp),
     lastAutoImportTimestamp: stringValue(raw.lastAutoImportTimestamp),
     backupStatus: stringValue(raw.backupStatus, defaults.backupStatus),
@@ -2585,15 +2633,6 @@ function MaintenanceLoadingScreen() {
               <h1>Maintenance Inventory Tracker</h1>
             </div>
           </div>
-          <div className="inventory-boot-scene" aria-hidden="true">
-            <div className="database-boot-panel">
-              <div className="database-data-lines">
-                <span />
-                <span />
-                <span />
-              </div>
-            </div>
-          </div>
           <div className="loader-status-row">
             <p>Loading inventory database... {loadingProgress}%</p>
           </div>
@@ -2689,6 +2728,7 @@ function InventoryApp() {
   const [itemForm, setItemForm] = useState<ItemFormState>(blankItemForm());
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
   const [isItemFormOpen, setIsItemFormOpen] = useState(false);
+  const [isCategoryManagerOpen, setIsCategoryManagerOpen] = useState(false);
   const [pendingNewItemVisibilityForm, setPendingNewItemVisibilityForm] = useState<ItemFormState | null>(null);
   const [watchListVisibilityItemId, setWatchListVisibilityItemId] = useState<string | null>(null);
   const [stockForm, setStockForm] = useState<StockFormState>(blankStockForm());
@@ -3935,6 +3975,63 @@ function InventoryApp() {
     setItemForm(blankItemForm(data?.settings.defaultLocationId ?? ""));
     setIsItemFormOpen(true);
     openInventoryForItemForm();
+  }
+
+  function openCategoryManager() {
+    const role = readAuthRecord()?.role;
+
+    if (!hasPermission(role, "inventory:create") && !hasPermission(role, "inventory:edit")) {
+      showToast("warning", PERMISSION_DENIED_MESSAGE);
+      return;
+    }
+
+    setIsCategoryManagerOpen(true);
+    openPage("inventory");
+  }
+
+  function addCustomCategory(categoryName: string): CategoryAddResult {
+    if (!data) {
+      return { ok: false, message: "Inventory data is still loading." };
+    }
+
+    const role = readAuthRecord()?.role;
+
+    if (!hasPermission(role, "inventory:create") && !hasPermission(role, "inventory:edit")) {
+      return { ok: false, message: PERMISSION_DENIED_MESSAGE };
+    }
+
+    const cleanCategory = normalizeCategoryName(categoryName);
+
+    if (!cleanCategory) {
+      return { ok: false, message: "Enter a category name." };
+    }
+
+    if (hasCategoryMatch(getInventoryCategoryOptions(data), cleanCategory)) {
+      return { ok: false, message: "That category already exists." };
+    }
+
+    commitData((current) => {
+      if (hasCategoryMatch(getInventoryCategoryOptions(current), cleanCategory)) {
+        return current;
+      }
+
+      const customCategories = normalizeCustomCategories([...current.settings.customCategories, cleanCategory]);
+
+      return addAudit(
+        {
+          ...current,
+          settings: {
+            ...current.settings,
+            customCategories,
+            updatedAt: nowIso()
+          }
+        },
+        createAuditEntry("Settings", "appSettings", "Inventory Category Added", `${cleanCategory} was added.`, "User")
+      );
+    });
+
+    showToast("success", `${cleanCategory} added to categories.`);
+    return { ok: true, message: `${cleanCategory} added.` };
   }
 
   async function handleItemImageUpload(file: File) {
@@ -5825,6 +5922,13 @@ function InventoryApp() {
             onConfirm={confirmCsvImport}
           />
         )}
+        {isCategoryManagerOpen && (
+          <CategoryManagerDialog
+            categories={getInventoryCategoryOptions(data)}
+            onAddCategory={addCustomCategory}
+            onClose={() => setIsCategoryManagerOpen(false)}
+          />
+        )}
         {vendorAiPrompt && (
           <VendorAiPurposeDialog
             promptText={vendorAiPromptText}
@@ -5911,6 +6015,7 @@ function InventoryApp() {
             onExportExcelCsv={handleExportExcelCsv}
             onImportCsv={(file) => void handleImportCsv(file)}
             onAddItem={startAddItem}
+            onManageCategories={openCategoryManager}
             onCreateRequisition={startInventoryRequisition}
             onPrintLabel={openLabelPreview}
             onScanLookupWarning={(message) => showToast("warning", message)}
@@ -7013,6 +7118,76 @@ function CsvImportNameList({ names, title }: { names: string[]; title: string })
   );
 }
 
+function CategoryManagerDialog({
+  categories,
+  onAddCategory,
+  onClose
+}: {
+  categories: string[];
+  onAddCategory: (categoryName: string) => CategoryAddResult;
+  onClose: () => void;
+}) {
+  const [categoryDraft, setCategoryDraft] = useState("");
+  const [message, setMessage] = useState("");
+  const [messageType, setMessageType] = useState<"success" | "warning">("success");
+
+  function handleSubmit(event: FormEvent) {
+    event.preventDefault();
+
+    const result = onAddCategory(categoryDraft);
+
+    setMessage(result.message);
+    setMessageType(result.ok ? "success" : "warning");
+
+    if (result.ok) {
+      setCategoryDraft("");
+    }
+  }
+
+  return (
+    <div className="csv-import-backdrop" role="presentation">
+      <section className="csv-import-dialog category-manager-dialog" role="dialog" aria-modal="true" aria-label="Inventory Categories">
+        <SectionHeader
+          action={
+            <button className="settings-close" type="button" aria-label="Close category manager" onClick={onClose}>
+              X
+            </button>
+          }
+          kicker="Inventory"
+          title="Inventory Categories"
+        />
+        <form className="category-manager-form" onSubmit={handleSubmit}>
+          <label className="field-label">
+            Add category
+            <input
+              className="input"
+              value={categoryDraft}
+              onChange={(event) => {
+                setCategoryDraft(event.target.value);
+                setMessage("");
+              }}
+            />
+          </label>
+          <button className="btn-primary" type="submit">
+            Add Category
+          </button>
+        </form>
+        {message && <p className={`category-manager-message category-manager-message-${messageType}`}>{message}</p>}
+        <div className="category-manager-list" aria-label="Current inventory categories">
+          {categories.map((category) => (
+            <span key={category}>{category}</span>
+          ))}
+        </div>
+        <div className="csv-import-actions">
+          <button className="btn-muted" type="button" onClick={onClose}>
+            Close
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function InventoryPage({
   columnFilters,
   data,
@@ -7020,6 +7195,7 @@ function InventoryPage({
   onClearColumnFilters,
   onColumnFilterChange,
   onAddItem,
+  onManageCategories,
   onDelete,
   onEdit,
   onExportCsv,
@@ -7040,6 +7216,7 @@ function InventoryPage({
   onClearColumnFilters: () => void;
   onColumnFilterChange: (key: InventoryColumnFilterKey, value: string) => void;
   onAddItem: () => void;
+  onManageCategories: () => void;
   onDelete: (itemId: string) => void;
   onEdit: (item: InventoryItem) => void;
   onExportCsv: () => void;
@@ -7077,6 +7254,7 @@ function InventoryPage({
   const hasUserScrolledInventoryRef = useRef(false);
   const shouldResetInventoryScrollRef = useRef(false);
   const inventoryScrollResetPositionRef = useRef<"bottom" | "top">("top");
+  const inventoryIgnoreScrollUntilRef = useRef(0);
   const totalInventoryItems = filteredItems.length;
   const totalInventoryPages = Math.max(1, Math.ceil(totalInventoryItems / inventoryPageSize));
   const safeInventoryPage = Math.min(inventoryPage, totalInventoryPages);
@@ -7147,6 +7325,7 @@ function InventoryPage({
 
   function requestInventoryScrollReset(position: "bottom" | "top" = "top") {
     hasUserScrolledInventoryRef.current = false;
+    inventoryIgnoreScrollUntilRef.current = Date.now() + INVENTORY_SCROLL_RESET_SUPPRESS_MS;
     inventoryScrollResetPositionRef.current = position;
     shouldResetInventoryScrollRef.current = true;
   }
@@ -7183,8 +7362,35 @@ function InventoryPage({
   }
 
   function handleInventoryScroll() {
-    if ((inventoryScrollRef.current?.scrollTop ?? 0) > 8) {
+    const scrollContainer = inventoryScrollRef.current;
+
+    if (!scrollContainer || Date.now() < inventoryIgnoreScrollUntilRef.current) {
+      return;
+    }
+
+    const maxScrollTop = scrollContainer.scrollHeight - scrollContainer.clientHeight;
+
+    if (maxScrollTop <= INVENTORY_AUTO_PAGE_EDGE_PX) {
+      return;
+    }
+
+    const distanceFromBottom = maxScrollTop - scrollContainer.scrollTop;
+
+    if (scrollContainer.scrollTop > 8) {
       hasUserScrolledInventoryRef.current = true;
+    }
+
+    if (!hasUserScrolledInventoryRef.current || isAutoPagingRef.current) {
+      return;
+    }
+
+    if (scrollContainer.scrollTop <= INVENTORY_AUTO_PAGE_EDGE_PX) {
+      startInventoryAutoPaging("previous");
+      return;
+    }
+
+    if (distanceFromBottom <= INVENTORY_AUTO_PAGE_EDGE_PX) {
+      startInventoryAutoPaging("next");
     }
   }
 
@@ -7475,10 +7681,15 @@ function InventoryPage({
           <h2>Parts Table</h2>
         </div>
         <div className="inventory-header-actions">
-          <button className="inventory-add-button" type="button" onClick={onAddItem}>
-            <span aria-hidden="true">+</span>
-            Add Item
-          </button>
+          <div className="inventory-primary-actions">
+            <button className="inventory-add-button" type="button" onClick={onAddItem}>
+              <span aria-hidden="true">+</span>
+              Add Item
+            </button>
+            <button className="inventory-category-button" type="button" onClick={onManageCategories}>
+              Manage Categories
+            </button>
+          </div>
           <InventoryCsvMenu
             onExportCsv={onExportCsv}
             onExportExcelCsv={onExportExcelCsv}
@@ -8249,6 +8460,7 @@ function ItemFormContent({
     scanSuggestedTarget === "itemUrl"
       ? "Suggested target: Hyperlink / Part Info URL"
       : "Suggested target: Part Number";
+  const inventoryCategoryOptions = getInventoryCategoryOptions(data, form.category);
 
   function handleImageInputChange(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.currentTarget.files?.[0];
@@ -8353,7 +8565,7 @@ function ItemFormContent({
               value={form.category}
               onChange={(event) => onChange({ ...form, category: event.target.value })}
             >
-              {categoryOptions.map((category) => (
+              {inventoryCategoryOptions.map((category) => (
                 <option key={category}>{category}</option>
               ))}
             </select>
@@ -10835,13 +11047,7 @@ function getVendorRequisitionDetails(vendor?: VendorRecord) {
     return "";
   }
 
-  const details = [
-    vendor.phone ? `Phone: ${vendor.phone}` : "",
-    vendor.email ? `Email: ${vendor.email}` : "",
-    vendor.website ? `Website: ${vendor.website}` : ""
-  ].filter(Boolean);
-
-  return details.join("\n");
+  return vendor.phone ? `Phone: ${vendor.phone}` : "";
 }
 
 function createDefaultRequisitionHeader(vendor?: VendorRecord): RequisitionHeaderDraft {

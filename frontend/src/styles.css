@@ -2306,6 +2306,12 @@ button:disabled {
     min-width: 0;
   }
 
+  .inventory-primary-actions {
+    display: grid;
+    gap: 0.38rem;
+    min-width: 10.4rem;
+  }
+
   .inventory-add-button {
     @apply relative inline-flex min-h-0 items-center justify-center gap-2 overflow-hidden rounded-md border border-cyan-300/50 px-3 py-2 text-xs font-black text-cyan-100 shadow-lg shadow-cyan-950/30 transition focus:outline-none focus:ring-2 focus:ring-cyan-300/50;
     background:
@@ -2368,6 +2374,42 @@ button:disabled {
       inset 0 3px 10px rgba(2, 6, 23, 0.62),
       0 0 12px rgba(34, 211, 238, 0.14),
       0 6px 14px rgba(2, 6, 23, 0.32);
+    transform: translateY(1px);
+  }
+
+  .inventory-category-button {
+    display: inline-flex;
+    min-height: 2.05rem;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid rgba(103, 232, 249, 0.36);
+    border-radius: 0.45rem;
+    background:
+      linear-gradient(180deg, rgba(34, 211, 238, 0.12), rgba(15, 23, 42, 0.38)),
+      rgba(2, 6, 23, 0.72);
+    box-shadow:
+      inset 0 1px 0 rgba(226, 232, 240, 0.08),
+      0 0 14px rgba(34, 211, 238, 0.08);
+    color: #cffafe;
+    font-size: 0.72rem;
+    font-weight: 950;
+    padding: 0.36rem 0.72rem;
+    text-transform: uppercase;
+    transition:
+      border-color 150ms ease,
+      background-color 150ms ease,
+      box-shadow 150ms ease,
+      transform 150ms ease;
+  }
+
+  .inventory-category-button:hover {
+    border-color: rgba(103, 232, 249, 0.76);
+    background-color: rgba(8, 47, 73, 0.82);
+    box-shadow: 0 0 18px rgba(34, 211, 238, 0.16);
+    transform: translateY(-1px);
+  }
+
+  .inventory-category-button:active {
     transform: translateY(1px);
   }
 
@@ -2551,6 +2593,10 @@ button:disabled {
     .inventory-header-actions {
       justify-content: flex-end;
     }
+
+    .inventory-primary-actions {
+      min-width: 9.5rem;
+    }
   }
 
   @media (max-width: 760px) {
@@ -2643,6 +2689,15 @@ button:disabled {
     .inventory-card-list .inventory-auto-page-status {
       margin-inline: 0;
       justify-self: start;
+    }
+
+    .inventory-header-actions,
+    .inventory-primary-actions {
+      width: 100%;
+    }
+
+    .category-manager-form {
+      grid-template-columns: 1fr;
     }
   }
 
@@ -2888,6 +2943,62 @@ button:disabled {
 
   .csv-import-dialog {
     @apply w-full max-w-2xl rounded-lg border border-cyan-400/30 bg-slate-950/95 p-4 shadow-2xl shadow-black/50 md:p-5;
+  }
+
+  .category-manager-dialog {
+    display: grid;
+    max-width: 34rem;
+    gap: 1rem;
+  }
+
+  .category-manager-form {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0.75rem;
+    align-items: end;
+  }
+
+  .category-manager-message {
+    border-radius: 0.5rem;
+    padding: 0.6rem 0.75rem;
+    font-size: 0.82rem;
+    font-weight: 900;
+  }
+
+  .category-manager-message-success {
+    border: 1px solid rgba(132, 204, 22, 0.36);
+    background: rgba(132, 204, 22, 0.1);
+    color: #d9f99d;
+  }
+
+  .category-manager-message-warning {
+    border: 1px solid rgba(250, 204, 21, 0.36);
+    background: rgba(250, 204, 21, 0.1);
+    color: #fef3c7;
+  }
+
+  .category-manager-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+    max-height: 13rem;
+    overflow: auto;
+    border: 1px solid rgba(103, 232, 249, 0.18);
+    border-radius: 0.55rem;
+    background:
+      linear-gradient(135deg, rgba(34, 211, 238, 0.06), transparent 48%),
+      rgba(2, 6, 23, 0.54);
+    padding: 0.75rem;
+  }
+
+  .category-manager-list span {
+    border: 1px solid rgba(103, 232, 249, 0.3);
+    border-radius: 0.45rem;
+    background: rgba(15, 23, 42, 0.86);
+    color: #cffafe;
+    font-size: 0.78rem;
+    font-weight: 900;
+    padding: 0.35rem 0.58rem;
   }
 
   .vendor-ai-dialog-backdrop {
@@ -5366,7 +5477,7 @@ button:disabled {
     position: relative;
     isolation: isolate;
     display: grid;
-    gap: 1.05rem;
+    gap: 1rem;
     overflow: hidden;
     border: 1px solid rgba(103, 232, 249, 0.38);
     border-radius: 0.42rem;
@@ -5381,7 +5492,7 @@ button:disabled {
       0 0 0 1px rgba(34, 211, 238, 0.08),
       0 0 48px rgba(34, 211, 238, 0.18),
       0 28px 78px rgba(0, 0, 0, 0.58);
-    padding: clamp(1.1rem, 3vw, 1.45rem);
+    padding: clamp(1.25rem, 4vw, 1.8rem);
     text-align: center;
   }
 
@@ -5415,101 +5526,6 @@ button:disabled {
     text-shadow:
       0 0 16px rgba(34, 211, 238, 0.34),
       0 0 28px rgba(20, 184, 166, 0.18);
-  }
-
-  .inventory-boot-scene {
-    position: relative;
-    min-height: clamp(8.65rem, 27vw, 10.75rem);
-    overflow: hidden;
-    border: 1px solid rgba(103, 232, 249, 0.28);
-    border-radius: 0.32rem;
-    background:
-      radial-gradient(ellipse at 50% 50%, rgba(34, 211, 238, 0.14), transparent 68%),
-      linear-gradient(rgba(103, 232, 249, 0.07) 1px, transparent 1px),
-      linear-gradient(180deg, rgba(15, 23, 42, 0.82), rgba(2, 6, 23, 0.94));
-    background-size:
-      100% 100%,
-      100% 1.45rem,
-      100% 100%;
-    box-shadow:
-      inset 0 1px 0 rgba(226, 232, 240, 0.08),
-      inset 0 0 28px rgba(34, 211, 238, 0.07),
-      0 0 24px rgba(34, 211, 238, 0.08);
-  }
-
-  .database-boot-panel,
-  .database-data-lines {
-    position: absolute;
-  }
-
-  .database-boot-panel {
-    inset: 0;
-    overflow: hidden;
-    display: grid;
-    place-items: center;
-  }
-
-  .database-boot-panel::before {
-    position: absolute;
-    inset: 0.95rem;
-    z-index: 0;
-    border: 1px solid rgba(103, 232, 249, 0.2);
-    border-radius: 0.24rem;
-    background:
-      linear-gradient(90deg, transparent, rgba(34, 211, 238, 0.16), transparent) 50% 34% / 82% 1px no-repeat,
-      linear-gradient(90deg, transparent, rgba(34, 211, 238, 0.1), transparent) 50% 66% / 82% 1px no-repeat,
-      linear-gradient(180deg, rgba(34, 211, 238, 0.04), transparent);
-    content: "";
-  }
-
-  .database-boot-panel::after {
-    position: absolute;
-    top: 50%;
-    left: 50%;
-    z-index: 0;
-    width: min(64%, 24rem);
-    height: 4.75rem;
-    background:
-      radial-gradient(ellipse at center, rgba(34, 211, 238, 0.22), transparent 68%);
-    content: "";
-    opacity: 0.58;
-    transform: translate(-50%, -50%);
-    animation: database-panel-breathe 3.4s ease-in-out infinite;
-  }
-
-  .database-data-lines {
-    top: 50%;
-    left: 50%;
-    z-index: 1;
-    display: grid;
-    width: min(72%, 25rem);
-    gap: 0.9rem;
-    transform: translate(-50%, -50%);
-  }
-
-  .database-data-lines span {
-    display: block;
-    height: 2px;
-    border-radius: 9999px;
-    background: linear-gradient(90deg, transparent, rgba(103, 232, 249, 0.82), rgba(20, 184, 166, 0.72), transparent);
-    box-shadow:
-      0 0 10px rgba(34, 211, 238, 0.34),
-      0 0 18px rgba(20, 184, 166, 0.16);
-    opacity: 0.78;
-    transform-origin: center;
-    animation: database-line-load 2.8s ease-in-out infinite;
-  }
-
-  .database-data-lines span:nth-child(2) {
-    width: 88%;
-    margin-inline: auto;
-    animation-delay: 0.22s;
-  }
-
-  .database-data-lines span:nth-child(3) {
-    width: 76%;
-    margin-inline: auto;
-    animation-delay: 0.44s;
   }
 
   .loader-status-row {
@@ -6068,32 +6084,6 @@ button:disabled {
   }
 }
 
-@keyframes database-panel-breathe {
-  0%,
-  100% {
-    opacity: 0.42;
-    transform: translate(-50%, -50%) scaleX(0.94);
-  }
-
-  50% {
-    opacity: 0.7;
-    transform: translate(-50%, -50%) scaleX(1);
-  }
-}
-
-@keyframes database-line-load {
-  0%,
-  100% {
-    opacity: 0.42;
-    transform: scaleX(0.7);
-  }
-
-  50% {
-    opacity: 0.95;
-    transform: scaleX(1);
-  }
-}
-
 @media (prefers-reduced-motion: reduce) {
   body::before,
   body::after,
@@ -6120,9 +6110,7 @@ button:disabled {
   .dashboard-screensaver::after,
   .dashboard-screensaver-logo,
   .dashboard-screensaver-logo::before,
-  .scan-lookup-expansion,
-  .database-boot-panel::after,
-  .database-data-lines span {
+  .scan-lookup-expansion {
     animation: none;
   }
 
