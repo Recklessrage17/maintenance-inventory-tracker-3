@@ -3927,7 +3927,7 @@ function InventoryApp() {
     try {
       await openInstallerFile(updateCheck.folderPath, installer.fileName);
       setManualUpdateNotice(null);
-      showToast("success", "Installer selected in File Explorer. Close this app, then run the setup file.");
+      showToast("success", "Installer opened. Follow the setup prompts to update.");
     } catch (error) {
       showToast("warning", error instanceof Error ? error.message : "Could not open installer file.");
     }
@@ -11949,7 +11949,7 @@ function SettingsPage({
 
     try {
       await openInstallerFile(updateCheck.folderPath, installer.fileName);
-      setUpdateStatus(`Installer selected: ${installer.fileName}`);
+      setUpdateStatus(`Installer opened: ${installer.fileName}`);
     } catch (error) {
       setUpdateStatus(error instanceof Error ? error.message : "Could not open installer file.");
     } finally {
@@ -12149,11 +12149,11 @@ function SettingsPage({
         </div>
         <div className="mt-4 flex flex-wrap gap-2">
           <button className="btn-primary" type="button" onClick={() => void handleCheckInstallerFolder()} disabled={isCheckingUpdateFolder}>
-            {isCheckingUpdateFolder ? "Checking Installer Folder..." : "Check Installer Folder"}
+            {isCheckingUpdateFolder ? "Checking for Updates..." : "Check for Updates"}
           </button>
           {updateCheck?.newerInstaller && (
             <button className="btn-primary" type="button" onClick={() => void handleOpenNewestInstaller()} disabled={isOpeningInstallerFile}>
-              {isOpeningInstallerFile ? "Selecting Installer..." : "Yes, Update"}
+              {isOpeningInstallerFile ? "Opening Installer..." : "Yes, Update"}
             </button>
           )}
           <button className="btn-muted" type="button" onClick={() => void handleOpenInstallerFolder()} disabled={isOpeningUpdateFolder}>

@@ -109,11 +109,10 @@ if ($configuredUpdateFolder) {
   Add-UpdateDestination $updateDestinations $configuredUpdateFolder
 } else {
   Add-UpdateDestination $updateDestinations $companyUpdateFolder
-}
 
-if ((Test-Path -LiteralPath $personalUpdateFolder -PathType Container) -or
-    [string]::Equals($configuredUpdateFolder, $personalUpdateFolder, [System.StringComparison]::OrdinalIgnoreCase)) {
-  Add-UpdateDestination $updateDestinations $personalUpdateFolder
+  if (Test-Path -LiteralPath $personalUpdateFolder -PathType Container) {
+    Add-UpdateDestination $updateDestinations $personalUpdateFolder
+  }
 }
 
 if ($updateDestinations.Count -eq 0) {

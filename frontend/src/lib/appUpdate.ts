@@ -69,11 +69,33 @@ export function saveManualInstallerFolder(folderPath: string) {
 
 export function compareVersions(leftVersion: string, rightVersion: string) {
   const parseVersion = (version: string) => {
-    const [core, prerelease = ""] = version.split("-", 2);
+    const trimmedVersion = version.trim();
+    const prereleaseStart = trimmedVersion.indexOf("-");
+    const core = prereleaseStart === -1 ? trimmedVersion : trimmedVersion.slice(0, prereleaseStart);
+    const prerelease = prereleaseStart === -1 ? "" : trimmedVersion.slice(prereleaseStart + 1);
+
     return {
       parts: core.split(".").map((part) => Number.parseInt(part, 10)),
-      prerelease
+      prereleaseParts: prerelease ? prerelease.split(".") : []
     };
+  };
+  const comparePrereleasePart = (leftPart: string, rightPart: string) => {
+    const numericIdentifierPattern = /^\d+$/;
+    const leftIsNumeric = numericIdentifierPattern.test(leftPart);
+    const rightIsNumeric = numericIdentifierPattern.test(rightPart);
+
+    if (leftIsNumeric && rightIsNumeric) {
+      const leftNumber = Number.parseInt(leftPart, 10);
+      const rightNumber = Number.parseInt(rightPart, 10);
+
+      return leftNumber === rightNumber ? 0 : leftNumber > rightNumber ? 1 : -1;
+    }
+
+    if (leftIsNumeric !== rightIsNumeric) {
+      return leftIsNumeric ? -1 : 1;
+    }
+
+    return leftPart === rightPart ? 0 : leftPart > rightPart ? 1 : -1;
   };
   const leftVersionParts = parseVersion(leftVersion);
   const rightVersionParts = parseVersion(rightVersion);
@@ -94,19 +116,33 @@ export function compareVersions(leftVersion: string, rightVersion: string) {
     }
   }
 
-  if (leftVersionParts.prerelease && !rightVersionParts.prerelease) {
+  if (leftVersionParts.prereleaseParts.length && !rightVersionParts.prereleaseParts.length) {
     return -1;
   }
 
-  if (!leftVersionParts.prerelease && rightVersionParts.prerelease) {
+  if (!leftVersionParts.prereleaseParts.length && rightVersionParts.prereleaseParts.length) {
     return 1;
   }
 
-  if (leftVersionParts.prerelease || rightVersionParts.prerelease) {
-    return leftVersionParts.prerelease.localeCompare(rightVersionParts.prerelease, undefined, {
-      numeric: true,
-      sensitivity: "base"
-    });
+  const prereleaseLength = Math.max(leftVersionParts.prereleaseParts.length, rightVersionParts.prereleaseParts.length);
+
+  for (let index = 0; index < prereleaseLength; index += 1) {
+    const leftPart = leftVersionParts.prereleaseParts[index];
+    const rightPart = rightVersionParts.prereleaseParts[index];
+
+    if (leftPart === undefined) {
+      return -1;
+    }
+
+    if (rightPart === undefined) {
+      return 1;
+    }
+
+    const comparison = comparePrereleasePart(leftPart, rightPart);
+
+    if (comparison !== 0) {
+      return comparison;
+    }
   }
 
   return 0;
@@ -171,8 +207,8 @@ export async function checkManualInstallerFolder(folderPath = getManualInstaller
   const statusMessage = !result.folderExists
     ? "Installer folder not found. Run release build first or choose an update folder."
     : newerInstaller
-      ? `New installer found: ${newerInstaller.version}`
-      : "No newer installer found.";
+      ? "Update available."
+      : "You are up to date.";
 
   return {
     currentVersion,

@@ -10,6 +10,7 @@ use std::{
 
 use base64::{engine::general_purpose, Engine as _};
 use regex::Regex;
+use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_sql::{Migration, MigrationKind};
 
 const SQLITE_CONNECTION: &str = "sqlite:maintenance_inventory_3.db";
@@ -1131,7 +1132,11 @@ fn open_manual_installer_folder(directory_path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn open_manual_installer_file(directory_path: String, file_name: String) -> Result<(), String> {
+fn open_manual_installer_file(
+    app: tauri::AppHandle,
+    directory_path: String,
+    file_name: String,
+) -> Result<(), String> {
     validate_manual_installer_file_name(&file_name)?;
 
     let directory = PathBuf::from(directory_path);
@@ -1160,40 +1165,9 @@ fn open_manual_installer_file(directory_path: String, file_name: String) -> Resu
         return Err("Installer path is not a file.".to_string());
     }
 
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        Command::new("explorer.exe")
-            .arg(format!("/select,\"{}\"", installer_path.to_string_lossy()))
-            .creation_flags(CREATE_NO_WINDOW)
-            .spawn()
-            .map_err(|error| error.to_string())?;
-
-        return Ok(());
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        Command::new("open")
-            .arg("-R")
-            .arg(&installer_path)
-            .spawn()
-            .map_err(|error| error.to_string())?;
-
-        return Ok(());
-    }
-
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        Command::new("xdg-open")
-            .arg(directory)
-            .spawn()
-            .map_err(|error| error.to_string())?;
-
-        return Ok(());
-    }
+    app.opener()
+        .open_path(installer_path.to_string_lossy().to_string(), None::<&str>)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
