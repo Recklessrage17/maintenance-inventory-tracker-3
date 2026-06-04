@@ -2586,33 +2586,43 @@ function MaintenanceLoadingScreen() {
             </div>
           </div>
           <div className="inventory-boot-scene" aria-hidden="true">
-            <div className="rack-bank rack-bank-left">
-              <span />
-              <span />
-              <span />
-              <span />
-              <span />
-              <span />
-            </div>
-            <div className="rack-bank rack-bank-right">
-              <span />
-              <span />
-              <span />
-              <span />
-              <span />
-              <span />
-            </div>
-            <div className="database-core">
-              <span />
-              <span />
-              <span />
-            </div>
-            <span className="inventory-scan-beam" />
-            <span className="inventory-scan-line" />
-            <div className="conveyor-track">
-              <span className="tracked-part tracked-part-a" />
-              <span className="tracked-part tracked-part-b" />
-              <span className="tracked-part tracked-part-c" />
+            <div className="database-boot-panel">
+              <span className="database-pulse-ring database-pulse-ring-a" />
+              <span className="database-pulse-ring database-pulse-ring-b" />
+              <div className="database-boot-core">
+                <span />
+                <span />
+                <span />
+              </div>
+              <div className="database-data-lines">
+                <span />
+                <span />
+                <span />
+                <span />
+              </div>
+              <div className="inventory-record-grid">
+                <span>
+                  <i />
+                  <b />
+                </span>
+                <span>
+                  <i />
+                  <b />
+                </span>
+                <span>
+                  <i />
+                  <b />
+                </span>
+                <span>
+                  <i />
+                  <b />
+                </span>
+              </div>
+              <div className="part-number-strips">
+                <span />
+                <span />
+                <span />
+              </div>
             </div>
           </div>
           <div className="loader-status-row">
