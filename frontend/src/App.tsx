@@ -2165,7 +2165,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
   function setStartupStage(nextStage: AuthStage) {
     const remainingMs = Math.max(0, MIN_AUTH_LOADING_MS - (Date.now() - startupStartedAtRef.current));
 
-    if (remainingMs === 0 || nextStage === "ready") {
+    if (remainingMs === 0) {
       setStage(nextStage);
       return;
     }
@@ -2198,7 +2198,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
     if (!authRecord) {
       setStartupStage("setup");
     } else {
-      setStage(isAuthSessionUnlocked() ? "ready" : "login");
+      setStartupStage(isAuthSessionUnlocked() ? "ready" : "login");
     }
   }, []);
 
@@ -2556,22 +2556,24 @@ function AccessTerminalPanel() {
 }
 
 function MaintenanceLoadingScreen() {
-  const loadingStatusMessages = [
-    "Loading inventory database...",
-    "Checking local stock records...",
-    "Preparing maintenance dashboard...",
-    "Checking backup status..."
-  ];
-  const [statusIndex, setStatusIndex] = useState(0);
+  const [loadingProgress, setLoadingProgress] = useState(1);
 
   useEffect(() => {
-    const intervalId = window.setInterval(
-      () => setStatusIndex((current) => (current + 1) % loadingStatusMessages.length),
-      1400
-    );
+    const startedAt = Date.now();
+    const durationMs = 1000;
+    const intervalId = window.setInterval(() => {
+      const elapsedMs = Date.now() - startedAt;
+      const nextProgress = Math.min(100, Math.max(1, Math.round((elapsedMs / durationMs) * 100)));
+
+      setLoadingProgress(nextProgress);
+
+      if (nextProgress >= 100) {
+        window.clearInterval(intervalId);
+      }
+    }, 24);
 
     return () => window.clearInterval(intervalId);
-  }, [loadingStatusMessages.length]);
+  }, []);
 
   return (
     <main className="industrial-loading-shell app-shell min-h-screen p-4 text-slate-100">
@@ -2579,27 +2581,53 @@ function MaintenanceLoadingScreen() {
         <div className="industrial-loader-card">
           <div className="industrial-loader-grid" aria-hidden="true" />
           <div className="loader-header-row">
-            <div className="inventory-loader-badge">
-              <AppLogoMark />
-              <span className="loader-badge-light" />
-            </div>
             <div>
-              <p className="eyebrow">Local desktop startup</p>
               <h1>Maintenance Inventory Tracker</h1>
             </div>
           </div>
-          <div className="scanner-window" aria-hidden="true">
-            <span className="scanner-rack" />
-            <span className="scanner-crate scanner-crate-left" />
-            <span className="scanner-crate scanner-crate-right" />
-            <span className="scanner-beam" />
+          <div className="inventory-boot-scene" aria-hidden="true">
+            <div className="rack-bank rack-bank-left">
+              <span />
+              <span />
+              <span />
+              <span />
+              <span />
+              <span />
+            </div>
+            <div className="rack-bank rack-bank-right">
+              <span />
+              <span />
+              <span />
+              <span />
+              <span />
+              <span />
+            </div>
+            <div className="database-core">
+              <span />
+              <span />
+              <span />
+            </div>
+            <span className="inventory-scan-beam" />
+            <span className="inventory-scan-line" />
+            <div className="conveyor-track">
+              <span className="tracked-part tracked-part-a" />
+              <span className="tracked-part tracked-part-b" />
+              <span className="tracked-part tracked-part-c" />
+            </div>
           </div>
           <div className="loader-status-row">
             <StatusDot state="running" />
-            <p>{loadingStatusMessages[statusIndex]}</p>
+            <p>Loading inventory database... {loadingProgress}%</p>
           </div>
-          <div className="loader-progress-track" aria-hidden="true">
-            <span />
+          <div
+            className="loader-progress-track"
+            role="progressbar"
+            aria-label="Loading inventory database"
+            aria-valuemin={1}
+            aria-valuemax={100}
+            aria-valuenow={loadingProgress}
+          >
+            <span style={{ width: `${loadingProgress}%` }} />
           </div>
         </div>
       </section>
