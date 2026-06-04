@@ -1073,7 +1073,7 @@ fn validate_manual_installer_file_name(file_name: &str) -> Result<(), String> {
     }
 
     let installer_pattern =
-        Regex::new(r"(?i)^Maintenance Inventory Tracker_\d+(?:\.\d+){1,3}(?:-[0-9A-Za-z.-]+)?_x64-setup\.exe$")
+        Regex::new(r"(?i)^Maintenance Inventory Tracker 3\.0_\d+(?:\.\d+){1,3}(?:-[0-9A-Za-z.-]+)?_x64-setup\.exe$")
             .map_err(|error| error.to_string())?;
 
     if !installer_pattern.is_match(file_name) {

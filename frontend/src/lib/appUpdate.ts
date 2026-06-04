@@ -1,11 +1,11 @@
 import { getAppVersion } from "./appVersion";
 
-export const APP_VERSION = "3.0.0-alpha.1";
+export const APP_VERSION = "3.0.0-rc.1";
 export const DEFAULT_MANUAL_UPDATE_FOLDER =
   "C:\\Users\\maste\\OneDrive\\Company - Files - 2.0\\JBT USA - Files\\Dash Board - Info\\Inventoy System app\\Maintenance Inventory Tracker\\App Updates\\";
 
 const UPDATE_FOLDER_STORAGE_KEY = "maintenance-inventory-manual-update-folder";
-const INSTALLER_PATTERN = /^Maintenance Inventory Tracker_(\d+(?:\.\d+){1,3}(?:-[0-9A-Za-z.-]+)?)_x64-setup\.exe$/i;
+const INSTALLER_PATTERN = /^Maintenance Inventory Tracker 3\.0_(\d+(?:\.\d+){1,3}(?:-[0-9A-Za-z.-]+)?)_x64-setup\.exe$/i;
 
 type TauriInvoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 

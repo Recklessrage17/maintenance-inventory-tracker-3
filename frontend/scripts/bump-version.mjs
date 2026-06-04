@@ -46,7 +46,7 @@ function bumpPatch(version) {
   const match = version.match(/^(\d+)\.(\d+)\.(\d+)$/);
 
   if (!match) {
-    throw new Error(`Expected a semver version like 0.1.0 or 3.0.0-alpha.1, but found "${version}".`);
+    throw new Error(`Expected a semver version like 3.0.0 or 3.0.0-rc.1, but found "${version}".`);
   }
 
   return `${match[1]}.${match[2]}.${Number.parseInt(match[3], 10) + 1}`;

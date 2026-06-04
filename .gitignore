@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+frontend/node_modules/
+
+# Frontend build output
+dist/
+frontend/dist/
+
+# Tauri / Rust build output
+target/
+frontend/target/
+frontend/src-tauri/target/
+
+# Build artifacts
+*.pdb
+*.exe
+*.msi
+*.zip
+
+# Local data and logs
+*.db
+*.sqlite
+*.sqlite3
+*.log
+*.out
+*.err

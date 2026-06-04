@@ -2,7 +2,7 @@
 
 ## V3 Merge Note - 2026-06-03
 
-The V3 desktop app now keeps the Tauri + SQLite foundation while using the stable V2 0.1.38 React/Vite UI as the frontend baseline. Desktop V3 should use Tauri APIs and `sqlite:maintenance_inventory_3.db`; a normal website build cannot call those Tauri-only APIs directly.
+The V3 desktop app now keeps the Tauri + SQLite foundation while using the stable V2 React/Vite UI as the frontend baseline. Desktop V3 should use Tauri APIs and `sqlite:maintenance_inventory_3.db`; a normal website build cannot call those Tauri-only APIs directly.
 
 Website V3 will need a backend/API for database access, authentication, backups, and imports. Keep the React/Vite UI shared where possible, and keep data access behind an abstraction so desktop and web can reuse screens without binding components directly to Tauri or SQLite.
 

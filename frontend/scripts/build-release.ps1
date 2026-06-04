@@ -65,7 +65,7 @@ function Get-ConfiguredUpdateFolder {
 
 $packageJson = Get-Content -LiteralPath $packageJsonPath -Raw | ConvertFrom-Json
 $releaseVersion = [string]$packageJson.version
-$expectedInstallerName = "Maintenance Inventory Tracker_${releaseVersion}_x64-setup.exe"
+$expectedInstallerName = "Maintenance Inventory Tracker 3.0_${releaseVersion}_x64-setup.exe"
 
 Write-Host "Starting Maintenance Inventory Tracker desktop release build..."
 Write-Host "Release version: $releaseVersion"

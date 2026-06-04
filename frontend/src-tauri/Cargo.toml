@@ -1,8 +1,8 @@
 [package]
 name = "maintenance-inventory-tracker"
-version = "3.0.0-alpha.1"
-description = "Maintenance Inventory Tracker"
-authors = ["Maintenance Inventory Tracker"]
+version = "3.0.0-rc.1"
+description = "Maintenance Inventory Tracker 3.0"
+authors = ["Maintenance Inventory Tracker 3.0"]
 edition = "2021"
 
 [build-dependencies]

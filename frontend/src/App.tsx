@@ -2808,10 +2808,12 @@ function InventoryApp() {
             return;
           }
 
-          console.warn(
-            "[sqlite-vendor-location-mirror] Vendor/location SQLite activation failed. JSON remains available.",
-            error
-          );
+          if (import.meta.env.DEV) {
+            console.warn(
+              "[sqlite-vendor-location-mirror] Vendor/location SQLite activation failed. JSON remains available.",
+              error
+            );
+          }
         }
 
         const inventorySqliteState = await activateInventorySqliteState(loadedData.items);
@@ -3196,10 +3198,12 @@ function InventoryApp() {
           return;
         }
 
-        console.warn(
-          "[sqlite-vendor-location-mirror] Vendor/location SQLite sync failed. JSON fallback remains available.",
-          error
-        );
+        if (import.meta.env.DEV) {
+          console.warn(
+            "[sqlite-vendor-location-mirror] Vendor/location SQLite sync failed. JSON fallback remains available.",
+            error
+          );
+        }
       });
 
     return () => {
