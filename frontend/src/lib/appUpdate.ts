@@ -1,6 +1,6 @@
 import { getAppVersion } from "./appVersion";
 
-export const APP_VERSION = "3.0.0-rc.1";
+export const APP_VERSION = "3.0.0-rc.2";
 export const DEFAULT_MANUAL_UPDATE_FOLDER =
   "C:\\Users\\maste\\OneDrive\\Company - Files - 2.0\\JBT USA - Files\\Dash Board - Info\\Inventoy System app\\Maintenance Inventory Tracker\\App Updates\\";
 
