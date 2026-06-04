@@ -425,6 +425,37 @@ function writeGrandTotal(
   }
 }
 
+function adjustUnder100HeaderSpacing(sheet: XlsxSheet, requisitionType: RequisitionType) {
+  if (requisitionType !== "under100") {
+    return;
+  }
+
+  try {
+    sheet.row?.(12).height?.(17);
+    sheet.row?.(13).height?.(17);
+    sheet.row?.(14).height?.(17);
+    sheet.row?.(18).height?.(17);
+    sheet.row?.(19).height?.(19);
+  } catch {
+    // Keep the original template layout if row height changes are rejected.
+  }
+
+  try {
+    sheet.cell("B13").style?.({
+      fontSize: 7,
+      shrinkToFit: true,
+      verticalAlignment: "center"
+    });
+    sheet.cell("B14").style?.({
+      fontSize: 7,
+      shrinkToFit: true,
+      verticalAlignment: "center"
+    });
+  } catch {
+    // The helper note is decorative; keep export moving if style changes fail.
+  }
+}
+
 function shiftUnder100TitleRight(sheet: XlsxSheet, requisitionType: RequisitionType) {
   if (requisitionType !== "under100") {
     return;
@@ -480,6 +511,7 @@ export async function generateOfficialRequisitionWorkbook({
   const sheet = workbook.sheet(0) as XlsxSheet;
 
   writeHeader(sheet, map.header, group, header);
+  adjustUnder100HeaderSpacing(sheet, requisitionType);
   writeLineItems(sheet, map, group, lineDrafts);
   writeGrandTotal(sheet, map.grandTotal, group, lineDrafts, grandTotalOverride);
   shiftUnder100TitleRight(sheet, requisitionType);
