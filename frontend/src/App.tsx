@@ -2587,38 +2587,7 @@ function MaintenanceLoadingScreen() {
           </div>
           <div className="inventory-boot-scene" aria-hidden="true">
             <div className="database-boot-panel">
-              <span className="database-pulse-ring database-pulse-ring-a" />
-              <span className="database-pulse-ring database-pulse-ring-b" />
-              <div className="database-boot-core">
-                <span />
-                <span />
-                <span />
-              </div>
               <div className="database-data-lines">
-                <span />
-                <span />
-                <span />
-                <span />
-              </div>
-              <div className="inventory-record-grid">
-                <span>
-                  <i />
-                  <b />
-                </span>
-                <span>
-                  <i />
-                  <b />
-                </span>
-                <span>
-                  <i />
-                  <b />
-                </span>
-                <span>
-                  <i />
-                  <b />
-                </span>
-              </div>
-              <div className="part-number-strips">
                 <span />
                 <span />
                 <span />
@@ -2626,7 +2595,6 @@ function MaintenanceLoadingScreen() {
             </div>
           </div>
           <div className="loader-status-row">
-            <StatusDot state="running" />
             <p>Loading inventory database... {loadingProgress}%</p>
           </div>
           <div
