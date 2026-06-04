@@ -69,6 +69,7 @@ import {
   saveRequisitionToSqlite,
   syncRequisitionsToSqlite
 } from "./lib/sqliteRequisitionMirror";
+import { getSqliteTrashMirrorStatus } from "./lib/sqliteTrashMirror";
 import { IdleScreensaver } from "./components/layout/IdleScreensaver";
 import jbtLogo from "./assets/jbt-logo.png";
 import type {
@@ -2695,6 +2696,7 @@ function InventoryApp() {
   const sqliteInventoryMirrorSignatureRef = useRef("");
   const sqliteStockLedgerMirrorSignatureRef = useRef("");
   const sqliteRequisitionMirrorSignatureRef = useRef("");
+  const sqliteTrashMirrorSignatureRef = useRef("");
   const sqliteVendorLocationMirrorSignatureRef = useRef("");
   const skipHeaderBadgeSaveRef = useRef(false);
   const vendorAiPromptResolveRef = useRef<((note: string | null) => void) | null>(null);
@@ -2885,6 +2887,62 @@ function InventoryApp() {
   useEffect(() => {
     latestDataRef.current = data;
   }, [data]);
+
+  useEffect(() => {
+    if (!data || !import.meta.env.DEV) {
+      return;
+    }
+
+    const deletedRecords = data.deletedRecords ?? [];
+    const mirrorSignature = JSON.stringify({
+      deletedRecords: deletedRecords.map((record) => [
+        record.id,
+        record.type,
+        record.originalId,
+        record.deletedAt,
+        record.expiresAt,
+        record.title,
+        record.details,
+        record.actor,
+        record.payload
+      ])
+    });
+
+    if (sqliteTrashMirrorSignatureRef.current === mirrorSignature) {
+      return;
+    }
+
+    sqliteTrashMirrorSignatureRef.current = mirrorSignature;
+    let cancelled = false;
+
+    getSqliteTrashMirrorStatus(deletedRecords)
+      .then((status) => {
+        if (cancelled) {
+          return;
+        }
+
+        console.info("[sqlite-trash-mirror]", status);
+      })
+      .catch((error) => {
+        if (cancelled) {
+          return;
+        }
+
+        console.info("[sqlite-trash-mirror]", {
+          deletedRecordsMatch: false,
+          error: error instanceof Error ? error.message : String(error),
+          jsonDeletedRecordCount: deletedRecords.length,
+          sampleRecordIds: [],
+          sampleRecordTypes: [],
+          sqliteAvailable: false,
+          sqliteDeletedRecordCount: 0
+        });
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [data?.deletedRecords]);
 
   useEffect(() => {
     if (!data) {
