@@ -2,7 +2,7 @@
 
 ## Current Live Data Flow
 
-JSON/current app data remains the live data source for settings, backup, and restore. Vendors, locations, inventory, stock ledger/history, requisitions, and Recently Deleted/trash are now SQLite live-read/write pilots on desktop, with IndexedDB still saving the full `AppData` object as fallback/export compatibility. App settings are mirrored to SQLite for validation only.
+JSON/current app data remains the live data source for backup and restore. Vendors, locations, inventory, stock ledger/history, requisitions, Recently Deleted/trash, and safe app settings are now SQLite live-read/write pilots on desktop, with IndexedDB still saving the full `AppData` object as fallback/export compatibility.
 
 - App load: `frontend/src/App.tsx` calls `loadAppData()` during startup, normalizes the result, and falls back to demo data when no saved data is found.
 - App save: `frontend/src/App.tsx` watches `data` state and calls `saveAppData(data)` after changes.
@@ -13,7 +13,7 @@ JSON/current app data remains the live data source for settings, backup, and res
 
 ## Desktop V3
 
-Desktop V3 remains a Tauri app. SQLite is the future local live database, but this pass does not migrate inventory, vendors, locations, history, requisitions, or settings into SQLite.
+Desktop V3 remains a Tauri app. SQLite is the future local live database, and the current pilots cover inventory, vendors, locations, history, requisitions, Recently Deleted/trash, and safe app settings.
 
 JSON backup/export/import remains part of desktop V3 even after SQLite becomes live storage. SQLite should eventually sit behind a data adapter or repository boundary instead of being called directly from React screens.
 
@@ -29,7 +29,7 @@ Website V3 will need a backend/API for server-side data access. The website data
 - `SqliteDesktopDataAdapter`: future desktop adapter using Tauri + SQLite.
 - `WebApiDataAdapter`: future website adapter using HTTP calls to a backend/API.
 
-Keep `JsonLocalDataAdapter` as the live behavior for settings, backup, and restore until each later migration pass is planned and tested.
+Keep `JsonLocalDataAdapter` as the live behavior for backup and restore until each later migration pass is planned and tested.
 
 ## SQLite Pilot - Vendors And Locations
 
@@ -63,8 +63,10 @@ Recently Deleted/trash now uses SQLite as the active desktop read/write pilot. O
 
 Delete, undo/restore, Delete Forever, and the 30-minute purge keep the same React UI flow while also saving or removing the matching SQLite `deleted_records` rows. Backup/export/import still uses the full JSON `AppData` payload, and restore/import syncs restored deleted records back into SQLite before app state is replaced.
 
-## SQLite Mirror - App Settings
+## SQLite Pilot - App Settings
 
-App settings remain live in the existing React app data and IndexedDB flow. In development, the app mirrors `AppData.settings` into the SQLite `app_settings` key/value table with one row per setting key.
+Safe app settings now use SQLite as the active desktop read/write pilot. On desktop load, the app still loads the existing JSON/IndexedDB data first for fallback compatibility, backfills missing `app_settings` rows when needed, then uses SQLite settings in `data.settings`.
 
-The settings mirror is validation-only and does not change settings UI behavior, login/unlock, password recovery, screensaver actions, update/version checks, or backup/restore. Dev console logging reports only counts and setting keys, not setting values.
+Settings changes still flow through React state and continue saving the full `AppData` object to IndexedDB for JSON backup/export/import compatibility. The SQLite settings table stores one row per stable safe setting key in `value_json`; the non-portable `backupDirectoryHandle` stays in the existing app state/fallback path and is not stored in SQLite.
+
+Password/recovery data remains in the separate localStorage/sessionStorage auth flow. The settings pilot does not change login/unlock, password recovery, screensaver actions, update/version checks, or backup/restore. Dev console logging reports only counts, source, availability, match state, and setting keys, not setting values.

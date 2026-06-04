@@ -76,7 +76,12 @@ import {
   saveDeletedRecordToSqlite,
   syncDeletedRecordsToSqlite
 } from "./lib/sqliteTrashMirror";
-import { getSqliteSettingsMirrorStatus } from "./lib/sqliteSettingsMirror";
+import {
+  activateAppSettingsSqliteState,
+  getSqliteSettingsMirrorStatus,
+  loadAppSettingsFromSqlite,
+  syncAppSettingsToSqlite
+} from "./lib/sqliteSettingsMirror";
 import { IdleScreensaver } from "./components/layout/IdleScreensaver";
 import jbtLogo from "./assets/jbt-logo.png";
 import type {
@@ -2849,6 +2854,36 @@ function InventoryApp() {
           );
         }
 
+        const settingsSqliteState = await activateAppSettingsSqliteState(loadedData.settings);
+
+        if (cancelled) {
+          return;
+        }
+
+        if (settingsSqliteState.sqliteAvailable) {
+          loadedData = {
+            ...loadedData,
+            settings: settingsSqliteState.settings
+          };
+
+          if (import.meta.env.DEV) {
+            console.info("[sqlite-settings-mirror]", {
+              activeSettingsSource: settingsSqliteState.activeSettingsSource,
+              error: settingsSqliteState.error,
+              jsonSettingsKeyCount: settingsSqliteState.jsonSettingsKeyCount,
+              sampleSettingKeys: settingsSqliteState.sampleSettingKeys,
+              settingsMatch: settingsSqliteState.settingsMatch,
+              sqliteAvailable: settingsSqliteState.sqliteAvailable,
+              sqliteSettingsKeyCount: settingsSqliteState.sqliteSettingsKeyCount
+            });
+          }
+        } else if (settingsSqliteState.error && import.meta.env.DEV) {
+          console.warn(
+            "[sqlite-settings-mirror] Settings SQLite activation failed. JSON settings remain available.",
+            settingsSqliteState.error
+          );
+        }
+
         setData(loadedData);
         latestDataRef.current = loadedData;
         setLastBackupAt(loadedData.settings.lastBackupTimestamp || null);
@@ -2919,7 +2954,7 @@ function InventoryApp() {
   }, [data]);
 
   useEffect(() => {
-    if (!data || !import.meta.env.DEV) {
+    if (!data) {
       return;
     }
 
@@ -2946,21 +2981,26 @@ function InventoryApp() {
           return;
         }
 
-        console.info("[sqlite-settings-mirror]", status);
+        if (import.meta.env.DEV) {
+          console.info("[sqlite-settings-mirror]", status);
+        }
       })
       .catch((error) => {
         if (cancelled) {
           return;
         }
 
-        console.info("[sqlite-settings-mirror]", {
-          error: error instanceof Error ? error.message : String(error),
-          jsonSettingsKeyCount: Object.keys(data.settings).length,
-          sampleSettingKeys: [],
-          settingsMatch: false,
-          sqliteAvailable: false,
-          sqliteSettingsKeyCount: 0
-        });
+        if (import.meta.env.DEV) {
+          console.info("[sqlite-settings-mirror]", {
+            activeSettingsSource: "json",
+            error: error instanceof Error ? error.message : String(error),
+            jsonSettingsKeyCount: Object.keys(data.settings).filter((key) => key !== "backupDirectoryHandle").length,
+            sampleSettingKeys: [],
+            settingsMatch: false,
+            sqliteAvailable: false,
+            sqliteSettingsKeyCount: 0
+          });
+        }
       });
 
     return () => {
@@ -4159,31 +4199,49 @@ function InventoryApp() {
         }
       }
 
+      const currentSettings = latestDataRef.current?.settings ?? imported.settings;
+      const nextSettings: AppSettings = {
+        ...imported.settings,
+        backupEnabled: currentSettings.backupEnabled,
+        backupInterval: currentSettings.backupInterval,
+        autoImportEnabled: currentSettings.autoImportEnabled,
+        backupDirectoryName: currentSettings.backupDirectoryName,
+        backupDirectoryPath: currentSettings.backupDirectoryPath,
+        backupDirectoryHandle: currentSettings.backupDirectoryHandle,
+        lastBackupTimestamp: currentSettings.lastBackupTimestamp,
+        lastAutoImportTimestamp: source === "manual" ? currentSettings.lastAutoImportTimestamp : importedAt,
+        backupStatus: successMessage,
+        updatedAt: importedAt
+      };
+      let restoredSettings = nextSettings;
+
+      try {
+        await syncAppSettingsToSqlite(nextSettings);
+        restoredSettings = await loadAppSettingsFromSqlite(nextSettings);
+
+        if (import.meta.env.DEV) {
+          console.info("[sqlite-settings-mirror]", await getSqliteSettingsMirrorStatus(restoredSettings));
+        }
+      } catch (error) {
+        if (import.meta.env.DEV) {
+          console.warn(
+            "[sqlite-settings-mirror] Imported settings SQLite sync failed. JSON import remains available.",
+            error instanceof Error ? error.message : String(error)
+          );
+        }
+      }
+
       suppressNextAutoBackupRef.current = true;
       setData((current) => {
         if (!current) {
           return current;
         }
 
-        const nextSettings: AppSettings = {
-          ...imported.settings,
-          backupEnabled: current.settings.backupEnabled,
-          backupInterval: current.settings.backupInterval,
-          autoImportEnabled: current.settings.autoImportEnabled,
-          backupDirectoryName: current.settings.backupDirectoryName,
-          backupDirectoryPath: current.settings.backupDirectoryPath,
-          backupDirectoryHandle: current.settings.backupDirectoryHandle,
-          lastBackupTimestamp: current.settings.lastBackupTimestamp,
-          lastAutoImportTimestamp: source === "manual" ? current.settings.lastAutoImportTimestamp : importedAt,
-          backupStatus: successMessage,
-          updatedAt: importedAt
-        };
-
         return stampData(
           addAudit(
             {
               ...importedWithTrash,
-              settings: nextSettings
+              settings: restoredSettings
             },
             createAuditEntry("Import", source, importAction, `${fileName} was imported.`, importActor, importedAt)
           )
@@ -4194,7 +4252,7 @@ function InventoryApp() {
         setLastAutoImportAt(importedAt);
       }
 
-      setItemForm(blankItemForm(importedWithTrash.settings.defaultLocationId));
+      setItemForm(blankItemForm(restoredSettings.defaultLocationId));
       setStockForm(blankStockForm(importedWithTrash.items[0]?.id ?? ""));
       setBackupIndicator("done");
       setBackupMessage(successMessage);
