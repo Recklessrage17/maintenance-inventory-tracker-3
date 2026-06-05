@@ -5268,6 +5268,15 @@ button:disabled {
     font-weight: 900;
   }
 
+  .requisition-action-helper {
+    flex-basis: 100%;
+    color: #bae6fd;
+    line-height: 1.35;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+    text-align: right;
+  }
+
   .requisition-status-message {
     display: block;
     flex-basis: 100%;

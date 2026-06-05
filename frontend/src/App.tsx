@@ -7392,7 +7392,7 @@ function escapeReportHtml(value: unknown) {
     .replace(/"/g, "&quot;");
 }
 
-function getPrintableReportDocument(title: string, bodyHtml: string) {
+function getPrintableReportDocument(title: string, bodyHtml: string, extraCss = "") {
   return `<!doctype html>
 <html>
   <head>
@@ -7496,12 +7496,13 @@ function getPrintableReportDocument(title: string, bodyHtml: string) {
         }
       }
     </style>
+    ${extraCss ? `<style>${extraCss}</style>` : ""}
   </head>
   <body>${bodyHtml}</body>
 </html>`;
 }
 
-function openPrintableReport(title: string, bodyHtml: string) {
+function openPrintableReport(title: string, bodyHtml: string, extraCss = "") {
   const frame = document.createElement("iframe");
 
   frame.setAttribute("aria-hidden", "true");
@@ -7529,7 +7530,7 @@ function openPrintableReport(title: string, bodyHtml: string) {
     }
 
     printDocument.open();
-    printDocument.write(getPrintableReportDocument(title, bodyHtml));
+    printDocument.write(getPrintableReportDocument(title, bodyHtml, extraCss));
     printDocument.close();
 
     printWindow.addEventListener("afterprint", cleanup, { once: true });
@@ -11883,6 +11884,7 @@ function ReorderPage({
               </div>
               <RequisitionFormPreview
                 key={activeVendorGroup.vendorKey}
+                companyShopName={data.settings.companyShopName}
                 group={activeVendorGroup}
                 header={activeRequisitionHeader}
                 isCompleted={activeVendorGroupCompleted}
@@ -12326,6 +12328,314 @@ function buildRequisitionFormText({
   ].join("\n");
 }
 
+function getPrintableRequisitionTitle(requisitionType: RequisitionMadeRecord["requisitionType"]) {
+  return `PURCHASE ORDER REQUISITION ${requisitionType === "under100" ? "Under" : "Over"} $100.00`;
+}
+
+function reportValue(value: unknown) {
+  const text = String(value ?? "").trim();
+  return text || "-";
+}
+
+function buildPrintableField(label: string, value: unknown, className = "") {
+  return `<div class="po-field ${className}"><span>${escapeReportHtml(label)}</span><strong>${escapeReportHtml(
+    reportValue(value)
+  )}</strong></div>`;
+}
+
+const requisitionPrintCss = `
+  @page { size: letter; margin: 0.35in; }
+
+  body {
+    background: #ffffff;
+    color: #111827;
+  }
+
+  .po-requisition {
+    color: #111827;
+    font-size: 10px;
+    line-height: 1.35;
+    padding: 0;
+  }
+
+  .po-header {
+    align-items: stretch;
+    border: 2px solid #111827;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 1.45in;
+    margin-bottom: 0.12in;
+  }
+
+  .po-header-main {
+    border-left: 8px solid #0891b2;
+    padding: 0.12in 0.14in;
+  }
+
+  .po-header .report-kicker {
+    color: #0e7490;
+    margin: 0 0 3px;
+  }
+
+  .po-header h1 {
+    font-size: 18px;
+    letter-spacing: 0;
+  }
+
+  .po-header-box {
+    align-items: center;
+    border-left: 2px solid #111827;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    padding: 0.08in;
+    text-align: center;
+  }
+
+  .po-header-box span {
+    color: #475569;
+    font-size: 8px;
+    font-weight: 900;
+    text-transform: uppercase;
+  }
+
+  .po-header-box strong {
+    color: #111827;
+    font-size: 12px;
+    font-weight: 900;
+  }
+
+  .po-field-grid {
+    display: grid;
+    gap: 0.06in;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    margin-bottom: 0.1in;
+  }
+
+  .po-field-grid-three {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .po-field {
+    border: 1px solid #94a3b8;
+    min-height: 0.34in;
+    padding: 0.05in 0.06in;
+  }
+
+  .po-field-wide {
+    grid-column: span 2;
+  }
+
+  .po-field-full {
+    grid-column: 1 / -1;
+  }
+
+  .po-field span,
+  .po-section-title {
+    color: #475569;
+    display: block;
+    font-size: 8px;
+    font-weight: 900;
+    text-transform: uppercase;
+  }
+
+  .po-field strong {
+    color: #111827;
+    display: block;
+    font-size: 10px;
+    font-weight: 800;
+    margin-top: 2px;
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+  }
+
+  .po-section {
+    margin-bottom: 0.1in;
+  }
+
+  .po-section-title {
+    border-bottom: 2px solid #111827;
+    margin: 0 0 0.05in;
+    padding-bottom: 0.03in;
+  }
+
+  .po-lines {
+    margin-bottom: 0.1in;
+  }
+
+  .po-lines th {
+    background: #111827;
+    color: #ffffff;
+    font-size: 7.5px;
+    padding: 5px;
+  }
+
+  .po-lines td {
+    background: #ffffff;
+    color: #111827;
+    font-size: 8.5px;
+    padding: 5px;
+  }
+
+  .po-lines th,
+  .po-lines td {
+    border: 1px solid #111827;
+  }
+
+  .po-lines .po-qty { width: 0.55in; }
+  .po-lines .po-uom { width: 0.7in; }
+  .po-lines .po-item { width: 1.05in; }
+  .po-lines .po-date { width: 0.78in; }
+  .po-lines .po-money { width: 0.75in; }
+
+  .po-total-row {
+    align-items: center;
+    border: 2px solid #111827;
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.15in;
+    margin-top: 0.05in;
+    padding: 0.08in;
+  }
+
+  .po-total-row span {
+    color: #475569;
+    font-size: 8px;
+    font-weight: 900;
+    text-transform: uppercase;
+  }
+
+  .po-total-row strong {
+    color: #111827;
+    font-size: 15px;
+    font-weight: 900;
+  }
+
+  @media print {
+    body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .po-requisition { padding: 0; }
+    .po-field-grid { break-inside: avoid; }
+    .po-section { break-inside: avoid; }
+    .po-lines thead { display: table-header-group; }
+    .po-lines tr { break-inside: avoid; }
+  }
+`;
+
+function buildPrintableRequisitionDocument({
+  companyShopName,
+  group,
+  header,
+  lineDrafts,
+  requisitionType
+}: {
+  companyShopName: string;
+  group: RequisitionVendorGroup;
+  header: RequisitionHeaderDraft;
+  lineDrafts: Record<string, RequisitionLineDraft>;
+  requisitionType: RequisitionMadeRecord["requisitionType"];
+}) {
+  const printableTitle = getPrintableRequisitionTitle(requisitionType);
+  const total = getRequisitionTotal(group.items, lineDrafts);
+  const vendorName = header.vendorName || group.vendorName;
+  const lineRows = group.items
+    .map((item) => {
+      const draft = lineDrafts[item.id] ?? createRequisitionLineDraft(item);
+      const quantity = getRequisitionLineQuantity(item, lineDrafts);
+      const unitPrice = Number.isFinite(item.costEach) ? item.costEach : 0;
+
+      return `<tr>
+        <td class="text-right">${escapeReportHtml(formatNumber(quantity))}</td>
+        <td>${escapeReportHtml(normalizeStockUnit(item.stockUnit))}</td>
+        <td>${escapeReportHtml(item.partNumber || item.name)}</td>
+        <td>${escapeReportHtml(getRequisitionLineDescription(item))}</td>
+        <td>${escapeReportHtml(formatDateInputForDisplay(draft.dueDate))}</td>
+        <td class="text-right">${escapeReportHtml(formatCurrency(unitPrice))}</td>
+        <td class="text-right">${escapeReportHtml(formatCurrency(quantity * unitPrice))}</td>
+      </tr>`;
+    })
+    .join("");
+
+  return `<main class="report po-requisition">
+    <header class="po-header">
+      <div class="po-header-main">
+        <p class="report-kicker">${escapeReportHtml(companyShopName || "JBT USA Maintenance")}</p>
+        <h1>${escapeReportHtml(printableTitle)}</h1>
+      </div>
+      <div class="po-header-box">
+        <span>Maintenance</span>
+        <strong>JBT</strong>
+      </div>
+    </header>
+
+    <section class="po-section">
+      <div class="po-field-grid">
+        ${buildPrintableField("Vendor Name", vendorName, "po-field-wide")}
+        ${buildPrintableField("P.O. No.", header.poNo)}
+        ${buildPrintableField("P.O. Initiator", header.poInitiator)}
+        ${buildPrintableField("Ship Via", header.shipVia)}
+        ${buildPrintableField("P.O. Class", header.poClass)}
+        ${buildPrintableField("Tax Exempt", header.taxExempt)}
+        ${buildPrintableField("F.O.B.", header.fob)}
+        ${buildPrintableField("Req. Date", formatDateInputForDisplay(header.reqDate))}
+        ${buildPrintableField("Material Cert", header.materialCert)}
+      </div>
+    </section>
+
+    <section class="po-section">
+      <p class="po-section-title">Tooling Orders Only</p>
+      <div class="po-field-grid">
+        ${buildPrintableField("Asset No.", header.assetNo)}
+        ${buildPrintableField("Mold No.", header.moldNo)}
+        ${buildPrintableField("Equipment No.", header.equipmentNo)}
+        ${buildPrintableField("Part No.", header.partNo)}
+        ${buildPrintableField("Job No.", header.jobNo)}
+        ${buildPrintableField("Initials", header.initials)}
+        ${buildPrintableField("T/S No.", header.tsNo)}
+        ${buildPrintableField("Code No.", header.codeNo)}
+        ${buildPrintableField("Work Order No.", header.workOrderNo, "po-field-wide")}
+      </div>
+    </section>
+
+    <section class="po-section">
+      <div class="po-field-grid po-field-grid-three">
+        ${buildPrintableField("Vendor Address / Phone", header.vendorAddress, "po-field-wide")}
+        ${buildPrintableField("Confirmed With", header.confirmedWith)}
+      </div>
+    </section>
+
+    <section class="po-section">
+      <p class="po-section-title">Line Items</p>
+      <table class="po-lines">
+        <thead>
+          <tr>
+            <th class="po-qty">Quantity</th>
+            <th class="po-uom">Unit of Measure</th>
+            <th class="po-item">Item Number</th>
+            <th>Item Description / Revision</th>
+            <th class="po-date">Due Date</th>
+            <th class="po-money">Unit Price</th>
+            <th class="po-money">Total Price</th>
+          </tr>
+        </thead>
+        <tbody>${lineRows || `<tr><td colspan="7">No line items selected.</td></tr>`}</tbody>
+      </table>
+    </section>
+
+    <section class="po-section">
+      <div class="po-field-grid">
+        ${buildPrintableField("Comments", header.comments, "po-field-full")}
+        ${buildPrintableField("Priority", header.priority)}
+        ${buildPrintableField("Authorized By", header.authorizedBy)}
+        ${buildPrintableField("Department Manager", header.departmentManager)}
+        ${buildPrintableField("Requisitioned By", header.requisitionedBy)}
+      </div>
+      <div class="po-total-row">
+        <span>Grand Total</span>
+        <strong>${escapeReportHtml(formatCurrency(total))}</strong>
+      </div>
+    </section>
+  </main>`;
+}
+
 function getErrorMessage(error: unknown) {
   if (error instanceof Error) {
     return error.message;
@@ -12350,6 +12660,7 @@ function isPossiblePdfEngineSetupError(message: string) {
 }
 
 function RequisitionFormPreview({
+  companyShopName,
   group,
   header,
   isCompleted,
@@ -12358,6 +12669,7 @@ function RequisitionFormPreview({
   onOfficialPdfGenerated,
   onLineChange
 }: {
+  companyShopName: string;
   group: RequisitionVendorGroup;
   header: RequisitionHeaderDraft;
   isCompleted: boolean;
@@ -12373,13 +12685,22 @@ function RequisitionFormPreview({
   const total = getRequisitionTotal(group.items, lineDrafts);
   const requisitionType = getAutoRequisitionType(total);
   const title = getRequisitionTitleFromTotal(total);
+  const isWebsiteMode = isWebsiteBrowserMode();
   const autoStatus =
     requisitionType === "under100" ? "Auto selected: Under $100 form" : "Auto selected: Over $100 form";
   const showPdfSetupWarning =
-    pdfEngineStatus !== null && !pdfEngineStatus.ready && pdfEngineStatus.preferredEngine !== "Desktop app required";
+    !isWebsiteMode &&
+    pdfEngineStatus !== null &&
+    !pdfEngineStatus.ready &&
+    pdfEngineStatus.preferredEngine !== "Desktop app required";
 
   useEffect(() => {
     let cancelled = false;
+
+    if (isWebsiteMode) {
+      setPdfEngineStatus(null);
+      return;
+    }
 
     checkPdfExportEngines()
       .then((status) => {
@@ -12396,7 +12717,7 @@ function RequisitionFormPreview({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [isWebsiteMode]);
 
   function updateHeader<K extends keyof RequisitionHeaderDraft>(field: K, value: RequisitionHeaderDraft[K]) {
     onHeaderChange((current) => ({ ...current, [field]: value }));
@@ -12496,6 +12817,29 @@ function RequisitionFormPreview({
       setCopyStatusType("error");
     } finally {
       setIsGeneratingOfficialPdf(false);
+    }
+  }
+
+  function handleBrowserPrintPdf() {
+    try {
+      openPrintableReport(
+        `Maintenance Inventory Tracker - Requisition ${header.vendorName || group.vendorName}`,
+        buildPrintableRequisitionDocument({
+          companyShopName,
+          group,
+          header,
+          lineDrafts,
+          requisitionType
+        }),
+        requisitionPrintCss
+      );
+      setCopyStatus("Browser print view opened. Choose Save as PDF in the print dialog.");
+      setCopyStatusType("success");
+      onOfficialPdfGenerated();
+      clearStatusAfterDelay();
+    } catch {
+      setCopyStatus("Could not open browser print view.");
+      setCopyStatusType("error");
     }
   }
 
@@ -12708,14 +13052,25 @@ function RequisitionFormPreview({
       </div>
 
       <div className="requisition-actions">
-        <button
-          className="btn-primary reorder-create-button"
-          type="button"
-          disabled={isGeneratingOfficialPdf}
-          onClick={() => void handleGenerateOfficialPdf()}
-        >
-          {isGeneratingOfficialPdf ? "Generating PDF..." : "Generate Official PDF"}
-        </button>
+        {isWebsiteMode ? (
+          <>
+            <button className="btn-primary reorder-create-button" type="button" onClick={handleBrowserPrintPdf}>
+              Print / Save as PDF
+            </button>
+            <span className="requisition-action-helper">
+              Website mode uses browser print/save as PDF. Official desktop PDF export is available in the desktop app.
+            </span>
+          </>
+        ) : (
+          <button
+            className="btn-primary reorder-create-button"
+            type="button"
+            disabled={isGeneratingOfficialPdf}
+            onClick={() => void handleGenerateOfficialPdf()}
+          >
+            {isGeneratingOfficialPdf ? "Generating PDF..." : "Generate Official PDF"}
+          </button>
+        )}
         <button className="btn-muted" type="button" onClick={() => void copyFormText()}>
           Copy Form Text
         </button>
