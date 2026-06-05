@@ -93,7 +93,6 @@ import {
 } from "./lib/sqliteSettingsMirror";
 import { runSqliteHealthCheck } from "./lib/sqliteHealthCheck";
 import { IdleScreensaver } from "./components/layout/IdleScreensaver";
-import jbtLogo from "./assets/jbt-logo.png";
 import type {
   AppData,
   AppSettings,
@@ -3120,8 +3119,9 @@ function MaintenanceLoadingScreen() {
 
 function AppLogoMark() {
   return (
-    <span className="tool-mark" aria-hidden="true">
-      <img src={jbtLogo} alt="" />
+    <span className="tool-mark tool-mark-brand" aria-hidden="true">
+      <span>JBT</span>
+      <small>USA</small>
     </span>
   );
 }

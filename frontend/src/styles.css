@@ -254,26 +254,27 @@ button:disabled {
   }
 
   .auth-brand .tool-mark {
-    @apply h-16 w-16 border-cyan-200/55 bg-cyan-300/10;
+    /* brand-sized variant shares the same core visual style */
     position: relative;
+    display: inline-flex;
+    width: 3rem;
+    height: 3rem;
+    align-items: center;
+    justify-content: center;
+    gap: 0.16rem;
+    overflow: hidden;
+    border: 1px solid rgba(103, 232, 249, 0.38);
     border-radius: 0.5rem;
     background:
-      linear-gradient(145deg, rgba(148, 163, 184, 0.16), transparent 42%),
-      radial-gradient(circle at 50% 35%, rgba(34, 211, 238, 0.18), rgba(15, 23, 42, 0.32));
+      linear-gradient(180deg, rgba(226, 232, 240, 0.14), transparent 34%),
+      linear-gradient(145deg, rgba(8, 47, 73, 0.94), rgba(2, 6, 23, 0.86) 58%, rgba(20, 83, 45, 0.74));
+    color: #e0f2fe;
     box-shadow:
-      inset 0 1px 0 rgba(226, 232, 240, 0.16),
-      inset 0 -1px 0 rgba(2, 6, 23, 0.9),
-      0 0 20px rgba(34, 211, 238, 0.26),
-      0 0 34px rgba(34, 197, 94, 0.08),
-      0 14px 30px rgba(0, 0, 0, 0.42);
-  }
-
-  .auth-brand .tool-mark img {
-    width: 3.2rem;
-    height: 3.2rem;
-    filter:
-      drop-shadow(0 0 8px rgba(34, 211, 238, 0.66))
-      drop-shadow(0 0 14px rgba(163, 230, 53, 0.22));
+      inset 0 1px 0 rgba(226, 232, 240, 0.18),
+      inset 0 -10px 20px rgba(2, 6, 23, 0.36),
+      0 0 0 1px rgba(34, 211, 238, 0.08),
+      0 0 18px rgba(34, 211, 238, 0.18),
+      0 12px 24px rgba(2, 6, 23, 0.34);
   }
 
   .auth-security-strip {
@@ -644,14 +645,72 @@ button:disabled {
   }
 
   .tool-mark {
-    @apply inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-lg border border-cyan-300/35 bg-cyan-400/10 shadow-lg shadow-cyan-950/30;
+    position: relative;
+    display: inline-flex;
+    width: 3rem;
+    height: 3rem;
+    shrink: 0;
+    align-items: center;
+    justify-content: center;
+    gap: 0.16rem;
+    overflow: hidden;
+    border: 1px solid rgba(103, 232, 249, 0.38);
+    border-radius: 0.5rem;
+    background:
+      linear-gradient(180deg, rgba(226, 232, 240, 0.14), transparent 34%),
+      linear-gradient(145deg, rgba(8, 47, 73, 0.94), rgba(2, 6, 23, 0.86) 58%, rgba(20, 83, 45, 0.74));
+    color: #e0f2fe;
+    box-shadow:
+      inset 0 1px 0 rgba(226, 232, 240, 0.18),
+      inset 0 -10px 20px rgba(2, 6, 23, 0.36),
+      0 0 0 1px rgba(34, 211, 238, 0.08),
+      0 0 18px rgba(34, 211, 238, 0.18),
+      0 12px 24px rgba(2, 6, 23, 0.34);
   }
 
-  .tool-mark img {
-    width: 2.4rem;
-    height: 2.4rem;
-    object-fit: contain;
-    filter: drop-shadow(0 0 8px rgba(34, 211, 238, 0.55));
+  .tool-mark::before {
+    position: absolute;
+    inset: 0.38rem;
+    border-radius: 0.18rem;
+    background:
+      linear-gradient(90deg, transparent, rgba(103, 232, 249, 0.34), transparent) top center / 82% 1px no-repeat,
+      linear-gradient(90deg, transparent, rgba(34, 211, 238, 0.22), transparent) bottom center / 70% 1px no-repeat;
+    box-shadow: inset 0 0 18px rgba(34, 211, 238, 0.08);
+    content: "";
+    pointer-events: none;
+  }
+
+  .tool-mark span,
+  .tool-mark small {
+    position: relative;
+    z-index: 1;
+    line-height: 1;
+    text-transform: uppercase;
+  }
+
+  .tool-mark span {
+    color: transparent;
+    font-size: 0.92rem;
+    font-weight: 950;
+    background:
+      linear-gradient(180deg, #f8fafc, #67e8f9 46%, #0e7490 100%),
+      linear-gradient(90deg, rgba(148, 163, 184, 0.35), transparent 62%);
+    background-clip: text;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    text-shadow:
+      0 1px 0 rgba(226, 232, 240, 0.28),
+      0 2px 0 rgba(8, 47, 73, 0.88),
+      0 0 14px rgba(34, 211, 238, 0.3);
+  }
+
+  .tool-mark small {
+    color: #a7f3d0;
+    font-size: 0.48rem;
+    font-weight: 950;
+    text-shadow:
+      0 0 10px rgba(34, 211, 238, 0.28),
+      0 0 14px rgba(74, 222, 128, 0.18);
   }
 
   .header-panel {
@@ -674,9 +733,12 @@ button:disabled {
     height: 2.35rem;
   }
 
-  .header-panel-compact .tool-mark img {
-    width: 1.9rem;
-    height: 1.9rem;
+  .header-panel-compact .tool-mark span {
+    font-size: 0.72rem;
+  }
+
+  .header-panel-compact .tool-mark small {
+    font-size: 0.38rem;
   }
 
   .header-panel-compact .header-badge-button {
