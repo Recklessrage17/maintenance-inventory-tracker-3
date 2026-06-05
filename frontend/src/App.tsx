@@ -13000,7 +13000,7 @@ function SettingsPage({
   }
 
   const updateSummary = getUpdateStatusSummary(updateStatus, updateCheck);
-  const updateFolderTone: HealthTone = updateCheck ? (updateCheck.folderExists ? "good" : "warning") : updateFolderPath ? "good" : "warning";
+  const updateFolderTone: HealthTone = updateCheck ? (updateCheck.folderExists ? "good" : "warning") : "warning";
   const newestInstallerTone: HealthTone = updateCheck?.newerInstaller
     ? "warning"
     : updateCheck?.newestInstaller
