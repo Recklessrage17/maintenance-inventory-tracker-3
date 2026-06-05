@@ -12942,6 +12942,11 @@ function SettingsPage({
       setAppVersion(result.currentVersion);
       setUpdateStatus(result.statusMessage);
       setLastUpdateCheckAt(nowIso());
+      // debug: log update check and derived tones
+      // eslint-disable-next-line no-console
+      console.info('[update-check] result:', result);
+      // eslint-disable-next-line no-console
+      console.info('[update-check] updateStatus:', result.statusMessage);
     } catch (error) {
       setUpdateStatus(error instanceof Error ? error.message : "Could not check installer folder.");
       setLastUpdateCheckAt(nowIso());
@@ -13693,12 +13698,36 @@ function SettingsHealthCard({
   value: string;
 }) {
   return (
-    <div className={statusCardClass(tone)}>
+    <div
+      className={statusCardClass(tone)}
+      style={
+        tone === "good"
+          ? { borderColor: "rgba(74, 222, 128, 0.34)", background: "linear-gradient(135deg, rgba(34,197,94,0.11), rgba(15,23,42,0.24))" }
+          : tone === "warning"
+            ? { borderColor: "rgba(251,191,36,0.38)", background: "linear-gradient(135deg, rgba(245,158,11,0.12), rgba(15,23,42,0.24))" }
+            : tone === "danger"
+              ? { borderColor: "rgba(251,113,133,0.4)", background: "linear-gradient(135deg, rgba(244,63,94,0.12), rgba(15,23,42,0.24))" }
+              : undefined
+      }
+    >
       <div className="settings-health-card-top">
-        <span className={`settings-health-dot settings-health-dot-${tone}`} aria-hidden="true" />
+        <span
+          className={`settings-health-dot settings-health-dot-${tone}`}
+          aria-hidden="true"
+          style={
+            tone === "good"
+              ? { background: "#4ade80", color: "#4ade80", boxShadow: "0 0 12px #4ade80" }
+              : tone === "warning"
+                ? { background: "#facc15", color: "#facc15", boxShadow: "0 0 12px #facc15" }
+                : tone === "danger"
+                  ? { background: "#fb7185", color: "#fb7185", boxShadow: "0 0 12px #fb7185" }
+                  : undefined
+          }
+        />
         <span>{label}</span>
       </div>
       <strong>{value}</strong>
+      <div style={{ marginTop: "6px", fontSize: "12px", color: "#9ca3af" }}>tone: {tone}</div>
       <p>{helper}</p>
     </div>
   );
