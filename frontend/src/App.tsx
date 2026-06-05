@@ -13679,8 +13679,31 @@ function SaveHealthPanel({ rows }: { rows: SaveHealthRow[] }) {
 
 function SettingsStatusPill({ label, tone }: { label: string; tone: HealthTone }) {
   return (
-    <span className={statusPillClass(tone)}>
-      <span className={`settings-health-dot settings-health-dot-${tone}`} aria-hidden="true" />
+    <span
+      className={statusPillClass(tone)}
+      style={
+        tone === "good"
+          ? { borderColor: "rgba(74, 222, 128, 0.48)", background: "rgba(34,197,94,0.13)", color: "#bbf7d0", boxShadow: "0 0 18px rgba(34,197,94,0.12)" }
+          : tone === "warning"
+            ? { borderColor: "rgba(251,191,36,0.5)", background: "rgba(245,158,11,0.13)", color: "#fde68a", boxShadow: "0 0 18px rgba(245,158,11,0.1)" }
+            : tone === "danger"
+              ? { borderColor: "rgba(251,113,133,0.5)", background: "rgba(244,63,94,0.13)", color: "#fecdd3", boxShadow: "0 0 18px rgba(244,63,94,0.12)" }
+              : undefined
+      }
+    >
+      <span
+        className={`settings-health-dot settings-health-dot-${tone}`}
+        aria-hidden="true"
+        style={
+          tone === "good"
+            ? { background: "#4ade80", color: "#4ade80", boxShadow: "0 0 12px #4ade80" }
+            : tone === "warning"
+              ? { background: "#facc15", color: "#facc15", boxShadow: "0 0 12px #facc15" }
+              : tone === "danger"
+                ? { background: "#fb7185", color: "#fb7185", boxShadow: "0 0 12px #fb7185" }
+                : undefined
+        }
+      />
       {label}
     </span>
   );
