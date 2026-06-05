@@ -2007,12 +2007,12 @@ function toneFromStatusMessage(message: string, fallback: HealthTone = "warning"
     return "danger";
   }
 
-  if (/saved|selected|complete|completed|updated|granted|up to date|opened|found/i.test(normalized)) {
-    return "good";
-  }
-
   if (/choose|missing|not found|not checked|no .*yet|needed|warning|unavailable/i.test(normalized)) {
     return "warning";
+  }
+
+  if (/active|saved|selected|complete|completed|updated|granted|up to date|opened|found/i.test(normalized)) {
+    return "good";
   }
 
   return fallback;
@@ -2113,6 +2113,14 @@ function getUpdateStatusSummary(
     label: tone === "good" ? "Ready" : "Folder needed",
     tone
   };
+}
+
+function getUpdateLastCheckTone(lastUpdateCheckAt: string, updateStatus: string): HealthTone {
+  if (!lastUpdateCheckAt) {
+    return "warning";
+  }
+
+  return toneFromStatusMessage(updateStatus) === "danger" ? "danger" : "good";
 }
 
 function getRecentAddAlerts(data: AppData, nowMs: number): RecentAddAlert[] {
@@ -12998,7 +13006,7 @@ function SettingsPage({
     : updateCheck?.newestInstaller
       ? "good"
       : "warning";
-  const lastCheckTone: HealthTone = lastUpdateCheckAt ? updateSummary.tone : "warning";
+  const lastCheckTone = getUpdateLastCheckTone(lastUpdateCheckAt, updateStatus);
   const updateFolderValue = updateFolderPath || DEFAULT_MANUAL_UPDATE_FOLDER;
   const newestInstallerValue = updateCheck?.newestInstaller
     ? `v${updateCheck.newestInstaller.version} - ${updateCheck.newestInstaller.fileName}`
