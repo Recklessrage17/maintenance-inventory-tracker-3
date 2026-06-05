@@ -6175,6 +6175,50 @@ function InventoryApp() {
     return rowsToCsv(headers, rows);
   }
 
+  function getHistoryExportCsv() {
+    if (!data) {
+      return "";
+    }
+
+    const headers = [
+      "id",
+      "itemId",
+      "partNumber",
+      "itemName",
+      "vendor",
+      "actionType",
+      "oldQuantity",
+      "quantityChange",
+      "newQuantity",
+      "reason",
+      "usedBy",
+      "notes",
+      "dateTime",
+      "createdAt"
+    ];
+    const rows = data.stockChanges
+      .slice()
+      .sort((left, right) => left.occurredAt.localeCompare(right.occurredAt) || left.id.localeCompare(right.id))
+      .map((change) => [
+        change.id,
+        change.itemId,
+        change.partNumberSnapshot,
+        change.itemNameSnapshot,
+        change.vendorNameSnapshot,
+        change.actionType,
+        change.previousQuantity,
+        change.actionType === "Stock Out" ? -Math.abs(change.quantity) : Math.abs(change.quantity),
+        change.newQuantity,
+        change.reason,
+        change.actor,
+        change.notes,
+        change.occurredAt,
+        change.createdAt
+      ]);
+
+    return rowsToCsv(headers, rows);
+  }
+
   function handleExportCsv() {
     if (!ensurePermission("reports:export")) {
       return;
@@ -6190,6 +6234,23 @@ function InventoryApp() {
       "text/csv;charset=utf-8"
     );
     showToast("success", "CSV export downloaded.");
+  }
+
+  function handleExportHistoryCsv() {
+    if (!ensurePermission("reports:export")) {
+      return;
+    }
+
+    if (!data) {
+      return;
+    }
+
+    downloadTextFile(
+      `maintenance-inventory-history-${new Date().toISOString().slice(0, 10)}.csv`,
+      getHistoryExportCsv(),
+      "text/csv;charset=utf-8"
+    );
+    showToast("success", "History CSV downloaded.");
   }
 
   function handleExportExcelCsv() {
@@ -6802,7 +6863,10 @@ function InventoryApp() {
             onClose={closeSettingsPanel}
             onCreateRecoveryCode={() => void handleCreateRecoveryCode()}
             onDismissRecoveryCode={() => setNewRecoveryCode("")}
+            onDownloadHistoryCsv={handleExportHistoryCsv}
+            onDownloadInventoryCsv={handleExportCsv}
             onExportCsvFolderNow={() => void handleExportCsvFolderNow()}
+            onImportInventoryCsv={(file) => void handleImportCsv(file)}
             onImportCsvFolder={() => void handlePrepareCsvFolderImport()}
             onImportJson={(file) => void handleImportJson(file)}
             onRunBackup={() => void runBackup(data, true)}
@@ -12856,7 +12920,10 @@ function SettingsPage({
   onClose,
   onCreateRecoveryCode,
   onDismissRecoveryCode,
+  onDownloadHistoryCsv,
+  onDownloadInventoryCsv,
   onExportCsvFolderNow,
+  onImportInventoryCsv,
   onImportCsvFolder,
   onImportJson,
   onDeleteDeletedRecordForever,
@@ -12880,7 +12947,10 @@ function SettingsPage({
   onClose: () => void;
   onCreateRecoveryCode: () => void;
   onDismissRecoveryCode: () => void;
+  onDownloadHistoryCsv: () => void;
+  onDownloadInventoryCsv: () => void;
   onExportCsvFolderNow: () => void;
+  onImportInventoryCsv: (file: File) => void;
   onImportCsvFolder: () => void;
   onImportJson: (file: File) => void;
   onDeleteDeletedRecordForever: (deletedRecordId: string) => void;
@@ -12903,6 +12973,7 @@ function SettingsPage({
   const [isOpeningInstallerFile, setIsOpeningInstallerFile] = useState(false);
   const [isOpeningUpdateFolder, setIsOpeningUpdateFolder] = useState(false);
   const [isChoosingUpdateFolder, setIsChoosingUpdateFolder] = useState(false);
+  const websiteCsvImportInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     onPurgeExpiredDeletedRecords();
@@ -13432,78 +13503,97 @@ function SettingsPage({
 
       <section className="panel">
         <SectionHeader kicker="CSV" title="CSV Export / Import" />
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-          {!showWebsiteModePanel && (
-            <div className="field-label xl:col-span-2">
-              Selected CSV folder
-              <div className={`${statusLineToneClass(data.settings.csvExportFolderPath ? "good" : "warning")} min-h-10`}>
-                {data.settings.csvExportFolderPath || "No CSV folder selected"}
+        {showWebsiteModePanel ? (
+          <div className="mt-4 flex flex-wrap gap-2">
+            <button className="btn-primary" type="button" onClick={onDownloadInventoryCsv}>
+              Download Inventory CSV
+            </button>
+            <button className="btn-muted" type="button" onClick={() => websiteCsvImportInputRef.current?.click()}>
+              Import Inventory CSV
+            </button>
+            <button className="btn-muted" type="button" onClick={onDownloadHistoryCsv}>
+              Download History CSV
+            </button>
+            <input
+              ref={websiteCsvImportInputRef}
+              hidden
+              accept=".csv,text/csv"
+              type="file"
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                if (file) {
+                  onImportInventoryCsv(file);
+                }
+                event.currentTarget.value = "";
+              }}
+            />
+            <p className="w-full text-sm font-semibold text-slate-300">
+              Website mode uses browser download/upload. Folder sync is only available in the desktop app.
+            </p>
+          </div>
+        ) : (
+          <>
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+              <div className="field-label xl:col-span-2">
+                Selected CSV folder
+                <div className={`${statusLineToneClass(data.settings.csvExportFolderPath ? "good" : "warning")} min-h-10`}>
+                  {data.settings.csvExportFolderPath || "No CSV folder selected"}
+                </div>
+              </div>
+              <label className="field-label">
+                Auto-export History Logs monthly
+                <div className={`${statusLineToneClass(data.settings.csvAutoExportHistoryEnabled ? "good" : "warning")} min-h-10 flex items-center gap-2`}>
+                  <input
+                    checked={data.settings.csvAutoExportHistoryEnabled}
+                    type="checkbox"
+                    onChange={(event) =>
+                      updateSettings(
+                        { ...data.settings, csvAutoExportHistoryEnabled: event.target.checked },
+                        "CSV monthly history auto-export setting was updated."
+                      )
+                    }
+                  />
+                  <span>{data.settings.csvAutoExportHistoryEnabled ? "On" : "Off"}</span>
+                </div>
+              </label>
+              <div className="field-label">
+                Last CSV export time
+                <div className={`${statusLineToneClass(data.settings.csvLastExportAt ? "good" : "warning")} min-h-10`}>
+                  {data.settings.csvLastExportAt ? formatDateTime(data.settings.csvLastExportAt) : "No CSV export has run yet"}
+                </div>
+              </div>
+              <div className="field-label">
+                Last history CSV update
+                <div className={`${statusLineToneClass(data.settings.csvLastHistoryExportAt ? "good" : "warning")} min-h-10`}>
+                  {data.settings.csvLastHistoryExportAt
+                    ? formatDateTime(data.settings.csvLastHistoryExportAt)
+                    : "History CSV has not updated yet"}
+                </div>
+              </div>
+              <div className="field-label xl:col-span-3">
+                CSV status
+                <div className={`${statusLineToneClass(csvStatusTone)} min-h-10`}>{csvFolderStatus}</div>
               </div>
             </div>
-          )}
-          <label className="field-label">
-            Auto-export History Logs monthly
-            <div className={`${statusLineToneClass(data.settings.csvAutoExportHistoryEnabled ? "good" : "warning")} min-h-10 flex items-center gap-2`}>
-              <input
-                checked={data.settings.csvAutoExportHistoryEnabled}
-                type="checkbox"
-                onChange={(event) =>
-                  updateSettings(
-                    { ...data.settings, csvAutoExportHistoryEnabled: event.target.checked },
-                    "CSV monthly history auto-export setting was updated."
-                  )
-                }
-              />
-              <span>{data.settings.csvAutoExportHistoryEnabled ? "On" : "Off"}</span>
-            </div>
-          </label>
-          <div className="field-label">
-            Last CSV export time
-            <div className={`${statusLineToneClass(data.settings.csvLastExportAt ? "good" : "warning")} min-h-10`}>
-              {data.settings.csvLastExportAt ? formatDateTime(data.settings.csvLastExportAt) : "No CSV export has run yet"}
-            </div>
-          </div>
-          <div className="field-label">
-            Last history CSV update
-            <div className={`${statusLineToneClass(data.settings.csvLastHistoryExportAt ? "good" : "warning")} min-h-10`}>
-              {data.settings.csvLastHistoryExportAt
-                ? formatDateTime(data.settings.csvLastHistoryExportAt)
-                : "History CSV has not updated yet"}
-            </div>
-          </div>
-          <div className="field-label xl:col-span-3">
-            CSV status
-            <div className={`${statusLineToneClass(csvStatusTone)} min-h-10`}>{csvFolderStatus}</div>
-          </div>
-        </div>
-        <div className="mt-4 flex flex-wrap gap-2">
-          {!showWebsiteModePanel && (
-            <button className="btn-primary" type="button" onClick={onChooseCsvFolder} disabled={!csvFolderSupported}>
-              Choose CSV Folder
-            </button>
-          )}
-          <button className="btn-muted" type="button" onClick={onExportCsvFolderNow} disabled={!csvFolderSupported}>
-            Export CSV Now
-          </button>
-          <button className="btn-muted" type="button" onClick={onImportCsvFolder} disabled={!csvFolderSupported}>
-            Import CSV Folder
-          </button>
-          {!showWebsiteModePanel && (
-            <>
+            <div className="mt-4 flex flex-wrap gap-2">
+              <button className="btn-primary" type="button" onClick={onChooseCsvFolder} disabled={!csvFolderSupported}>
+                Choose CSV Folder
+              </button>
+              <button className="btn-muted" type="button" onClick={onExportCsvFolderNow} disabled={!csvFolderSupported}>
+                Export CSV Now
+              </button>
+              <button className="btn-muted" type="button" onClick={onImportCsvFolder} disabled={!csvFolderSupported}>
+                Import CSV Folder
+              </button>
               <p className="w-full text-xs font-semibold text-slate-500">
                 Suggested folder: {CSV_RECOMMENDED_FOLDER}
               </p>
               <p className="w-full text-xs font-semibold text-slate-500">
                 Files: Inventory\\inventory.csv, Vendors\\vendors.csv, Locations\\locations.csv, History Logs\\YYYY\\YYYY-MM.
               </p>
-            </>
-          )}
-          {showWebsiteModePanel && (
-            <p className="w-full text-sm font-semibold text-slate-300">
-              Use browser import/export if available; folder sync is hidden in website mode.
-            </p>
-          )}
-        </div>
+            </div>
+          </>
+        )}
       </section>
 
       <RecentlyDeletedPanel
