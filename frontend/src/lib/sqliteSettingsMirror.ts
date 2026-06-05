@@ -30,6 +30,10 @@ const SQLITE_APP_SETTING_KEYS = [
   "autoImportEnabled",
   "backupDirectoryName",
   "backupDirectoryPath",
+  "csvExportFolderPath",
+  "csvAutoExportHistoryEnabled",
+  "csvLastExportAt",
+  "csvLastHistoryExportAt",
   "customCategories",
   "lastBackupTimestamp",
   "lastAutoImportTimestamp",
@@ -139,6 +143,7 @@ function normalizeSettingValue(key: SqliteAppSettingKey, value: unknown, fallbac
     case "allowNegativeStockOverride":
     case "backupEnabled":
     case "autoImportEnabled":
+    case "csvAutoExportHistoryEnabled":
       return booleanSetting(value, fallbackSettings[key]);
     case "backupInterval":
       return backupIntervalSetting(value, fallbackSettings.backupInterval);
@@ -149,6 +154,9 @@ function normalizeSettingValue(key: SqliteAppSettingKey, value: unknown, fallbac
     case "defaultLocationId":
     case "backupDirectoryName":
     case "backupDirectoryPath":
+    case "csvExportFolderPath":
+    case "csvLastExportAt":
+    case "csvLastHistoryExportAt":
     case "lastBackupTimestamp":
     case "lastAutoImportTimestamp":
     case "backupStatus":

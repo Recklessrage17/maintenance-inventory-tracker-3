@@ -21,7 +21,7 @@ export const csvEscape = (value: unknown) => {
   return text;
 };
 
-export const rowsToCsv = (headers: string[], rows: Array<Array<string | number>>) =>
+export const rowsToCsv = (headers: string[], rows: Array<Array<unknown>>) =>
   [headers, ...rows].map((row) => row.map(csvEscape).join(",")).join("\n");
 
 export const parseCsv = (contents: string) => {

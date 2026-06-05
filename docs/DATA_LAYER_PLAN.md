@@ -24,6 +24,8 @@ The React/Vite frontend can be shared with the future website, but a normal webs
 
 Website V3 will need a backend/API for server-side data access. The website database can be chosen later, such as PostgreSQL or hosted SQL. The shared UI should call a data adapter instead of directly touching IndexedDB, Tauri commands, or backend fetch calls.
 
+The CSV folder export/import workflow is desktop-only because it writes directly to user-selected local folders through Tauri commands. A future web version will need a browser download/upload flow for CSV files instead of persistent local folder writes.
+
 ## Adapter Direction
 
 - `JsonLocalDataAdapter`: current live data behavior using IndexedDB plus JSON backup/export/import.

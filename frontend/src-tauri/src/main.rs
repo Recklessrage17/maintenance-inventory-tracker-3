@@ -71,6 +71,20 @@ struct BackupFileWriteResult {
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+struct CsvFileReadResult {
+    contents: String,
+    exists: bool,
+    last_modified_ms: Option<u64>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CsvFileWriteResult {
+    last_modified_ms: Option<u64>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 struct InstallerFileList {
     folder_exists: bool,
     file_names: Vec<String>,
@@ -110,6 +124,53 @@ fn backup_file_path(directory_path: &str, file_name: &str) -> Result<PathBuf, St
     }
 
     Ok(PathBuf::from(directory_path).join(file_name))
+}
+
+fn is_safe_csv_segment(segment: &str) -> bool {
+    !segment.trim().is_empty()
+        && !segment.contains('/')
+        && !segment.contains('\\')
+        && !segment.contains("..")
+}
+
+fn csv_file_path(directory_path: &str, relative_path: Vec<String>) -> Result<PathBuf, String> {
+    if directory_path.trim().is_empty() {
+        return Err("CSV folder path is required.".to_string());
+    }
+
+    if !relative_path.iter().all(|segment| is_safe_csv_segment(segment)) {
+        return Err("CSV file path is invalid.".to_string());
+    }
+
+    let valid_static_file = relative_path.len() == 2
+        && matches!(relative_path[0].as_str(), "Inventory" | "Vendors" | "Locations")
+        && matches!(
+            (relative_path[0].as_str(), relative_path[1].as_str()),
+            ("Inventory", "inventory.csv")
+                | ("Vendors", "vendors.csv")
+                | ("Locations", "locations.csv")
+        );
+
+    let history_pattern = Regex::new(r"^\d{4}$").map_err(|error| error.to_string())?;
+    let month_pattern = Regex::new(r"^\d{4}-\d{2}$").map_err(|error| error.to_string())?;
+    let valid_history_file = relative_path.len() == 4
+        && relative_path[0] == "History Logs"
+        && history_pattern.is_match(&relative_path[1])
+        && month_pattern.is_match(&relative_path[2])
+        && relative_path[1] == relative_path[2][0..4]
+        && relative_path[3] == format!("stock-history-{}.csv", relative_path[2]);
+
+    if !valid_static_file && !valid_history_file {
+        return Err("CSV file path is not owned by this feature.".to_string());
+    }
+
+    let mut path = PathBuf::from(directory_path);
+
+    for segment in relative_path {
+        path.push(segment);
+    }
+
+    Ok(path)
 }
 
 fn last_modified_ms(path: &Path) -> Option<u64> {
@@ -951,6 +1012,60 @@ fn write_backup_file(
     })
 }
 
+#[tauri::command]
+fn check_csv_folder_exists(directory_path: String) -> bool {
+    let directory = PathBuf::from(directory_path);
+
+    directory.exists() && directory.is_dir()
+}
+
+#[tauri::command]
+fn read_csv_file(
+    directory_path: String,
+    relative_path: Vec<String>,
+) -> Result<CsvFileReadResult, String> {
+    let path = csv_file_path(&directory_path, relative_path)?;
+
+    if !path.exists() {
+        return Ok(CsvFileReadResult {
+            contents: String::new(),
+            exists: false,
+            last_modified_ms: None,
+        });
+    }
+
+    if !path.is_file() {
+        return Err("CSV path is not a file.".to_string());
+    }
+
+    let contents = fs::read_to_string(&path).map_err(|error| error.to_string())?;
+
+    Ok(CsvFileReadResult {
+        contents,
+        exists: true,
+        last_modified_ms: last_modified_ms(&path),
+    })
+}
+
+#[tauri::command]
+fn write_csv_file(
+    directory_path: String,
+    relative_path: Vec<String>,
+    contents: String,
+) -> Result<CsvFileWriteResult, String> {
+    let path = csv_file_path(&directory_path, relative_path)?;
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+
+    fs::write(&path, contents).map_err(|error| error.to_string())?;
+
+    Ok(CsvFileWriteResult {
+        last_modified_ms: last_modified_ms(&path),
+    })
+}
+
 #[cfg(target_os = "windows")]
 fn choose_windows_directory(description: &str, failure_message: &str) -> Result<Option<String>, String> {
     use std::os::windows::process::CommandExt;
@@ -1006,6 +1121,19 @@ fn choose_backup_directory() -> Result<Option<String>, String> {
     #[cfg(target_os = "windows")]
     {
         choose_windows_directory("Choose backup folder", "Could not choose backup folder.")
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        Ok(None)
+    }
+}
+
+#[tauri::command]
+fn choose_csv_directory() -> Result<Option<String>, String> {
+    #[cfg(target_os = "windows")]
+    {
+        choose_windows_directory("Choose CSV export/import folder", "Could not choose CSV folder.")
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -1184,8 +1312,10 @@ fn main() {
                 .build(),
         )
         .invoke_handler(tauri::generate_handler![
+            check_csv_folder_exists,
             check_pdf_export_engines,
             choose_backup_directory,
+            choose_csv_directory,
             choose_manual_installer_folder,
             export_requisition_xlsx_to_pdf,
             fetch_website_preview,
@@ -1193,7 +1323,9 @@ fn main() {
             list_manual_installer_files,
             open_manual_installer_file,
             open_manual_installer_folder,
+            read_csv_file,
             read_backup_file,
+            write_csv_file,
             write_backup_file
         ])
         .run(tauri::generate_context!())

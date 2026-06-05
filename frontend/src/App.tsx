@@ -31,6 +31,15 @@ import {
   writeBackupFile
 } from "./lib/backup";
 import {
+  CSV_RECOMMENDED_FOLDER,
+  checkCsvFolderExists,
+  chooseCsvFolder,
+  exportCsvFolder,
+  exportHistoryMonthCsv,
+  isCsvFolderSupported,
+  readCsvFolderImportFiles
+} from "./lib/csvFolder";
+import {
   createAuthRecord,
   formatRecoveryCode,
   isAuthSessionUnlocked,
@@ -136,6 +145,7 @@ const INVENTORY_SCROLL_RESET_SUPPRESS_MS = 260;
 const REQUISITION_HISTORY_PAGE_SIZE_OPTIONS = [10, 20, 50, 100] as const;
 const DEFAULT_REQUISITION_HISTORY_PAGE_SIZE = 20;
 const DASHBOARD_SCREENSAVER_TIMEOUT_MS = 5 * 60 * 1000;
+const CSV_HISTORY_EXPORT_DEBOUNCE_MS = 900;
 
 const pages: Array<{ id: PageId; label: string }> = [
   { id: "dashboard", label: "Dashboard" },
@@ -321,6 +331,76 @@ type CsvImportPreview = {
   vendorsToCreate: string[];
 };
 
+type CsvFolderVendorRecord = {
+  id: string;
+  name: string;
+  contactName: string;
+  contactEmail: string;
+  phone: string;
+  email: string;
+  website: string;
+  notes: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type CsvFolderLocationRecord = {
+  id: string;
+  name: string;
+  description: string;
+  notes: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type CsvFolderInventoryRecord = {
+  id: string;
+  partNumber: string;
+  name: string;
+  description: string;
+  category: string;
+  vendorId: string;
+  vendorName: string;
+  locationId: string;
+  locationName: string;
+  quantityOnHand: number | null;
+  stockUnit: string;
+  minimumStockLevel: number | null;
+  lowStockAlertLevel: number | null;
+  costEach: number | null;
+  itemUrl: string;
+  notes: string;
+  orderPlaced: boolean | null;
+  reorderHold: boolean | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type CsvFolderImportPreview = {
+  folderPath: string;
+  inventoryFileFound: boolean;
+  inventoryRecords: CsvFolderInventoryRecord[];
+  locationFileFound: boolean;
+  locationRecords: CsvFolderLocationRecord[];
+  newItems: number;
+  newLocations: number;
+  newVendors: number;
+  updatedItems: number;
+  updatedLocations: number;
+  updatedVendors: number;
+  vendorFileFound: boolean;
+  vendorRecords: CsvFolderVendorRecord[];
+};
+
+type CsvFolderImportResult = {
+  created: number;
+  locationsCreated: number;
+  locationsUpdated: number;
+  updated: number;
+  vendorsCreated: number;
+  vendorsUpdated: number;
+};
+
 type CsvColumnIndexes = {
   asset: number;
   category: number;
@@ -392,6 +472,12 @@ const toDateInput = (value = new Date()) => toDateTimeLocal(value).slice(0, 10);
 const dateTimeLocalToIso = (value: string) => {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? nowIso() : date.toISOString();
+};
+
+const monthKeyFromIso = (value: string) => {
+  const date = new Date(value);
+
+  return Number.isNaN(date.getTime()) ? nowIso().slice(0, 7) : date.toISOString().slice(0, 7);
 };
 
 const asRecord = (value: unknown): Record<string, unknown> =>
@@ -675,6 +761,10 @@ function createDefaultSettings(now = nowIso()): AppSettings {
     backupDirectoryName: "",
     backupDirectoryPath: "",
     backupDirectoryHandle: null,
+    csvExportFolderPath: "",
+    csvAutoExportHistoryEnabled: false,
+    csvLastExportAt: "",
+    csvLastHistoryExportAt: "",
     customCategories: [],
     lastBackupTimestamp: "",
     lastAutoImportTimestamp: "",
@@ -939,6 +1029,10 @@ function normalizeSettings(value: unknown): AppSettings {
     backupDirectoryPath: stringValue(raw.backupDirectoryPath),
     backupDirectoryHandle:
       "backupDirectoryHandle" in raw ? (raw.backupDirectoryHandle as AppSettings["backupDirectoryHandle"]) : null,
+    csvExportFolderPath: stringValue(raw.csvExportFolderPath),
+    csvAutoExportHistoryEnabled: raw.csvAutoExportHistoryEnabled === true,
+    csvLastExportAt: stringValue(raw.csvLastExportAt),
+    csvLastHistoryExportAt: stringValue(raw.csvLastHistoryExportAt),
     customCategories: normalizeCustomCategories(raw.customCategories),
     lastBackupTimestamp: stringValue(raw.lastBackupTimestamp),
     lastAutoImportTimestamp: stringValue(raw.lastAutoImportTimestamp),
@@ -2102,6 +2196,237 @@ function buildCsvImportPreview(contents: string, data: AppData, fileName: string
   };
 }
 
+function csvRowsToRecords(contents: string) {
+  const rows = parseCsv(contents);
+
+  if (rows.length < 2) {
+    return [];
+  }
+
+  const headers = rows[0].map(normalizeCsvHeader);
+
+  return rows
+    .slice(1)
+    .map((row) => {
+      const record: Record<string, string> = {};
+
+      headers.forEach((header, index) => {
+        if (header) {
+          record[header] = cleanCsvText(row[index] ?? "");
+        }
+      });
+
+      return record;
+    })
+    .filter((record) => Object.values(record).some((value) => value.trim()));
+}
+
+function csvCell(record: Record<string, string>, ...names: string[]) {
+  for (const name of names) {
+    const value = record[normalizeCsvHeader(name)];
+
+    if (value) {
+      return value;
+    }
+  }
+
+  return "";
+}
+
+function csvBooleanValue(value: string): boolean | null {
+  const normalized = value.trim().toLowerCase();
+
+  if (!normalized) {
+    return null;
+  }
+
+  if (["true", "yes", "y", "1", "on"].includes(normalized)) {
+    return true;
+  }
+
+  if (["false", "no", "n", "0", "off"].includes(normalized)) {
+    return false;
+  }
+
+  return null;
+}
+
+function csvFolderVendorRecord(record: Record<string, string>): CsvFolderVendorRecord | null {
+  const name = csvCell(record, "name", "vendor", "vendorName");
+
+  if (!name) {
+    return null;
+  }
+
+  const address = csvCell(record, "address", "streetAddress");
+  const notes = [csvCell(record, "notes", "note", "comments"), address ? `Address: ${address}` : ""]
+    .filter(Boolean)
+    .join(" | ");
+
+  return {
+    id: csvCell(record, "id", "vendorId"),
+    name,
+    contactName: csvCell(record, "contact", "contactName"),
+    contactEmail: csvCell(record, "contactEmail"),
+    phone: csvCell(record, "phone", "phoneNumber"),
+    email: csvCell(record, "email"),
+    website: csvCell(record, "website", "url"),
+    notes,
+    createdAt: csvCell(record, "createdAt"),
+    updatedAt: csvCell(record, "updatedAt")
+  };
+}
+
+function csvFolderLocationRecord(record: Record<string, string>): CsvFolderLocationRecord | null {
+  const name = csvCell(record, "name", "location", "locationName");
+
+  if (!name) {
+    return null;
+  }
+
+  const area = csvCell(record, "area");
+  const department = csvCell(record, "department", "dept");
+  const notes = [
+    csvCell(record, "notes", "note", "comments"),
+    area ? `Area: ${area}` : "",
+    department ? `Department: ${department}` : ""
+  ]
+    .filter(Boolean)
+    .join(" | ");
+
+  return {
+    id: csvCell(record, "id", "locationId"),
+    name,
+    description: csvCell(record, "description", "desc"),
+    notes,
+    createdAt: csvCell(record, "createdAt"),
+    updatedAt: csvCell(record, "updatedAt")
+  };
+}
+
+function csvFolderInventoryRecord(record: Record<string, string>): CsvFolderInventoryRecord | null {
+  const partNumber = csvCell(record, "partNumber", "partNo", "part");
+  const description = csvCell(record, "description", "desc");
+  const name = csvCell(record, "itemName", "name") || deriveCsvItemName(description, partNumber);
+
+  if (![name, partNumber, description].some(Boolean)) {
+    return null;
+  }
+
+  return {
+    id: csvCell(record, "id", "itemId"),
+    partNumber,
+    name: name || partNumber || description,
+    description,
+    category: csvCell(record, "category", "type"),
+    vendorId: csvCell(record, "vendorId"),
+    vendorName: csvCell(record, "vendor", "vendorName", "supplier"),
+    locationId: csvCell(record, "locationId"),
+    locationName: csvCell(record, "location", "locationName"),
+    quantityOnHand: csvNumberValue(csvCell(record, "stockOnHand", "quantityOnHand", "quantity", "qty", "onHand")),
+    stockUnit: normalizeStockUnit(csvCell(record, "unit", "stockUnit", "uom")),
+    minimumStockLevel: csvNumberValue(csvCell(record, "minimum", "minimumStockLevel", "minimumStock", "min")),
+    lowStockAlertLevel: csvNumberValue(csvCell(record, "lowAlert", "lowStockAlertLevel", "lowStockAlert", "alertLevel")),
+    costEach: csvNumberValue(csvCell(record, "cost", "costEach", "unitCost", "unitPrice")),
+    itemUrl: csvCell(record, "url", "website", "itemUrl", "orderLink", "link"),
+    notes: csvCell(record, "notes", "note", "comments"),
+    orderPlaced: csvBooleanValue(csvCell(record, "orderPlaced")),
+    reorderHold: csvBooleanValue(csvCell(record, "reorderHold")),
+    createdAt: csvCell(record, "createdAt"),
+    updatedAt: csvCell(record, "updatedAt")
+  };
+}
+
+function nameKey(value: string) {
+  return value.trim().toLowerCase();
+}
+
+function uniqueRecordByName<T extends { name: string }>(records: T[], name: string) {
+  const key = nameKey(name);
+
+  if (!key) {
+    return undefined;
+  }
+
+  const matches = records.filter((record) => nameKey(record.name) === key);
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
+function uniqueItemByPartNumber(items: InventoryItem[], partNumber: string) {
+  const key = nameKey(partNumber);
+
+  if (!key) {
+    return undefined;
+  }
+
+  const matches = items.filter((item) => nameKey(item.partNumber) === key);
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
+function existingVendorMatch(record: CsvFolderVendorRecord, vendors: VendorRecord[]) {
+  if (record.id) {
+    return vendors.find((vendor) => vendor.id === record.id);
+  }
+
+  return uniqueRecordByName(vendors, record.name);
+}
+
+function existingLocationMatch(record: CsvFolderLocationRecord, locations: LocationRecord[]) {
+  if (record.id) {
+    return locations.find((location) => location.id === record.id);
+  }
+
+  return uniqueRecordByName(locations, record.name);
+}
+
+function existingInventoryMatch(record: CsvFolderInventoryRecord, items: InventoryItem[]) {
+  if (record.id) {
+    return items.find((item) => item.id === record.id);
+  }
+
+  return uniqueItemByPartNumber(items, record.partNumber);
+}
+
+function buildCsvFolderImportPreview(
+  files: Awaited<ReturnType<typeof readCsvFolderImportFiles>>,
+  data: AppData,
+  folderPath: string
+): CsvFolderImportPreview {
+  if (!files.inventory.exists && !files.vendors.exists && !files.locations.exists) {
+    throw new Error("No CSV export files were found in the selected folder.");
+  }
+
+  const vendorRecords = files.vendors.exists
+    ? csvRowsToRecords(files.vendors.contents).map(csvFolderVendorRecord).filter((record): record is CsvFolderVendorRecord => Boolean(record))
+    : [];
+  const locationRecords = files.locations.exists
+    ? csvRowsToRecords(files.locations.contents)
+        .map(csvFolderLocationRecord)
+        .filter((record): record is CsvFolderLocationRecord => Boolean(record))
+    : [];
+  const inventoryRecords = files.inventory.exists
+    ? csvRowsToRecords(files.inventory.contents)
+        .map(csvFolderInventoryRecord)
+        .filter((record): record is CsvFolderInventoryRecord => Boolean(record))
+    : [];
+
+  return {
+    folderPath,
+    inventoryFileFound: files.inventory.exists,
+    inventoryRecords,
+    locationFileFound: files.locations.exists,
+    locationRecords,
+    newItems: inventoryRecords.filter((record) => !existingInventoryMatch(record, data.items)).length,
+    newLocations: locationRecords.filter((record) => !existingLocationMatch(record, data.locations)).length,
+    newVendors: vendorRecords.filter((record) => !existingVendorMatch(record, data.vendors)).length,
+    updatedItems: inventoryRecords.filter((record) => existingInventoryMatch(record, data.items)).length,
+    updatedLocations: locationRecords.filter((record) => existingLocationMatch(record, data.locations)).length,
+    updatedVendors: vendorRecords.filter((record) => existingVendorMatch(record, data.vendors)).length,
+    vendorFileFound: files.vendors.exists,
+    vendorRecords
+  };
+}
+
 function itemFromForm(form: ItemFormState, existing?: InventoryItem): InventoryItem {
   const now = nowIso();
   const minimumStockLevel = Math.max(0, wholeNumberValue(form.minimumStockLevel));
@@ -2724,6 +3049,8 @@ function InventoryApp() {
   const [backupDialog, setBackupDialog] = useState<BackupDialogState | null>(null);
   const [manualUpdateNotice, setManualUpdateNotice] = useState<ManualInstallerCheckResult | null>(null);
   const [csvImportPreview, setCsvImportPreview] = useState<CsvImportPreview | null>(null);
+  const [csvFolderImportPreview, setCsvFolderImportPreview] = useState<CsvFolderImportPreview | null>(null);
+  const [csvFolderStatus, setCsvFolderStatus] = useState("Choose a CSV folder to enable folder export/import.");
   const [labelPreviewItem, setLabelPreviewItem] = useState<InventoryItem | null>(null);
   const [itemForm, setItemForm] = useState<ItemFormState>(blankItemForm());
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
@@ -2751,6 +3078,9 @@ function InventoryApp() {
   const setupPromptDismissedRef = useRef(false);
   const suppressNextAutoBackupRef = useRef(false);
   const pendingTimedBackupRef = useRef(false);
+  const csvHistoryAutoExportBootstrappedRef = useRef(false);
+  const csvHistoryAutoExportSignatureRef = useRef("");
+  const csvHistoryAutoExportTimeoutRef = useRef<number | null>(null);
   const latestDataRef = useRef<AppData | null>(null);
   const sqliteInventoryMirrorSignatureRef = useRef("");
   const sqliteStockLedgerMirrorSignatureRef = useRef("");
@@ -2941,6 +3271,11 @@ function InventoryApp() {
         setItemForm(blankItemForm(loadedData.settings.defaultLocationId));
         setStockForm(blankStockForm(loadedData.items[0]?.id ?? ""));
         setBackupMessage(loadedData.settings.backupStatus || `Saved locally ${formatDateTime(loadedData.lastSavedAt)}`);
+        setCsvFolderStatus(
+          loadedData.settings.csvExportFolderPath
+            ? "CSV folder selected."
+            : "Choose a CSV folder to enable folder export/import."
+        );
 
         if (shouldPersistWatchListDefaultsMigration) {
           void saveAppData(loadedData).catch((error) => {
@@ -2966,6 +3301,7 @@ function InventoryApp() {
         setLastAutoImportAt(fallback.settings.lastAutoImportTimestamp || null);
         setItemForm(blankItemForm(fallback.settings.defaultLocationId));
         setStockForm(blankStockForm(fallback.items[0]?.id ?? ""));
+        setCsvFolderStatus("Choose a CSV folder to enable folder export/import.");
         setBackupIndicator("failed");
         setBackupMessage(error instanceof Error ? error.message : "Could not load local data.");
       });
@@ -3413,6 +3749,7 @@ function InventoryApp() {
       !isAddVendorOpen &&
       !editingVendorId &&
       !csvImportPreview &&
+      !csvFolderImportPreview &&
       !backupDialog &&
       !manualUpdateNotice &&
       !labelPreviewItem &&
@@ -3463,6 +3800,7 @@ function InventoryApp() {
   }, [
     activePage,
     backupDialog,
+    csvFolderImportPreview,
     csvImportPreview,
     data,
     editingVendorId,
@@ -3587,6 +3925,73 @@ function InventoryApp() {
 
     return () => window.clearTimeout(timeoutId);
   }, [data]);
+
+  useEffect(() => {
+    if (csvHistoryAutoExportTimeoutRef.current !== null) {
+      window.clearTimeout(csvHistoryAutoExportTimeoutRef.current);
+      csvHistoryAutoExportTimeoutRef.current = null;
+    }
+
+    if (!data || !data.settings.csvAutoExportHistoryEnabled || !data.settings.csvExportFolderPath) {
+      csvHistoryAutoExportBootstrappedRef.current = false;
+      csvHistoryAutoExportSignatureRef.current = "";
+      return;
+    }
+
+    const signature = JSON.stringify({
+      folderPath: data.settings.csvExportFolderPath,
+      stockChanges: data.stockChanges.map((change) => [
+        change.id,
+        change.occurredAt,
+        change.createdAt,
+        change.quantity,
+        change.previousQuantity,
+        change.newQuantity
+      ])
+    });
+
+    if (!csvHistoryAutoExportBootstrappedRef.current) {
+      csvHistoryAutoExportBootstrappedRef.current = true;
+      csvHistoryAutoExportSignatureRef.current = signature;
+      return;
+    }
+
+    if (csvHistoryAutoExportSignatureRef.current === signature || data.stockChanges.length === 0) {
+      return;
+    }
+
+    csvHistoryAutoExportSignatureRef.current = signature;
+    const snapshot = data;
+    const latestChange = snapshot.stockChanges
+      .slice()
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt) || right.occurredAt.localeCompare(left.occurredAt))[0];
+    const monthKey = monthKeyFromIso(latestChange.occurredAt);
+
+    csvHistoryAutoExportTimeoutRef.current = window.setTimeout(() => {
+      csvHistoryAutoExportTimeoutRef.current = null;
+
+      exportHistoryMonthCsv(snapshot, snapshot.settings.csvExportFolderPath, monthKey)
+        .then(() => {
+          const exportedAt = nowIso();
+
+          updateCsvMetadata({ csvLastHistoryExportAt: exportedAt });
+          setCsvFolderStatus(`History CSV updated for ${monthKey}.`);
+        })
+        .catch((error) => {
+          const message = error instanceof Error ? error.message : "History CSV auto-export failed.";
+
+          setCsvFolderStatus(message);
+          showToast("warning", message);
+        });
+    }, CSV_HISTORY_EXPORT_DEBOUNCE_MS);
+
+    return () => {
+      if (csvHistoryAutoExportTimeoutRef.current !== null) {
+        window.clearTimeout(csvHistoryAutoExportTimeoutRef.current);
+        csvHistoryAutoExportTimeoutRef.current = null;
+      }
+    };
+  }, [data?.settings.csvAutoExportHistoryEnabled, data?.settings.csvExportFolderPath, data?.stockChanges]);
 
   useEffect(() => {
     if (
@@ -4266,6 +4671,32 @@ function InventoryApp() {
     );
   }
 
+  function updateCsvMetadata(
+    partial: Partial<Pick<AppSettings, "csvExportFolderPath" | "csvLastExportAt" | "csvLastHistoryExportAt">>
+  ) {
+    const savedAt = nowIso();
+
+    suppressNextAutoBackupRef.current = true;
+    setData((current) =>
+      current
+        ? {
+            ...current,
+            lastSavedAt: savedAt,
+            settings: {
+              ...current.settings,
+              ...partial,
+              updatedAt: savedAt
+            }
+          }
+        : current
+    );
+  }
+
+  function applyCsvFolderSelection(directoryPath: string) {
+    updateCsvMetadata({ csvExportFolderPath: directoryPath });
+    setCsvFolderStatus("CSV folder selected.");
+  }
+
   function parseAndValidateBackup(contents: string, fileLastModifiedAt: string | null) {
     const payload = validateBackupPayload(JSON.parse(contents));
 
@@ -4368,6 +4799,10 @@ function InventoryApp() {
         backupDirectoryName: currentSettings.backupDirectoryName,
         backupDirectoryPath: currentSettings.backupDirectoryPath,
         backupDirectoryHandle: currentSettings.backupDirectoryHandle,
+        csvExportFolderPath: currentSettings.csvExportFolderPath,
+        csvAutoExportHistoryEnabled: currentSettings.csvAutoExportHistoryEnabled,
+        csvLastExportAt: currentSettings.csvLastExportAt,
+        csvLastHistoryExportAt: currentSettings.csvLastHistoryExportAt,
         lastBackupTimestamp: currentSettings.lastBackupTimestamp,
         lastAutoImportTimestamp: source === "manual" ? currentSettings.lastAutoImportTimestamp : importedAt,
         backupStatus: successMessage,
@@ -4467,6 +4902,106 @@ function InventoryApp() {
       if (manual) {
         showToast("danger", error instanceof Error ? error.message : "Backup failed.");
       }
+    }
+  }
+
+  async function chooseCsvFolderPathIfNeeded(currentPath: string) {
+    if (currentPath) {
+      return currentPath;
+    }
+
+    const selection = await chooseCsvFolder();
+    applyCsvFolderSelection(selection.directoryPath);
+    return selection.directoryPath;
+  }
+
+  async function handleChooseCsvFolder() {
+    if (!ensurePermission("settings:manage")) {
+      return;
+    }
+
+    try {
+      const selection = await chooseCsvFolder();
+
+      applyCsvFolderSelection(selection.directoryPath);
+      showToast("success", "CSV folder selected.");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not choose CSV folder.";
+
+      setCsvFolderStatus(message);
+      showToast("danger", message);
+    }
+  }
+
+  async function handleExportCsvFolderNow() {
+    if (!ensurePermission("reports:export")) {
+      return;
+    }
+
+    if (!data) {
+      return;
+    }
+
+    try {
+      const folderPath = await chooseCsvFolderPathIfNeeded(data.settings.csvExportFolderPath);
+      const folderExists = await checkCsvFolderExists(folderPath);
+      const result = await exportCsvFolder(data, folderPath);
+      const message = folderExists
+        ? `CSV export complete. ${result.filesWritten} files updated.`
+        : `CSV export complete. Folder created and ${result.filesWritten} files updated.`;
+
+      updateCsvMetadata({
+        csvExportFolderPath: folderPath,
+        csvLastExportAt: result.exportedAt,
+        csvLastHistoryExportAt: result.historyExportedAt || data.settings.csvLastHistoryExportAt
+      });
+      setCsvFolderStatus(message);
+      showToast("success", message);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "CSV export failed.";
+
+      setCsvFolderStatus(message);
+      showToast("danger", message);
+    }
+  }
+
+  async function handlePrepareCsvFolderImport() {
+    if (!ensurePermission("data:import")) {
+      return;
+    }
+
+    if (!data) {
+      return;
+    }
+
+    try {
+      let folderPath = data.settings.csvExportFolderPath;
+
+      if (folderPath) {
+        const useSelectedFolder = window.confirm(
+          `Import CSV from the selected folder?\n\n${folderPath}\n\nChoose Cancel to pick a different folder.`
+        );
+
+        if (!useSelectedFolder) {
+          folderPath = (await chooseCsvFolder()).directoryPath;
+          applyCsvFolderSelection(folderPath);
+        }
+      } else {
+        folderPath = (await chooseCsvFolder()).directoryPath;
+        applyCsvFolderSelection(folderPath);
+      }
+
+      const files = await readCsvFolderImportFiles(folderPath);
+      const preview = buildCsvFolderImportPreview(files, data, folderPath);
+
+      setCsvFolderImportPreview(preview);
+      setCsvFolderStatus("CSV folder import ready.");
+      showToast("success", "CSV folder import ready.");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "CSV folder import failed.";
+
+      setCsvFolderStatus(message);
+      showToast("danger", message);
     }
   }
 
@@ -5700,6 +6235,285 @@ function InventoryApp() {
     return result;
   }
 
+  function importCsvFolderRows(preview: CsvFolderImportPreview): CsvFolderImportResult {
+    let result: CsvFolderImportResult = {
+      created: 0,
+      locationsCreated: 0,
+      locationsUpdated: 0,
+      updated: 0,
+      vendorsCreated: 0,
+      vendorsUpdated: 0
+    };
+
+    if (!data) {
+      return result;
+    }
+
+    const current = data;
+    const importedAt = nowIso();
+    const nextLocations = [...current.locations];
+    const nextVendors = [...current.vendors];
+    const nextItems = [...current.items];
+    const auditEntries: AuditEntry[] = [];
+    const importedCategories = new Set<string>();
+
+    const upsertVendor = (record: CsvFolderVendorRecord) => {
+      const existing = existingVendorMatch(record, nextVendors);
+      const existingIndex = existing ? nextVendors.findIndex((vendor) => vendor.id === existing.id) : -1;
+
+      if (existing && existingIndex >= 0) {
+        const updatedVendor: VendorRecord = {
+          ...existing,
+          name: record.name || existing.name,
+          contactName: record.contactName || existing.contactName,
+          contactEmail: record.contactEmail || existing.contactEmail,
+          phone: record.phone || existing.phone,
+          email: record.email || existing.email,
+          website: record.website || existing.website,
+          notes: record.notes || existing.notes,
+          updatedAt: record.updatedAt || importedAt
+        };
+
+        nextVendors[existingIndex] = updatedVendor;
+        result = { ...result, vendorsUpdated: result.vendorsUpdated + 1 };
+        auditEntries.push(createAuditEntry("Vendor", updatedVendor.id, "CSV Vendor Updated", `${updatedVendor.name} was updated from CSV.`, "CSV Import"));
+        return updatedVendor.id;
+      }
+
+      const vendor = createVendor(record.name, {
+        contactName: record.contactName,
+        contactEmail: record.contactEmail,
+        createdAt: record.createdAt || undefined,
+        email: record.email,
+        id: record.id || undefined,
+        notes: record.notes,
+        phone: record.phone,
+        updatedAt: record.updatedAt || undefined,
+        website: record.website
+      });
+
+      nextVendors.push(vendor);
+      result = { ...result, vendorsCreated: result.vendorsCreated + 1 };
+      auditEntries.push(createAuditEntry("Vendor", vendor.id, "CSV Vendor Created", `${vendor.name} was imported from CSV.`, "CSV Import"));
+      return vendor.id;
+    };
+
+    const upsertLocation = (record: CsvFolderLocationRecord) => {
+      const existing = existingLocationMatch(record, nextLocations);
+      const existingIndex = existing ? nextLocations.findIndex((location) => location.id === existing.id) : -1;
+
+      if (existing && existingIndex >= 0) {
+        const updatedLocation: LocationRecord = {
+          ...existing,
+          name: record.name || existing.name,
+          description: record.description || existing.description,
+          notes: record.notes || existing.notes,
+          updatedAt: record.updatedAt || importedAt
+        };
+
+        nextLocations[existingIndex] = updatedLocation;
+        result = { ...result, locationsUpdated: result.locationsUpdated + 1 };
+        auditEntries.push(
+          createAuditEntry("Location", updatedLocation.id, "CSV Location Updated", `${updatedLocation.name} was updated from CSV.`, "CSV Import")
+        );
+        return updatedLocation.id;
+      }
+
+      const location = createLocation(record.name, {
+        createdAt: record.createdAt || undefined,
+        description: record.description,
+        id: record.id || undefined,
+        notes: record.notes,
+        updatedAt: record.updatedAt || undefined
+      });
+
+      nextLocations.push(location);
+      result = { ...result, locationsCreated: result.locationsCreated + 1 };
+      auditEntries.push(createAuditEntry("Location", location.id, "CSV Location Created", `${location.name} was imported from CSV.`, "CSV Import"));
+      return location.id;
+    };
+
+    preview.vendorRecords.forEach(upsertVendor);
+    preview.locationRecords.forEach(upsertLocation);
+
+    const findOrCreateVendorId = (record: CsvFolderInventoryRecord) => {
+      if (record.vendorId) {
+        const existingById = nextVendors.find((vendor) => vendor.id === record.vendorId);
+
+        if (existingById) {
+          return existingById.id;
+        }
+      }
+
+      const existingByName = uniqueRecordByName(nextVendors, record.vendorName);
+
+      if (existingByName) {
+        return existingByName.id;
+      }
+
+      if (!record.vendorName) {
+        return "";
+      }
+
+      return upsertVendor({
+        id: record.vendorId,
+        name: record.vendorName,
+        contactName: "",
+        contactEmail: "",
+        phone: "",
+        email: "",
+        website: "",
+        notes: "",
+        createdAt: "",
+        updatedAt: ""
+      });
+    };
+
+    const findOrCreateLocationId = (record: CsvFolderInventoryRecord) => {
+      if (record.locationId) {
+        const existingById = nextLocations.find((location) => location.id === record.locationId);
+
+        if (existingById) {
+          return existingById.id;
+        }
+      }
+
+      const existingByName = uniqueRecordByName(nextLocations, record.locationName);
+
+      if (existingByName) {
+        return existingByName.id;
+      }
+
+      if (!record.locationName) {
+        return "";
+      }
+
+      return upsertLocation({
+        id: record.locationId,
+        name: record.locationName,
+        description: "",
+        notes: "",
+        createdAt: "",
+        updatedAt: ""
+      });
+    };
+
+    preview.inventoryRecords.forEach((record) => {
+      const existing = existingInventoryMatch(record, nextItems);
+      const existingIndex = existing ? nextItems.findIndex((item) => item.id === existing.id) : -1;
+      const minimumStockLevel = Math.max(0, record.minimumStockLevel ?? existing?.minimumStockLevel ?? 0);
+      const lowStockAlertLevel = normalizeLowStockAlertLevel(
+        minimumStockLevel,
+        record.lowStockAlertLevel ?? existing?.lowStockAlertLevel ?? defaultLowStockAlertLevel()
+      );
+      const category = record.category || existing?.category || "Other";
+      const name = record.name || existing?.name || record.partNumber || "Imported Item";
+
+      if (category) {
+        importedCategories.add(category);
+      }
+
+      const importedItem = itemFromForm(
+        {
+          name,
+          partNumber: record.partNumber || existing?.partNumber || "",
+          description: record.description || existing?.description || "",
+          category,
+          quantityOnHand: Math.max(0, record.quantityOnHand ?? existing?.quantityOnHand ?? 0),
+          stockUnit: record.stockUnit || existing?.stockUnit || DEFAULT_STOCK_UNIT,
+          minimumStockLevel,
+          lowStockAlertLevel,
+          locationId: findOrCreateLocationId(record) || existing?.locationId || current.settings.defaultLocationId,
+          vendorId: findOrCreateVendorId(record) || existing?.vendorId || "",
+          costEach: Math.max(0, record.costEach ?? existing?.costEach ?? 0),
+          itemUrl: record.itemUrl || existing?.itemUrl || "",
+          notes: record.notes || existing?.notes || "",
+          imagePlaceholder: existing?.imagePlaceholder || "",
+          imageDataUrl: existing?.imageDataUrl || "",
+          barcodePlaceholder: existing?.barcodePlaceholder || "",
+          orderPlaced: record.orderPlaced ?? existing?.orderPlaced ?? true,
+          reorderHold: record.reorderHold ?? existing?.reorderHold ?? false
+        },
+        existing
+      );
+      const nextItem: InventoryItem = {
+        ...importedItem,
+        id: (existing?.id ?? record.id) || importedItem.id,
+        createdAt: (existing?.createdAt ?? record.createdAt) || importedItem.createdAt,
+        updatedAt: record.updatedAt || importedAt
+      };
+
+      if (existing && existingIndex >= 0) {
+        nextItems[existingIndex] = nextItem;
+        result = { ...result, updated: result.updated + 1 };
+        auditEntries.push(createAuditEntry("Item", nextItem.id, "CSV Item Updated", `${name} was updated from CSV folder.`, "CSV Import"));
+      } else {
+        nextItems.unshift(nextItem);
+        result = { ...result, created: result.created + 1 };
+        auditEntries.push(createAuditEntry("Item", nextItem.id, "CSV Item Created", `${name} was imported from CSV folder.`, "CSV Import"));
+      }
+    });
+
+    auditEntries.push(
+      createAuditEntry(
+        "Import",
+        "csv-folder",
+        "CSV Folder Import Completed",
+        `CSV folder import completed: ${result.created} inventory created, ${result.updated} inventory updated.`,
+        "CSV Import"
+      )
+    );
+
+    const nextSettings =
+      importedCategories.size > 0
+        ? {
+            ...current.settings,
+            customCategories: normalizeCustomCategories([...current.settings.customCategories, ...Array.from(importedCategories)]),
+            updatedAt: importedAt
+          }
+        : current.settings;
+
+    setData(
+      stampData({
+        ...current,
+        items: nextItems,
+        locations: nextLocations,
+        vendors: nextVendors,
+        settings: nextSettings,
+        auditLog: trimAuditLogEntries([...auditEntries.reverse(), ...current.auditLog])
+      })
+    );
+
+    return result;
+  }
+
+  function confirmCsvFolderImport() {
+    if (!ensurePermission("data:import")) {
+      return;
+    }
+
+    if (!data || !csvFolderImportPreview) {
+      return;
+    }
+
+    try {
+      const result = importCsvFolderRows(csvFolderImportPreview);
+      const message = `CSV folder import complete. ${result.created} created, ${result.updated} updated.`;
+
+      setCsvFolderImportPreview(null);
+      setCsvFolderStatus(message);
+      if (result.created > 0 || result.vendorsCreated > 0 || result.locationsCreated > 0) {
+        setActivityNow(Date.now());
+      }
+      showToast("success", message);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "CSV folder import failed.";
+
+      setCsvFolderStatus(message);
+      showToast("danger", message);
+    }
+  }
+
   function clearDemoData() {
     if (!data) {
       return;
@@ -5726,6 +6540,7 @@ function InventoryApp() {
   }
 
   const backupSupported = isFileSystemBackupSupported();
+  const csvFolderSupported = isCsvFolderSupported();
   const saveHealthRows = getSaveHealthRows(data, backupSupported, lastBackupAt, lastAutoImportAt, backupIndicator, backupMessage);
   const saveHealthTone = getOverallHealthTone(saveHealthRows);
   const recentAddAlerts = getRecentAddAlerts(data, activityNow);
@@ -5829,15 +6644,20 @@ function InventoryApp() {
             backupSupported={backupSupported}
             backupMessage={backupMessage}
             clearDemoData={clearDemoData}
+            csvFolderStatus={csvFolderStatus}
+            csvFolderSupported={csvFolderSupported}
             data={data}
             lastBackupAt={lastBackupAt}
             lastAutoImportAt={lastAutoImportAt}
             onChooseBackupFolder={() => void handleChooseBackupFolder()}
+            onChooseCsvFolder={() => void handleChooseCsvFolder()}
             onClose={closeSettingsPanel}
             onCreateRecoveryCode={() => void handleCreateRecoveryCode()}
             onDismissRecoveryCode={() => setNewRecoveryCode("")}
             onExportCsv={handleExportCsv}
+            onExportCsvFolderNow={() => void handleExportCsvFolderNow()}
             onExportJson={handleExportJson}
+            onImportCsvFolder={() => void handlePrepareCsvFolderImport()}
             onImportCsv={(file) => void handleImportCsv(file)}
             onImportJson={(file) => void handleImportJson(file)}
             onRunBackup={() => void runBackup(data, true)}
@@ -5924,6 +6744,13 @@ function InventoryApp() {
             preview={csvImportPreview}
             onCancel={() => setCsvImportPreview(null)}
             onConfirm={confirmCsvImport}
+          />
+        )}
+        {csvFolderImportPreview && (
+          <CsvFolderImportPreviewDialog
+            preview={csvFolderImportPreview}
+            onCancel={() => setCsvFolderImportPreview(null)}
+            onConfirm={confirmCsvFolderImport}
           />
         )}
         {isCategoryManagerOpen && (
@@ -7093,6 +7920,63 @@ function CsvImportPreviewDialog({
           </button>
           <button className="btn-primary" type="button" onClick={onConfirm}>
             Import Parts
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function CsvFolderImportPreviewDialog({
+  onCancel,
+  onConfirm,
+  preview
+}: {
+  onCancel: () => void;
+  onConfirm: () => void;
+  preview: CsvFolderImportPreview;
+}) {
+  return (
+    <div className="csv-import-backdrop" role="presentation">
+      <section className="csv-import-dialog" role="dialog" aria-modal="true" aria-labelledby="csv-folder-import-title">
+        <SectionHeader
+          action={
+            <button className="settings-close" type="button" aria-label="Cancel CSV folder import" onClick={onCancel}>
+              X
+            </button>
+          }
+          kicker="CSV folder preview"
+          title="Import CSV Folder"
+        />
+        <div className="csv-import-file">
+          <span>{preview.folderPath}</span>
+          <strong>
+            {preview.inventoryFileFound ? "Inventory found" : "No inventory file"} /{" "}
+            {preview.vendorFileFound ? "vendors found" : "no vendor file"} /{" "}
+            {preview.locationFileFound ? "locations found" : "no location file"}
+          </strong>
+        </div>
+        <div className="csv-import-summary-grid">
+          <ImportSummaryCard label="Inventory rows" value={preview.inventoryRecords.length} />
+          <ImportSummaryCard label="New items" value={preview.newItems} />
+          <ImportSummaryCard label="Item updates" value={preview.updatedItems} />
+          <ImportSummaryCard label="Vendor rows" value={preview.vendorRecords.length} />
+          <ImportSummaryCard label="Location rows" value={preview.locationRecords.length} />
+          <ImportSummaryCard label="Vendor updates" value={preview.updatedVendors} />
+          <ImportSummaryCard label="Location updates" value={preview.updatedLocations} />
+          <ImportSummaryCard label="New vendors" value={preview.newVendors} />
+          <ImportSummaryCard label="New locations" value={preview.newLocations} />
+        </div>
+        <div className="csv-import-list-grid">
+          <CsvImportNameList title="Vendors in folder" names={preview.vendorRecords.map((vendor) => vendor.name)} />
+          <CsvImportNameList title="Locations in folder" names={preview.locationRecords.map((location) => location.name)} />
+        </div>
+        <div className="csv-import-actions">
+          <button className="btn-muted" type="button" onClick={onCancel}>
+            Cancel
+          </button>
+          <button className="btn-primary" type="button" onClick={onConfirm}>
+            Import CSV Folder
           </button>
         </div>
       </section>
@@ -11817,16 +12701,21 @@ function SettingsPage({
   backupSupported,
   backupMessage,
   clearDemoData,
+  csvFolderStatus,
+  csvFolderSupported,
   data,
   lastBackupAt,
   lastAutoImportAt,
   newRecoveryCode,
   onChooseBackupFolder,
+  onChooseCsvFolder,
   onClose,
   onCreateRecoveryCode,
   onDismissRecoveryCode,
   onExportCsv,
+  onExportCsvFolderNow,
   onExportJson,
+  onImportCsvFolder,
   onImportCsv,
   onImportJson,
   onDeleteDeletedRecordForever,
@@ -11840,16 +12729,21 @@ function SettingsPage({
   backupSupported: boolean;
   backupMessage: string;
   clearDemoData: () => void;
+  csvFolderStatus: string;
+  csvFolderSupported: boolean;
   data: AppData;
   lastBackupAt: string | null;
   lastAutoImportAt: string | null;
   newRecoveryCode: string;
   onChooseBackupFolder: () => void;
+  onChooseCsvFolder: () => void;
   onClose: () => void;
   onCreateRecoveryCode: () => void;
   onDismissRecoveryCode: () => void;
   onExportCsv: () => void;
+  onExportCsvFolderNow: () => void;
   onExportJson: () => void;
+  onImportCsvFolder: () => void;
   onImportCsv: (file: File) => void;
   onImportJson: (file: File) => void;
   onDeleteDeletedRecordForever: (deletedRecordId: string) => void;
@@ -12304,6 +13198,67 @@ function SettingsPage({
           </p>
           <p className="w-full text-xs font-semibold text-slate-500">
             Main backup file: {BACKUP_LATEST_FILENAME}
+          </p>
+        </div>
+      </section>
+
+      <section className="panel">
+        <SectionHeader kicker="CSV" title="CSV Export / Import" />
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+          <div className="field-label xl:col-span-2">
+            Selected CSV folder
+            <div className="status-line min-h-10">{data.settings.csvExportFolderPath || "No CSV folder selected"}</div>
+          </div>
+          <label className="field-label">
+            Auto-export History Logs monthly
+            <div className="status-line min-h-10 flex items-center gap-2">
+              <input
+                checked={data.settings.csvAutoExportHistoryEnabled}
+                type="checkbox"
+                onChange={(event) =>
+                  updateSettings(
+                    { ...data.settings, csvAutoExportHistoryEnabled: event.target.checked },
+                    "CSV monthly history auto-export setting was updated."
+                  )
+                }
+              />
+              <span>{data.settings.csvAutoExportHistoryEnabled ? "On" : "Off"}</span>
+            </div>
+          </label>
+          <div className="field-label">
+            Last CSV export time
+            <div className="status-line min-h-10">
+              {data.settings.csvLastExportAt ? formatDateTime(data.settings.csvLastExportAt) : "No CSV export has run yet"}
+            </div>
+          </div>
+          <div className="field-label">
+            Last history CSV update
+            <div className="status-line min-h-10">
+              {data.settings.csvLastHistoryExportAt
+                ? formatDateTime(data.settings.csvLastHistoryExportAt)
+                : "History CSV has not updated yet"}
+            </div>
+          </div>
+          <div className="field-label xl:col-span-3">
+            CSV status
+            <div className="status-line min-h-10">{csvFolderStatus}</div>
+          </div>
+        </div>
+        <div className="mt-4 flex flex-wrap gap-2">
+          <button className="btn-primary" type="button" onClick={onChooseCsvFolder} disabled={!csvFolderSupported}>
+            Choose CSV Folder
+          </button>
+          <button className="btn-muted" type="button" onClick={onExportCsvFolderNow} disabled={!csvFolderSupported}>
+            Export CSV Now
+          </button>
+          <button className="btn-muted" type="button" onClick={onImportCsvFolder} disabled={!csvFolderSupported}>
+            Import CSV Folder
+          </button>
+          <p className="w-full text-xs font-semibold text-slate-500">
+            Suggested folder: {CSV_RECOMMENDED_FOLDER}
+          </p>
+          <p className="w-full text-xs font-semibold text-slate-500">
+            Files: Inventory\\inventory.csv, Vendors\\vendors.csv, Locations\\locations.csv, History Logs\\YYYY\\YYYY-MM.
           </p>
         </div>
       </section>

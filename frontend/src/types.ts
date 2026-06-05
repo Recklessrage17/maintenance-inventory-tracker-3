@@ -46,6 +46,10 @@ export type AppSettings = {
   backupDirectoryName: string;
   backupDirectoryPath: string;
   backupDirectoryHandle: BackupDirectoryHandle | null;
+  csvExportFolderPath: string;
+  csvAutoExportHistoryEnabled: boolean;
+  csvLastExportAt: string;
+  csvLastHistoryExportAt: string;
   customCategories: string[];
   lastBackupTimestamp: string;
   lastAutoImportTimestamp: string;
