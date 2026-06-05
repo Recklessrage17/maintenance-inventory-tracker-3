@@ -2,6 +2,8 @@
 
 Website mode is the company-laptop setup for Maintenance Inventory Tracker 3.0.
 
+See detailed Windows backend setup in `backend/README.md` (Node 22 LTS required).
+
 ## Goal
 
 Use the same React app in a browser, but move live data storage out of the browser and into a backend-owned SQLite database.
