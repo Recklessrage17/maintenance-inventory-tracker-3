@@ -8,6 +8,7 @@ import {
   getHealthCounts,
   loadAppDataFromSqlite,
   saveAppDataSnapshot,
+  saveNormalizedTablesFromAppData,
   type AppData
 } from "./db.js";
 
@@ -69,8 +70,43 @@ app.put("/api/app-data", (request, response) => {
     return;
   }
 
-  const result = saveAppDataSnapshot(data as AppData);
-  response.json({ ok: true, ...result });
+  try {
+    const result = saveNormalizedTablesFromAppData(data as AppData);
+    response.json({ ok: true, ...result });
+  } catch (err) {
+    console.error("Error saving normalized tables:", err);
+    // Attempt at least to save snapshot as fallback
+    try {
+      const fallback = saveAppDataSnapshot(data as AppData);
+      response.status(500).json({ ok: false, error: "Normalized save failed; snapshot saved.", fallback });
+    } catch (err2) {
+      console.error("Error saving snapshot as fallback:", err2);
+      response.status(500).json({ ok: false, error: "Failed to save app data." });
+    }
+  }
+});
+
+app.get("/api/normalized-summary", (_request, response) => {
+  try {
+    const counts = getHealthCounts();
+    const db = getDatabase();
+    const latestItem = db.prepare("SELECT MAX(updated_at) AS latest FROM inventory_items").get() as { latest: string };
+    const latestStock = db.prepare("SELECT MAX(date_time) AS latest FROM stock_ledger").get() as { latest: string };
+    const latestReq = db.prepare("SELECT MAX(created_at) AS latest FROM requisitions").get() as { latest: string };
+    const latestAudit = db.prepare("SELECT MAX(occurred_at) AS latest FROM audit_log").get() as { latest: string };
+
+    response.json({
+      ok: true,
+      counts,
+      latestItemUpdatedAt: latestItem.latest,
+      latestStockDateTime: latestStock.latest,
+      latestRequisitionCreatedAt: latestReq.latest,
+      latestAuditOccurredAt: latestAudit.latest
+    });
+  } catch (err) {
+    console.error("Error fetching normalized summary:", err);
+    response.status(500).json({ ok: false, error: "Failed to build normalized summary." });
+  }
 });
 
 app.use(express.static(frontendDist));
