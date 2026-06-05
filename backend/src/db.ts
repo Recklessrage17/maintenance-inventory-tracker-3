@@ -99,6 +99,11 @@ export function saveNormalizedTablesFromAppData(data: AppData) {
       db.prepare(`DELETE FROM ${t}`).run();
     }
 
+    // Prepare ID sets to protect foreign key inserts
+    const vendorIdSet = new Set((Array.isArray(data.vendors) ? data.vendors : []).map((v: any) => v.id));
+    const locationIdSet = new Set((Array.isArray(data.locations) ? data.locations : []).map((l: any) => l.id));
+    const itemIdSet = new Set((Array.isArray(data.items) ? data.items : []).map((it: any) => it.id));
+
     // Insert vendors
     if (Array.isArray(data.vendors)) {
       const insertVendor = db.prepare(`
@@ -107,7 +112,7 @@ export function saveNormalizedTablesFromAppData(data: AppData) {
       `);
 
       for (const v of data.vendors as any[]) {
-        insertVendor.run(
+          insertVendor.run(
           v.id,
           v.name,
           v.contactName ?? null,
@@ -151,14 +156,17 @@ export function saveNormalizedTablesFromAppData(data: AppData) {
       `);
 
       for (const it of data.items as any[]) {
+        const safeVendorId = it.vendorId && vendorIdSet.has(it.vendorId) ? it.vendorId : null;
+        const safeLocationId = it.locationId && locationIdSet.has(it.locationId) ? it.locationId : null;
+
         insertItem.run(
           it.id,
           it.name,
           it.description ?? null,
           it.partNumber ?? null,
           it.category ?? null,
-          it.vendorId ?? null,
-          it.locationId ?? null,
+          safeVendorId,
+          safeLocationId,
           typeof it.quantityOnHand === "number" ? it.quantityOnHand : 0,
           it.stockUnit ?? null,
           typeof it.minimumStockLevel === "number" ? it.minimumStockLevel : 0,
@@ -188,9 +196,11 @@ export function saveNormalizedTablesFromAppData(data: AppData) {
       `);
 
       for (const s of data.stockChanges as any[]) {
+        const safeItemId = s.itemId && itemIdSet.has(s.itemId) ? s.itemId : null;
+
         insertStock.run(
           s.id,
-          s.itemId ?? null,
+          safeItemId,
           s.sourceItemId ?? null,
           s.itemNameSnapshot ?? s.itemName ?? null,
           s.itemDescription ?? null,
@@ -244,10 +254,12 @@ export function saveNormalizedTablesFromAppData(data: AppData) {
           for (let i = 0; i < r.itemSnapshots.length; i++) {
             const s = r.itemSnapshots[i];
             const lineId = `${r.id}-${i}`;
+            const safeLineItemId = s.itemId && itemIdSet.has(s.itemId) ? s.itemId : null;
+
             insertLine.run(
               lineId,
               r.id,
-              s.itemId ?? null,
+              safeLineItemId,
               s.itemId ?? null,
               s.itemName ?? null,
               r.vendorName ?? s.vendorName ?? null,
