@@ -427,6 +427,12 @@ type SaveHealthRow = {
   value: string;
 };
 
+type SettingsStatusSummary = {
+  helper: string;
+  label: string;
+  tone: HealthTone;
+};
+
 type RecentAddAlert = {
   id: string;
   label: string;
@@ -1980,6 +1986,133 @@ function getOverallHealthTone(rows: SaveHealthRow[]): HealthTone {
   }
 
   return rows.some((row) => row.tone === "warning") ? "warning" : "good";
+}
+
+function statusLineToneClass(tone: HealthTone) {
+  return `status-line status-line-${tone}`;
+}
+
+function statusPillClass(tone: HealthTone) {
+  return `settings-status-pill settings-status-pill-${tone}`;
+}
+
+function statusCardClass(tone: HealthTone) {
+  return `settings-health-card settings-health-card-${tone}`;
+}
+
+function toneFromStatusMessage(message: string, fallback: HealthTone = "warning"): HealthTone {
+  const normalized = message.toLowerCase();
+
+  if (/failed|failure|error|denied|invalid|could not/i.test(normalized)) {
+    return "danger";
+  }
+
+  if (/saved|selected|complete|completed|updated|granted|up to date|opened|found/i.test(normalized)) {
+    return "good";
+  }
+
+  if (/choose|missing|not found|not checked|no .*yet|needed|warning|unavailable/i.test(normalized)) {
+    return "warning";
+  }
+
+  return fallback;
+}
+
+function getSaveHealthSummary(rows: SaveHealthRow[]): SettingsStatusSummary {
+  const tone = getOverallHealthTone(rows);
+  const problemRow = rows.find((row) => row.tone === tone);
+
+  if (tone === "danger") {
+    return {
+      helper: problemRow?.value ?? "A local save or backup error needs attention.",
+      label: "Error",
+      tone
+    };
+  }
+
+  if (tone === "warning") {
+    const needsFolder = rows.some(
+      (row) => row.tone === "warning" && /backup folder|folder access/i.test(row.label)
+    );
+
+    return {
+      helper: needsFolder ? "Choose or verify the backup folder." : problemRow?.value ?? "Backup needs attention.",
+      label: needsFolder ? "Needs folder" : "Backup warning",
+      tone
+    };
+  }
+
+  return {
+    helper: "Local save, folder access, and backup status are healthy.",
+    label: "Healthy",
+    tone
+  };
+}
+
+function getSaveHealthHelper(label: string) {
+  switch (label) {
+    case "IndexedDB saved":
+      return "Local app data";
+    case "Auto JSON":
+      return "Backup schedule";
+    case "Backup folder":
+      return "Selected folder";
+    case "Last backup":
+      return "Latest JSON backup";
+    case "Auto import":
+      return "Startup backup check";
+    case "Folder access":
+      return "Desktop folder permission";
+    case "Backup status":
+      return "Current backup message";
+    default:
+      return "Status";
+  }
+}
+
+function getUpdateStatusSummary(
+  updateStatus: string,
+  updateCheck: ManualInstallerCheckResult | null
+): SettingsStatusSummary {
+  const tone = toneFromStatusMessage(updateStatus);
+
+  if (updateCheck?.newerInstaller) {
+    return {
+      helper: `Newest installer: v${updateCheck.newerInstaller.version}`,
+      label: "Update available",
+      tone: "warning"
+    };
+  }
+
+  if (/up to date/i.test(updateStatus)) {
+    return {
+      helper: "The newest local installer is not newer than this app.",
+      label: "Up to date",
+      tone: "good"
+    };
+  }
+
+  if (/not found|choose|needed/i.test(updateStatus)) {
+    return {
+      helper: updateStatus,
+      label: "Folder needed",
+      tone: "warning"
+    };
+  }
+
+  if (tone === "danger") {
+    return {
+      helper: updateStatus,
+      label: "Error",
+      tone
+    };
+  }
+
+  return {
+    helper: updateStatus,
+    label: tone === "good" ? "Ready" : "Folder needed",
+    tone
+  };
 }
 
 function getRecentAddAlerts(data: AppData, nowMs: number): RecentAddAlert[] {
@@ -6643,7 +6776,6 @@ function InventoryApp() {
           <SettingsPage
             backupSupported={backupSupported}
             backupMessage={backupMessage}
-            clearDemoData={clearDemoData}
             csvFolderStatus={csvFolderStatus}
             csvFolderSupported={csvFolderSupported}
             data={data}
@@ -6654,11 +6786,8 @@ function InventoryApp() {
             onClose={closeSettingsPanel}
             onCreateRecoveryCode={() => void handleCreateRecoveryCode()}
             onDismissRecoveryCode={() => setNewRecoveryCode("")}
-            onExportCsv={handleExportCsv}
             onExportCsvFolderNow={() => void handleExportCsvFolderNow()}
-            onExportJson={handleExportJson}
             onImportCsvFolder={() => void handlePrepareCsvFolderImport()}
-            onImportCsv={(file) => void handleImportCsv(file)}
             onImportJson={(file) => void handleImportJson(file)}
             onRunBackup={() => void runBackup(data, true)}
             onStartScreensaver={startManualScreensaverMode}
@@ -12700,7 +12829,6 @@ function HistoryPage({ data }: { data: AppData }) {
 function SettingsPage({
   backupSupported,
   backupMessage,
-  clearDemoData,
   csvFolderStatus,
   csvFolderSupported,
   data,
@@ -12712,11 +12840,8 @@ function SettingsPage({
   onClose,
   onCreateRecoveryCode,
   onDismissRecoveryCode,
-  onExportCsv,
   onExportCsvFolderNow,
-  onExportJson,
   onImportCsvFolder,
-  onImportCsv,
   onImportJson,
   onDeleteDeletedRecordForever,
   onPurgeExpiredDeletedRecords,
@@ -12728,7 +12853,6 @@ function SettingsPage({
 }: {
   backupSupported: boolean;
   backupMessage: string;
-  clearDemoData: () => void;
   csvFolderStatus: string;
   csvFolderSupported: boolean;
   data: AppData;
@@ -12740,11 +12864,8 @@ function SettingsPage({
   onClose: () => void;
   onCreateRecoveryCode: () => void;
   onDismissRecoveryCode: () => void;
-  onExportCsv: () => void;
   onExportCsvFolderNow: () => void;
-  onExportJson: () => void;
   onImportCsvFolder: () => void;
-  onImportCsv: (file: File) => void;
   onImportJson: (file: File) => void;
   onDeleteDeletedRecordForever: (deletedRecordId: string) => void;
   onPurgeExpiredDeletedRecords: () => void;
@@ -12761,6 +12882,7 @@ function SettingsPage({
   const [updateFolderPath, setUpdateFolderPath] = useState(() => getManualInstallerFolder());
   const [updateCheck, setUpdateCheck] = useState<ManualInstallerCheckResult | null>(null);
   const [updateStatus, setUpdateStatus] = useState("Manual update mode is active.");
+  const [lastUpdateCheckAt, setLastUpdateCheckAt] = useState("");
   const [isCheckingUpdateFolder, setIsCheckingUpdateFolder] = useState(false);
   const [isOpeningInstallerFile, setIsOpeningInstallerFile] = useState(false);
   const [isOpeningUpdateFolder, setIsOpeningUpdateFolder] = useState(false);
@@ -12811,8 +12933,10 @@ function SettingsPage({
       setUpdateCheck(result);
       setAppVersion(result.currentVersion);
       setUpdateStatus(result.statusMessage);
+      setLastUpdateCheckAt(nowIso());
     } catch (error) {
       setUpdateStatus(error instanceof Error ? error.message : "Could not check installer folder.");
+      setLastUpdateCheckAt(nowIso());
     } finally {
       setIsCheckingUpdateFolder(false);
     }
@@ -12866,6 +12990,35 @@ function SettingsPage({
       setIsChoosingUpdateFolder(false);
     }
   }
+
+  const updateSummary = getUpdateStatusSummary(updateStatus, updateCheck);
+  const updateFolderTone: HealthTone = updateCheck ? (updateCheck.folderExists ? "good" : "warning") : updateFolderPath ? "good" : "warning";
+  const newestInstallerTone: HealthTone = updateCheck?.newerInstaller
+    ? "warning"
+    : updateCheck?.newestInstaller
+      ? "good"
+      : "warning";
+  const lastCheckTone: HealthTone = lastUpdateCheckAt ? updateSummary.tone : "warning";
+  const updateFolderValue = updateFolderPath || DEFAULT_MANUAL_UPDATE_FOLDER;
+  const newestInstallerValue = updateCheck?.newestInstaller
+    ? `v${updateCheck.newestInstaller.version} - ${updateCheck.newestInstaller.fileName}`
+    : updateCheck?.folderExists
+      ? "No installer found"
+      : "Not checked yet";
+  const newestInstallerHelper = updateCheck?.newerInstaller
+    ? "Newer local installer is ready"
+    : updateCheck?.newestInstaller
+      ? "Newest local installer in folder"
+      : updateCheck?.folderExists
+        ? "Folder has no matching installer"
+        : "Run check to inspect folder";
+  const updateStatusHelper = updateCheck?.newerInstaller
+    ? "Close the app before running the installer."
+    : updateCheck
+      ? "Latest local check result"
+      : "Run a local installer folder check.";
+  const csvStatusTone = toneFromStatusMessage(csvFolderStatus, data.settings.csvExportFolderPath ? "good" : "warning");
+  const backupStatusTone = toneFromStatusMessage(data.settings.backupStatus || backupMessage);
 
   return (
     <section className="settings-popout">
@@ -13012,33 +13165,49 @@ function SettingsPage({
       </section>
 
       <section className="panel update-check-card" id="app-update">
-        <SectionHeader kicker="Release foundation" title="App Update" />
-        <div className="settings-status-card update-settings-card">
-          <div className="pdf-engine-row">
-            <span>Current installed version</span>
-            <strong>Maintenance Inventory Tracker v{appVersion}</strong>
-          </div>
-          <div className="pdf-engine-row">
-            <span>Manual Update Mode</span>
-            <strong>Manual update mode is active.</strong>
-          </div>
-          <div className="pdf-engine-row update-folder-row">
-            <span>Installer folder</span>
-            <strong>{updateFolderPath || DEFAULT_MANUAL_UPDATE_FOLDER}</strong>
-          </div>
-          {updateCheck?.newestInstaller && (
-            <div className="pdf-engine-row">
-              <span>Newest installer found</span>
-              <strong>
-                v{updateCheck.newestInstaller.version} - {updateCheck.newestInstaller.fileName}
-              </strong>
-            </div>
-          )}
-          <div className="update-instructions">
-            <p>Manual update mode is active.</p>
-            <p>To update, close Maintenance Inventory Tracker and run the newest setup installer.</p>
-            <p>Your local app data will stay saved as long as you do not choose Delete application data during uninstall.</p>
-            <p>Online signed updater can be added later if needed.</p>
+        <SectionHeader
+          action={<SettingsStatusPill label={updateSummary.label} tone={updateSummary.tone} />}
+          kicker="Release foundation"
+          title="App Update"
+        />
+        <div className="settings-status-panel">
+          <div className="settings-health-grid update-health-grid">
+            <SettingsHealthCard
+              helper="Installed desktop build"
+              label="Current Version"
+              tone="good"
+              value={`Maintenance Inventory Tracker v${appVersion}`}
+            />
+            <SettingsHealthCard
+              helper="Local installer folder updates"
+              label="Manual Update Mode"
+              tone="good"
+              value="Active"
+            />
+            <SettingsHealthCard
+              helper={updateCheck ? (updateCheck.folderExists ? "Folder found" : "Folder missing") : "Saved folder path"}
+              label="Update Folder"
+              tone={updateFolderTone}
+              value={updateFolderValue}
+            />
+            <SettingsHealthCard
+              helper={newestInstallerHelper}
+              label="Newest Installer"
+              tone={newestInstallerTone}
+              value={newestInstallerValue}
+            />
+            <SettingsHealthCard
+              helper={lastUpdateCheckAt ? "Most recent local check" : "No check this session"}
+              label="Last Check"
+              tone={lastCheckTone}
+              value={lastUpdateCheckAt ? formatDateTime(lastUpdateCheckAt) : "Not checked yet"}
+            />
+            <SettingsHealthCard
+              helper={updateStatusHelper}
+              label="Update Status"
+              tone={updateSummary.tone}
+              value={updateStatus}
+            />
           </div>
         </div>
         <div className="mt-4 flex flex-wrap gap-2">
@@ -13056,7 +13225,6 @@ function SettingsPage({
           <button className="btn-muted" type="button" onClick={() => void handleChooseUpdateFolder()} disabled={isChoosingUpdateFolder}>
             {isChoosingUpdateFolder ? "Choosing Folder..." : "Choose Update Folder"}
           </button>
-          <div className="status-line update-status-line">{updateStatus}</div>
         </div>
       </section>
 
@@ -13148,11 +13316,13 @@ function SettingsPage({
           </label>
           <div className="field-label">
             Current selected backup folder
-            <div className="status-line min-h-10">{data.settings.backupDirectoryName || "No folder selected"}</div>
+            <div className={`${statusLineToneClass(data.settings.backupDirectoryName ? "good" : "warning")} min-h-10`}>
+              {data.settings.backupDirectoryName || "No folder selected"}
+            </div>
           </div>
           <div className="field-label">
             Last backup time
-            <div className="status-line min-h-10">
+            <div className={`${statusLineToneClass(lastBackupAt || data.settings.lastBackupTimestamp ? "good" : "warning")} min-h-10`}>
               {lastBackupAt || data.settings.lastBackupTimestamp
                 ? formatDateTime(lastBackupAt || data.settings.lastBackupTimestamp)
                 : "No backup has run yet"}
@@ -13160,7 +13330,7 @@ function SettingsPage({
           </div>
           <div className="field-label">
             Last auto import time
-            <div className="status-line min-h-10">
+            <div className={`${statusLineToneClass(lastAutoImportAt || data.settings.lastAutoImportTimestamp ? "good" : "warning")} min-h-10`}>
               {lastAutoImportAt || data.settings.lastAutoImportTimestamp
                 ? formatDateTime(lastAutoImportAt || data.settings.lastAutoImportTimestamp)
                 : "Auto import has not run yet"}
@@ -13168,7 +13338,7 @@ function SettingsPage({
           </div>
           <div className="field-label xl:col-span-3">
             Backup status
-            <div className="status-line min-h-10">{data.settings.backupStatus || backupMessage}</div>
+            <div className={`${statusLineToneClass(backupStatusTone)} min-h-10`}>{data.settings.backupStatus || backupMessage}</div>
           </div>
         </div>
         <div className="mt-4 flex flex-wrap gap-2">
@@ -13207,11 +13377,13 @@ function SettingsPage({
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
           <div className="field-label xl:col-span-2">
             Selected CSV folder
-            <div className="status-line min-h-10">{data.settings.csvExportFolderPath || "No CSV folder selected"}</div>
+            <div className={`${statusLineToneClass(data.settings.csvExportFolderPath ? "good" : "warning")} min-h-10`}>
+              {data.settings.csvExportFolderPath || "No CSV folder selected"}
+            </div>
           </div>
           <label className="field-label">
             Auto-export History Logs monthly
-            <div className="status-line min-h-10 flex items-center gap-2">
+            <div className={`${statusLineToneClass(data.settings.csvAutoExportHistoryEnabled ? "good" : "warning")} min-h-10 flex items-center gap-2`}>
               <input
                 checked={data.settings.csvAutoExportHistoryEnabled}
                 type="checkbox"
@@ -13227,13 +13399,13 @@ function SettingsPage({
           </label>
           <div className="field-label">
             Last CSV export time
-            <div className="status-line min-h-10">
+            <div className={`${statusLineToneClass(data.settings.csvLastExportAt ? "good" : "warning")} min-h-10`}>
               {data.settings.csvLastExportAt ? formatDateTime(data.settings.csvLastExportAt) : "No CSV export has run yet"}
             </div>
           </div>
           <div className="field-label">
             Last history CSV update
-            <div className="status-line min-h-10">
+            <div className={`${statusLineToneClass(data.settings.csvLastHistoryExportAt ? "good" : "warning")} min-h-10`}>
               {data.settings.csvLastHistoryExportAt
                 ? formatDateTime(data.settings.csvLastHistoryExportAt)
                 : "History CSV has not updated yet"}
@@ -13241,7 +13413,7 @@ function SettingsPage({
           </div>
           <div className="field-label xl:col-span-3">
             CSV status
-            <div className="status-line min-h-10">{csvFolderStatus}</div>
+            <div className={`${statusLineToneClass(csvStatusTone)} min-h-10`}>{csvFolderStatus}</div>
           </div>
         </div>
         <div className="mt-4 flex flex-wrap gap-2">
@@ -13270,51 +13442,6 @@ function SettingsPage({
         onRestore={onRestoreDeletedRecord}
       />
       <SaveHealthPanel rows={saveHealthRows} />
-
-      <section className="panel">
-        <SectionHeader kicker="Portable data" title="Export / Import" />
-        <div className="flex flex-wrap gap-2">
-          <button className="btn-primary" type="button" onClick={onExportJson}>
-            Export JSON
-          </button>
-          <label className="btn-muted cursor-pointer">
-            Import JSON
-            <input
-              hidden
-              accept=".json,application/json"
-              type="file"
-              onChange={(event) => {
-                const file = event.target.files?.[0];
-                if (file) {
-                  onImportJson(file);
-                }
-                event.currentTarget.value = "";
-              }}
-            />
-          </label>
-          <button className="btn-muted" type="button" onClick={onExportCsv}>
-            Export CSV
-          </button>
-          <label className="btn-muted cursor-pointer">
-            Import CSV
-            <input
-              hidden
-              accept=".csv,text/csv"
-              type="file"
-              onChange={(event) => {
-                const file = event.target.files?.[0];
-                if (file) {
-                  onImportCsv(file);
-                }
-                event.currentTarget.value = "";
-              }}
-            />
-          </label>
-          <button className="btn-danger" type="button" onClick={clearDemoData}>
-            Clear Demo Data
-          </button>
-        </div>
-      </section>
     </section>
   );
 }
@@ -13510,19 +13637,62 @@ function RecentlyDeletedPanel({
 }
 
 function SaveHealthPanel({ rows }: { rows: SaveHealthRow[] }) {
+  const summary = getSaveHealthSummary(rows);
+
   return (
-    <section className="panel">
-      <SectionHeader kicker="Backup" title="Local Save Health" />
-      <div className="save-health-list">
-        {rows.map((row) => (
-          <div key={row.label} className={`save-health-row save-health-row-${row.tone}`}>
-            <span className={`status-health-dot ${row.tone}`} aria-hidden="true" />
-            <span>{row.label}</span>
-            <strong>{row.value}</strong>
-          </div>
-        ))}
+    <section className="panel save-health-panel">
+      <SectionHeader
+        action={<SettingsStatusPill label={summary.label} tone={summary.tone} />}
+        kicker="Backup"
+        title="Local Save Health"
+      />
+      <div className="settings-status-panel">
+        <p className="settings-status-helper">{summary.helper}</p>
+        <div className="settings-health-grid">
+          {rows.map((row) => (
+            <SettingsHealthCard
+              key={row.label}
+              helper={getSaveHealthHelper(row.label)}
+              label={row.label}
+              tone={row.tone}
+              value={row.value}
+            />
+          ))}
+        </div>
       </div>
     </section>
+  );
+}
+
+function SettingsStatusPill({ label, tone }: { label: string; tone: HealthTone }) {
+  return (
+    <span className={statusPillClass(tone)}>
+      <span className={`settings-health-dot settings-health-dot-${tone}`} aria-hidden="true" />
+      {label}
+    </span>
+  );
+}
+
+function SettingsHealthCard({
+  helper,
+  label,
+  tone,
+  value
+}: {
+  helper: string;
+  label: string;
+  tone: HealthTone;
+  value: string;
+}) {
+  return (
+    <div className={statusCardClass(tone)}>
+      <div className="settings-health-card-top">
+        <span className={`settings-health-dot settings-health-dot-${tone}`} aria-hidden="true" />
+        <span>{label}</span>
+      </div>
+      <strong>{value}</strong>
+      <p>{helper}</p>
+    </div>
   );
 }
 

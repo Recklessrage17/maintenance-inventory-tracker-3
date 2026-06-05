@@ -855,6 +855,117 @@ button:disabled {
     @apply text-sm font-bold text-slate-400;
   }
 
+  .settings-status-panel {
+    @apply grid gap-3 rounded-lg border border-cyan-400/20 bg-slate-950/55 p-4;
+    box-shadow:
+      inset 0 1px 0 rgba(148, 163, 184, 0.08),
+      0 14px 30px rgba(2, 6, 23, 0.2);
+  }
+
+  .settings-status-helper {
+    @apply text-sm font-bold text-slate-400;
+  }
+
+  .settings-status-pill {
+    @apply inline-flex min-h-8 items-center gap-2 rounded-full border px-3 py-1 text-xs font-black uppercase;
+    letter-spacing: 0;
+  }
+
+  .settings-status-pill-good {
+    border-color: rgba(74, 222, 128, 0.48);
+    background: rgba(34, 197, 94, 0.13);
+    color: #bbf7d0;
+    box-shadow: 0 0 18px rgba(34, 197, 94, 0.12);
+  }
+
+  .settings-status-pill-warning {
+    border-color: rgba(251, 191, 36, 0.5);
+    background: rgba(245, 158, 11, 0.13);
+    color: #fde68a;
+    box-shadow: 0 0 18px rgba(245, 158, 11, 0.1);
+  }
+
+  .settings-status-pill-danger {
+    border-color: rgba(251, 113, 133, 0.5);
+    background: rgba(244, 63, 94, 0.13);
+    color: #fecdd3;
+    box-shadow: 0 0 18px rgba(244, 63, 94, 0.12);
+  }
+
+  .settings-health-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr));
+    gap: 0.75rem;
+  }
+
+  .update-health-grid {
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr));
+  }
+
+  .settings-health-card {
+    @apply grid min-h-28 gap-2 rounded-lg border bg-slate-950/50 p-3;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.04),
+      0 12px 24px rgba(2, 6, 23, 0.18);
+  }
+
+  .settings-health-card-good {
+    border-color: rgba(74, 222, 128, 0.34);
+    background:
+      linear-gradient(135deg, rgba(34, 197, 94, 0.11), rgba(15, 23, 42, 0.24)),
+      rgba(2, 6, 23, 0.5);
+  }
+
+  .settings-health-card-warning {
+    border-color: rgba(251, 191, 36, 0.38);
+    background:
+      linear-gradient(135deg, rgba(245, 158, 11, 0.12), rgba(15, 23, 42, 0.24)),
+      rgba(2, 6, 23, 0.5);
+  }
+
+  .settings-health-card-danger {
+    border-color: rgba(251, 113, 133, 0.4);
+    background:
+      linear-gradient(135deg, rgba(244, 63, 94, 0.12), rgba(15, 23, 42, 0.24)),
+      rgba(2, 6, 23, 0.5);
+  }
+
+  .settings-health-card-top {
+    @apply flex items-center gap-2 text-xs font-black uppercase text-slate-500;
+  }
+
+  .settings-health-card strong {
+    @apply text-sm font-black text-slate-100;
+    overflow-wrap: anywhere;
+  }
+
+  .settings-health-card p {
+    @apply text-xs font-bold text-slate-500;
+  }
+
+  .settings-health-dot {
+    width: 0.58rem;
+    height: 0.58rem;
+    flex: 0 0 auto;
+    border-radius: 999px;
+    box-shadow: 0 0 12px currentColor;
+  }
+
+  .settings-health-dot-good {
+    color: #4ade80;
+    background: #4ade80;
+  }
+
+  .settings-health-dot-warning {
+    color: #facc15;
+    background: #facc15;
+  }
+
+  .settings-health-dot-danger {
+    color: #fb7185;
+    background: #fb7185;
+  }
+
   .pdf-engine-ready {
     border-color: rgba(74, 222, 128, 0.34);
     background:
@@ -884,27 +995,6 @@ button:disabled {
 
   .update-check-card {
     border-color: rgba(34, 211, 238, 0.24);
-  }
-
-  .update-settings-card > p {
-    display: none;
-  }
-
-  .update-folder-row strong {
-    word-break: break-word;
-  }
-
-  .update-instructions {
-    @apply grid gap-2 rounded-md border border-cyan-400/20 bg-slate-950/45 p-3;
-  }
-
-  .update-instructions p {
-    @apply text-sm font-bold text-slate-300;
-  }
-
-  .update-status-line {
-    @apply min-h-10 flex-1 border-cyan-400/30 bg-cyan-400/10 text-cyan-100;
-    min-width: min(100%, 22rem);
   }
 
   .update-available-modal {
@@ -3234,7 +3324,23 @@ button:disabled {
   }
 
   .status-line {
-    @apply flex items-center rounded-lg border border-emerald-400/30 bg-emerald-400/10 px-3 py-2 text-sm font-bold text-emerald-200;
+    @apply flex items-center rounded-lg border px-3 py-2 text-sm font-bold;
+    overflow-wrap: anywhere;
+  }
+
+  .status-line-good {
+    @apply border-emerald-400/30 bg-emerald-400/10 text-emerald-200;
+    box-shadow: inset 0 1px 0 rgba(74, 222, 128, 0.08);
+  }
+
+  .status-line-warning {
+    @apply border-amber-300/40 bg-amber-400/10 text-amber-100;
+    box-shadow: inset 0 1px 0 rgba(251, 191, 36, 0.08);
+  }
+
+  .status-line-danger {
+    @apply border-rose-300/45 bg-rose-400/10 text-rose-100;
+    box-shadow: inset 0 1px 0 rgba(251, 113, 133, 0.08);
   }
 
   .warning-bar {
