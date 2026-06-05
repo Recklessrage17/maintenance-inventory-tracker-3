@@ -4,11 +4,49 @@ const DB_NAME = "maintenance-inventory-tracker";
 const DB_VERSION = 1;
 const STORE_NAME = "appData";
 const APP_KEY = "app";
+const API_DATA_SOURCE = import.meta.env.VITE_MIT3_DATA_SOURCE === "api";
+const API_BASE_URL = (import.meta.env.VITE_MIT3_API_BASE_URL ?? "").replace(/\/$/, "");
 
 type AppDataRow = {
   key: string;
   value: AppData;
 };
+
+type ApiLoadResponse = {
+  data: AppData | null;
+};
+
+function apiUrl(path: string) {
+  return `${API_BASE_URL}${path}`;
+}
+
+async function loadAppDataFromApi() {
+  const response = await fetch(apiUrl("/api/app-data"), {
+    headers: { Accept: "application/json" }
+  });
+
+  if (!response.ok) {
+    throw new Error(`App data API load failed with HTTP ${response.status}.`);
+  }
+
+  const payload = (await response.json()) as ApiLoadResponse;
+  return payload.data ?? undefined;
+}
+
+async function saveAppDataToApi(value: AppData) {
+  const response = await fetch(apiUrl("/api/app-data"), {
+    method: "PUT",
+    headers: {
+      "Accept": "application/json",
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(value)
+  });
+
+  if (!response.ok) {
+    throw new Error(`App data API save failed with HTTP ${response.status}.`);
+  }
+}
 
 const openDatabase = () =>
   new Promise<IDBDatabase>((resolve, reject) => {
@@ -26,7 +64,7 @@ const openDatabase = () =>
     request.onerror = () => reject(request.error);
   });
 
-export const loadAppData = async () => {
+async function loadAppDataFromIndexedDb() {
   const db = await openDatabase();
 
   return new Promise<AppData | undefined>((resolve, reject) => {
@@ -42,9 +80,9 @@ export const loadAppData = async () => {
       reject(transaction.error);
     };
   });
-};
+}
 
-export const saveAppData = async (value: AppData) => {
+async function saveAppDataToIndexedDb(value: AppData) {
   const db = await openDatabase();
 
   return new Promise<void>((resolve, reject) => {
@@ -61,5 +99,21 @@ export const saveAppData = async (value: AppData) => {
       reject(transaction.error);
     };
   });
+}
+
+export const loadAppData = async () => {
+  if (API_DATA_SOURCE) {
+    return loadAppDataFromApi();
+  }
+
+  return loadAppDataFromIndexedDb();
 };
 
+export const saveAppData = async (value: AppData) => {
+  if (API_DATA_SOURCE) {
+    await saveAppDataToApi(value);
+    return;
+  }
+
+  await saveAppDataToIndexedDb(value);
+};
