@@ -1,8 +1,8 @@
 import { getAppVersion } from "./appVersion";
 
-export const APP_VERSION = "3.0.0-rc.2";
+export const APP_VERSION = "3.0.0-rc.3";
 export const DEFAULT_MANUAL_UPDATE_FOLDER =
-  "C:\\Users\\maste\\OneDrive\\Company - Files - 2.0\\JBT USA - Files\\Dash Board - Info\\Inventoy System app\\Maintenance Inventory Tracker\\App Updates\\";
+  "F:\\MIT3_Update_Test\\";
 
 const UPDATE_FOLDER_STORAGE_KEY = "maintenance-inventory-manual-update-folder";
 const INSTALLER_PATTERN = /^Maintenance Inventory Tracker 3\.0_(\d+(?:\.\d+){1,3}(?:-[0-9A-Za-z.-]+)?)_x64-setup\.exe$/i;
