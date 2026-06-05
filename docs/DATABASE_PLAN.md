@@ -1,58 +1,72 @@
 # Maintenance Inventory Tracker 3.0 Database Plan
 
-## V3 Merge Note - 2026-06-03
+## Current Direction - Website + SQLite
 
-The V3 desktop app now keeps the Tauri + SQLite foundation while using the stable V2 React/Vite UI as the frontend baseline. Desktop V3 should use Tauri APIs and `sqlite:maintenance_inventory_3.db`; a normal website build cannot call those Tauri-only APIs directly.
+The V3 app is moving to Option B for company-laptop website use:
 
-Website V3 will need a backend/API for database access, authentication, backups, and imports. Keep the React/Vite UI shared where possible, and keep data access behind an abstraction so desktop and web can reuse screens without binding components directly to Tauri or SQLite.
+```text
+Company laptop browser -> React website -> Backend API -> SQLite database
+```
 
-## Architecture Detected
+The browser should not talk directly to SQLite. SQLite belongs behind the backend/API. This keeps the company laptop setup safer and avoids each laptop having its own hidden browser-only database.
 
-The current project is a very small React/Vite frontend workspace.
+## Current Architecture
 
-- `frontend/package.json` defines a Vite React app with `dev`, `build`, `lint`, and `preview` scripts.
-- `frontend/src` contains the default starter-style React app.
-- `frontend/vite.config.ts` uses only `@vitejs/plugin-react`.
-- `backend` exists as a folder, but no backend package, source files, or config files were found.
-- `database/migrations` and `database/seed` exist and were empty before this pass.
-- No `src-tauri` folder was found at the project root or under `frontend`.
-- No Express, SQLite, Tauri, localStorage app data layer, CSV import, JSON backup, or inventory domain code was found in the current source files.
+The repo now contains:
 
-Conclusion: this is frontend-only right now. It is not currently a Tauri desktop app and it does not currently have a Node/Express backend.
+- `frontend` - React/Vite/TypeScript app.
+- `frontend/src-tauri` - Tauri desktop wrapper and SQLite plugin setup.
+- `frontend/src/lib/db.ts` - shared frontend app-data adapter.
+- `frontend/src/lib/sqlite*` files - desktop SQLite mirror/pilot helpers.
+- `backend` - website-mode Express API with backend-owned SQLite.
+- `database/migrations` - root database planning/migration reference files.
+- `docs/WEBSITE_MODE.md` - run guide for website mode.
 
-## Safest Database Direction
+## Website Mode Implemented Now
 
-Use SQLite as the future local live database, but do not install SQLite packages or wire the UI yet because there is no confirmed runtime host for SQLite.
+This pass adds a safe website backend foundation:
 
-The safest next implementation step is to choose the runtime boundary first:
+- `backend/package.json`
+- `backend/tsconfig.json`
+- `backend/src/schema.ts`
+- `backend/src/db.ts`
+- `backend/src/server.ts`
+- `frontend/.env.website.example`
+- `frontend/src/lib/db.ts` API mode support
+- `docs/WEBSITE_MODE.md`
 
-- If this becomes a local backend app, put SQLite access in the backend and expose a small API to the frontend.
-- If this becomes a Tauri desktop app, use a Tauri-compatible SQLite plugin and keep database access behind Tauri commands or a repository layer.
-- If it remains browser-only, SQLite is not the right direct runtime without a deliberate WebAssembly or IndexedDB-backed choice, so keep the frontend unchanged until that decision is made.
+The backend exposes:
 
-For 3.0, keep this split:
+- `GET /api/health`
+- `GET /api/app-data`
+- `PUT /api/app-data`
 
-- SQLite: live app data.
-- JSON: backup, export, import, and restore.
-- CSV: inventory item import.
+The first website implementation stores the full app-data payload in SQLite as an app snapshot. This makes SQLite the website save/load owner without forcing a risky one-shot rewrite of every UI save path.
 
-## Implemented Now
+## Next Database Hardening Step
 
-This pass only adds safe foundation artifacts:
+The next step is to expand backend save/load from snapshot mode into normalized live tables:
 
-- `database/migrations/001_initial_schema.sql`
-- `database/seed/README.md`
-- `docs/DATABASE_PLAN.md`
+- `inventory_items`
+- `vendors`
+- `locations`
+- `stock_ledger`
+- `requisitions`
+- `requisition_lines`
+- `reorder_history`
+- `deleted_records`
+- `audit_log`
+- `app_settings`
 
-No frontend runtime code was changed. No backend runtime code was added. No packages were installed.
+Keep `app_snapshots` as a safety fallback and rollback point.
 
-## Planned Tables
+## Planned Live Tables
 
 ### inventory_items
 
 Stores live inventory records.
 
-Important fields preserved:
+Important fields:
 
 - `id`
 - `item_name`
@@ -65,72 +79,35 @@ Important fields preserved:
 - `unit`
 - `minimum`
 - `low_alert`
+- `low_stock_alert_level`
 - `cost`
+- `item_url`
 - `notes`
+- `image_placeholder`
+- `image_data_url`
+- `barcode_placeholder`
 - `order_placed`
 - `reorder_hold`
+- `order_requisition_id`
+- `is_demo`
 - `created_at`
 - `updated_at`
 
-Legacy JSON names should map as follows:
-
-- `itemName` maps to `item_name`.
-- `partNumber` maps to `part_number`.
-- `vendorId` maps to `vendor_id`.
-- `vendorName` resolves or creates a row in `vendors`, then maps to `vendor_id`.
-- `locationId` maps to `location_id`.
-- `locationName` resolves or creates a row in `locations`, then maps to `location_id`.
-- `stockOnHand` maps to `stock_on_hand`.
-- `lowAlert` maps to `low_alert`.
-- `orderPlaced` maps to `order_placed`.
-- `reorderHold` maps to `reorder_hold`.
-- `createdAt` maps to `created_at`.
-- `updatedAt` maps to `updated_at`.
-
 ### vendors
 
-Stores vendor records normalized away from inventory item rows. JSON imports that only contain `vendorName` should create or reuse a vendor by name.
+Stores vendor records normalized away from inventory item rows.
 
 ### locations
 
-Stores storage locations normalized away from inventory item rows. JSON imports that only contain `locationName` should create or reuse a location by name.
+Stores storage locations normalized away from inventory item rows.
 
 ### stock_ledger
 
 Stores all quantity-changing events.
 
-Important fields preserved:
+### requisitions and requisition_lines
 
-- `id`
-- `item_id`
-- `part_number`
-- `action_type`
-- `old_quantity`
-- `quantity_change`
-- `new_quantity`
-- `reason`
-- `used_by`
-- `notes`
-- `date_time`
-
-Legacy JSON names should map as follows:
-
-- `itemId` maps to `item_id`.
-- `partNumber` maps to `part_number`.
-- `actionType` maps to `action_type`.
-- `oldQuantity` maps to `old_quantity`.
-- `quantityChange` maps to `quantity_change`.
-- `newQuantity` maps to `new_quantity`.
-- `usedBy` maps to `used_by`.
-- `dateTime` maps to `date_time`.
-
-### requisitions
-
-Stores requisition headers, including requester, status, needed date, notes, submission date, and fulfillment date.
-
-### requisition_lines
-
-Stores requisition item lines linked to requisitions and, when possible, inventory items.
+Stores requisition headers and requisition item lines.
 
 ### reorder_history
 
@@ -138,40 +115,19 @@ Stores reorder events, planned orders, placed orders, received orders, cost snap
 
 ### deleted_records
 
-Stores recoverable trash records.
+Stores recoverable trash records and their payload JSON.
 
-Important fields preserved:
+### audit_log
 
-- `id`
-- `record_type`
-- `record_id`
-- `deleted_at`
-- `expires_at`
-- `payload_json`
-
-Legacy JSON names should map as follows:
-
-- `recordType` maps to `record_type`.
-- `recordId` maps to `record_id`.
-- `deletedAt` maps to `deleted_at`.
-- `expiresAt` maps to `expires_at`.
-- `payloadJson` maps to `payload_json`.
+Stores user-visible action history.
 
 ### app_settings
 
 Stores application preferences and feature settings as JSON values by key.
 
-### users
-
-Stores local user records for future accountability fields such as requester, fulfiller, and stock adjustment actor.
-
-### roles
-
-Stores local role definitions and permission JSON.
-
 ### metadata
 
-Stores schema and application data metadata, including schema version and live-data mode.
+Stores schema and application data metadata.
 
 ## JSON Backup Safety
 
@@ -186,47 +142,21 @@ Backups should preserve:
 - requisitions
 - reorder history
 - recently deleted/trash
+- audit log
 - app settings
 - `orderPlaced`
 - `reorderHold`
-
-Future JSON restore flow:
-
-1. Validate backup shape and version.
-2. Load vendors and locations first.
-3. Load inventory items and preserve original IDs.
-4. Load stock ledger rows and preserve original IDs.
-5. Load requisitions and requisition lines.
-6. Load reorder history.
-7. Load deleted records with `payload_json` intact.
-8. Load app settings and metadata.
-9. Recalculate low-stock indicators only after raw values are imported.
-10. Produce a restore report with row counts and skipped records.
 
 ## CSV Import Safety
 
 CSV import should remain inventory-focused. It should import or update inventory items, resolve vendor and location names, and create stock ledger rows only when quantity changes are explicitly accepted by the user.
 
-## Future Runtime Options
+## Desktop Mode
 
-### If a backend is added
+The Tauri desktop app can still use the Tauri SQLite plugin and local app behavior. Website mode is separate and should use the backend API.
 
-Use the backend as the SQLite owner. Add a small database module such as `backend/src/db.ts`, run migrations from `database/migrations`, and expose narrow API endpoints for inventory, vendors, locations, stock ledger, requisitions, backups, restores, and imports.
+## Company Laptop Rule
 
-### If Tauri is added
+For one laptop, local backend + local SQLite is okay.
 
-Use a Tauri-compatible SQLite setup after the `src-tauri` project exists. Keep migrations in `database/migrations`, keep SQL access behind Tauri commands or a repository layer, and avoid giving React components direct SQL responsibility.
-
-### If the app remains frontend-only
-
-Pause before adding SQLite dependencies. Browser-only SQLite needs an explicit storage strategy, such as WebAssembly plus IndexedDB persistence. That is a larger architectural choice than this foundation pass.
-
-## Not Implemented Yet
-
-- SQLite runtime package installation.
-- Backend database connection code.
-- Tauri SQLite plugin setup.
-- React data repository wiring.
-- JSON-to-SQLite migration script.
-- CSV import implementation.
-- UI changes.
+For multiple company laptops, run one shared backend on a company-network computer/server and have all laptops open that website URL.
