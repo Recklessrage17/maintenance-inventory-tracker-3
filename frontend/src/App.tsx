@@ -146,6 +146,14 @@ const DEFAULT_REQUISITION_HISTORY_PAGE_SIZE = 20;
 const DASHBOARD_SCREENSAVER_TIMEOUT_MS = 5 * 60 * 1000;
 const CSV_HISTORY_EXPORT_DEBOUNCE_MS = 900;
 
+const isWebsiteMode = import.meta.env.VITE_MIT3_DATA_SOURCE === "api";
+function hasTauriRuntime() {
+  return typeof window !== "undefined" && Boolean((window as Window & { __TAURI__?: unknown }).__TAURI__);
+}
+
+const isDesktopTauri = hasTauriRuntime();
+const showWebsiteModePanel = isWebsiteMode && !isDesktopTauri;
+
 const pages: Array<{ id: PageId; label: string }> = [
   { id: "dashboard", label: "Dashboard" },
   { id: "inventory", label: "Inventory" },
@@ -13133,14 +13141,49 @@ function SettingsPage({
             <ScreensaverModeIcon />
             Start Screensaver Mode
           </button>
-          <a className="btn-muted" href="#app-update">
-            App Update
-          </a>
+          {!showWebsiteModePanel && (
+            <a className="btn-muted" href="#app-update">
+              App Update
+            </a>
+          )}
         </div>
       </section>
 
-      <section className="panel">
-        <SectionHeader kicker="Fresh PC setup" title="PDF Export Setup" />
+      {showWebsiteModePanel && (
+        <section className="panel website-mode-card">
+          <SectionHeader
+            action={<span className="settings-status-pill website-mode-pill">Backend SQLite Active</span>}
+            kicker="Website Version"
+            title="Website Mode"
+          />
+          <div className="settings-status-panel website-mode-grid">
+            <div className="pdf-engine-row">
+              <span>Backend URL</span>
+              <strong>http://localhost:4173</strong>
+            </div>
+            <div className="pdf-engine-row">
+              <span>Data mode</span>
+              <strong>API + SQLite</strong>
+            </div>
+            <div className="pdf-engine-row">
+              <span>JSON backup</span>
+              <strong>Enabled / Available</strong>
+            </div>
+            <div className="pdf-engine-row">
+              <span>CSV workflow</span>
+              <strong>Browser import/export if available</strong>
+            </div>
+          </div>
+          <p className="settings-status-helper mt-4">
+            This website version saves through the backend API and SQLite database. Desktop-only update folders, local PDF engine checks, and CSV folder sync are hidden in website mode.
+          </p>
+        </section>
+      )}
+
+      {!showWebsiteModePanel && (
+        <>
+          <section className="panel">
+            <SectionHeader kicker="Fresh PC setup" title="PDF Export Setup" />
         <div className={`settings-status-card ${pdfStatusClass}`}>
           <div className="pdf-engine-row">
             <span>Status</span>
@@ -13177,12 +13220,12 @@ function SettingsPage({
         </div>
       </section>
 
-      <section className="panel update-check-card" id="app-update">
-        <SectionHeader
-          action={<SettingsStatusPill label={updateSummary.label} tone={updateSummary.tone} />}
-          kicker="Release foundation"
-          title="App Update"
-        />
+        <section className="panel update-check-card" id="app-update">
+          <SectionHeader
+            action={<SettingsStatusPill label={updateSummary.label} tone={updateSummary.tone} />}
+            kicker="Release foundation"
+            title="App Update"
+          />
         <div className="settings-status-panel">
           <div className="settings-health-grid update-health-grid">
             <SettingsHealthCard
@@ -13240,6 +13283,8 @@ function SettingsPage({
           </button>
         </div>
       </section>
+        </>
+      )}
 
       <section className="panel">
         <SectionHeader kicker="Security" title="Recovery Access" />
@@ -13388,12 +13433,14 @@ function SettingsPage({
       <section className="panel">
         <SectionHeader kicker="CSV" title="CSV Export / Import" />
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-          <div className="field-label xl:col-span-2">
-            Selected CSV folder
-            <div className={`${statusLineToneClass(data.settings.csvExportFolderPath ? "good" : "warning")} min-h-10`}>
-              {data.settings.csvExportFolderPath || "No CSV folder selected"}
+          {!showWebsiteModePanel && (
+            <div className="field-label xl:col-span-2">
+              Selected CSV folder
+              <div className={`${statusLineToneClass(data.settings.csvExportFolderPath ? "good" : "warning")} min-h-10`}>
+                {data.settings.csvExportFolderPath || "No CSV folder selected"}
+              </div>
             </div>
-          </div>
+          )}
           <label className="field-label">
             Auto-export History Logs monthly
             <div className={`${statusLineToneClass(data.settings.csvAutoExportHistoryEnabled ? "good" : "warning")} min-h-10 flex items-center gap-2`}>
@@ -13430,21 +13477,32 @@ function SettingsPage({
           </div>
         </div>
         <div className="mt-4 flex flex-wrap gap-2">
-          <button className="btn-primary" type="button" onClick={onChooseCsvFolder} disabled={!csvFolderSupported}>
-            Choose CSV Folder
-          </button>
+          {!showWebsiteModePanel && (
+            <button className="btn-primary" type="button" onClick={onChooseCsvFolder} disabled={!csvFolderSupported}>
+              Choose CSV Folder
+            </button>
+          )}
           <button className="btn-muted" type="button" onClick={onExportCsvFolderNow} disabled={!csvFolderSupported}>
             Export CSV Now
           </button>
           <button className="btn-muted" type="button" onClick={onImportCsvFolder} disabled={!csvFolderSupported}>
             Import CSV Folder
           </button>
-          <p className="w-full text-xs font-semibold text-slate-500">
-            Suggested folder: {CSV_RECOMMENDED_FOLDER}
-          </p>
-          <p className="w-full text-xs font-semibold text-slate-500">
-            Files: Inventory\\inventory.csv, Vendors\\vendors.csv, Locations\\locations.csv, History Logs\\YYYY\\YYYY-MM.
-          </p>
+          {!showWebsiteModePanel && (
+            <>
+              <p className="w-full text-xs font-semibold text-slate-500">
+                Suggested folder: {CSV_RECOMMENDED_FOLDER}
+              </p>
+              <p className="w-full text-xs font-semibold text-slate-500">
+                Files: Inventory\\inventory.csv, Vendors\\vendors.csv, Locations\\locations.csv, History Logs\\YYYY\\YYYY-MM.
+              </p>
+            </>
+          )}
+          {showWebsiteModePanel && (
+            <p className="w-full text-sm font-semibold text-slate-300">
+              Use browser import/export if available; folder sync is hidden in website mode.
+            </p>
+          )}
         </div>
       </section>
 
