@@ -32,6 +32,19 @@ app.use(
 );
 app.use(express.json({ limit: "50mb" }));
 
+// Lightweight request logging middleware: method, URL, status, response time
+app.use((request, response, next) => {
+  const startedAt = Date.now();
+  response.on("finish", () => {
+    try {
+      console.log(`${request.method} ${request.originalUrl} ${response.statusCode} ${Date.now() - startedAt}ms`);
+    } catch (err) {
+      // ignore logging errors
+    }
+  });
+  next();
+});
+
 app.get("/api/health", (_request, response) => {
   getDatabase();
 
