@@ -60,6 +60,7 @@ import {
 } from "./lib/historyLog";
 import { getRoleLabel, hasPermission, PERMISSION_DENIED_MESSAGE, type Permission } from "./lib/permissions";
 import { checkPdfExportEngines, type PdfEngineStatus } from "./lib/pdfEngineStatus";
+import { getWebsiteBackendUrl, isWebsiteBrowserMode } from "./lib/runtimeMode";
 import {
   activateInventorySqliteState,
   getSqliteInventoryMirrorStatus
@@ -146,13 +147,8 @@ const DEFAULT_REQUISITION_HISTORY_PAGE_SIZE = 20;
 const DASHBOARD_SCREENSAVER_TIMEOUT_MS = 5 * 60 * 1000;
 const CSV_HISTORY_EXPORT_DEBOUNCE_MS = 900;
 
-const isWebsiteMode = import.meta.env.VITE_MIT3_DATA_SOURCE === "api";
-function hasTauriRuntime() {
-  return typeof window !== "undefined" && Boolean((window as Window & { __TAURI__?: unknown }).__TAURI__);
-}
-
-const isDesktopTauri = hasTauriRuntime();
-const showWebsiteModePanel = isWebsiteMode && !isDesktopTauri;
+const showWebsiteModePanel = isWebsiteBrowserMode();
+const websiteBackendUrl = getWebsiteBackendUrl();
 
 const pages: Array<{ id: PageId; label: string }> = [
   { id: "dashboard", label: "Dashboard" },
@@ -1905,7 +1901,8 @@ function getSaveHealthRows(
   lastBackupAt: string | null,
   lastAutoImportAt: string | null,
   backupIndicator: BackupIndicatorState,
-  backupMessage: string
+  backupMessage: string,
+  liveStorageLabel = "IndexedDB"
 ): SaveHealthRow[] {
   const hasBackupFolder = Boolean(
     data.settings.backupDirectoryName || data.settings.backupDirectoryPath || data.settings.backupDirectoryHandle
@@ -1940,7 +1937,7 @@ function getSaveHealthRows(
 
   return [
     {
-      label: "IndexedDB",
+      label: liveStorageLabel,
       tone: saveFailed ? "danger" : "good",
       value: saveFailed ? backupMessage : `Saved ${formatDateTime(data.lastSavedAt)}`
     },
@@ -2058,7 +2055,9 @@ function getSaveHealthSummary(rows: SaveHealthRow[]): SettingsStatusSummary {
 
 function getSaveHealthHelper(label: string) {
   switch (label) {
-    case "IndexedDB saved":
+    case "Backend API":
+      return "Website SQLite API";
+    case "IndexedDB":
       return "Local app data";
     case "Auto JSON":
       return "Backup schedule";
@@ -3421,7 +3420,9 @@ function InventoryApp() {
         setStockForm(blankStockForm(loadedData.items[0]?.id ?? ""));
         setBackupMessage(loadedData.settings.backupStatus || `Saved locally ${formatDateTime(loadedData.lastSavedAt)}`);
         setCsvFolderStatus(
-          loadedData.settings.csvExportFolderPath
+          showWebsiteModePanel
+            ? "Website mode uses browser download/upload."
+            : loadedData.settings.csvExportFolderPath
             ? "CSV folder selected."
             : "Choose a CSV folder to enable folder export/import."
         );
@@ -3450,7 +3451,11 @@ function InventoryApp() {
         setLastAutoImportAt(fallback.settings.lastAutoImportTimestamp || null);
         setItemForm(blankItemForm(fallback.settings.defaultLocationId));
         setStockForm(blankStockForm(fallback.items[0]?.id ?? ""));
-        setCsvFolderStatus("Choose a CSV folder to enable folder export/import.");
+        setCsvFolderStatus(
+          showWebsiteModePanel
+            ? "Website mode uses browser download/upload."
+            : "Choose a CSV folder to enable folder export/import."
+        );
         setBackupIndicator("failed");
         setBackupMessage(error instanceof Error ? error.message : "Could not load local data.");
       });
@@ -3995,7 +4000,7 @@ function InventoryApp() {
   }, [isDashboardScreensaverActive, isManualScreensaverActive]);
 
   useEffect(() => {
-    if (!data || startupBackupCheckRef.current) {
+    if (!data || showWebsiteModePanel || startupBackupCheckRef.current) {
       return;
     }
 
@@ -4004,7 +4009,7 @@ function InventoryApp() {
   }, [data]);
 
   useEffect(() => {
-    if (!data || startupManualUpdateCheckRef.current) {
+    if (!data || showWebsiteModePanel || startupManualUpdateCheckRef.current) {
       return;
     }
 
@@ -4079,6 +4084,12 @@ function InventoryApp() {
     if (csvHistoryAutoExportTimeoutRef.current !== null) {
       window.clearTimeout(csvHistoryAutoExportTimeoutRef.current);
       csvHistoryAutoExportTimeoutRef.current = null;
+    }
+
+    if (showWebsiteModePanel) {
+      csvHistoryAutoExportBootstrappedRef.current = false;
+      csvHistoryAutoExportSignatureRef.current = "";
+      return;
     }
 
     if (!data || !data.settings.csvAutoExportHistoryEnabled || !data.settings.csvExportFolderPath) {
@@ -6751,7 +6762,15 @@ function InventoryApp() {
 
   const backupSupported = isFileSystemBackupSupported();
   const csvFolderSupported = isCsvFolderSupported();
-  const saveHealthRows = getSaveHealthRows(data, backupSupported, lastBackupAt, lastAutoImportAt, backupIndicator, backupMessage);
+  const saveHealthRows = getSaveHealthRows(
+    data,
+    backupSupported,
+    lastBackupAt,
+    lastAutoImportAt,
+    backupIndicator,
+    backupMessage,
+    showWebsiteModePanel ? "Backend API" : "IndexedDB"
+  );
   const saveHealthTone = getOverallHealthTone(saveHealthRows);
   const recentAddAlerts = getRecentAddAlerts(data, activityNow);
   const canCollapseChrome = activePage !== "dashboard";
@@ -6814,7 +6833,8 @@ function InventoryApp() {
 
         {!chromeCollapsed && (
         <header className={`header-panel ${isCompactChrome ? "header-panel-compact" : ""}`}>
-          <div className="flex min-w-0 items-center">
+          <div className="flex min-w-0 items-center gap-3">
+            <AppLogoMark />
             <div className="min-w-0">
               {isEditingHeaderBadge ? (
                 <input
@@ -12984,6 +13004,11 @@ function SettingsPage({
   const currentRankLabel = getRoleLabel(readAuthRecord()?.role);
 
   useEffect(() => {
+    if (showWebsiteModePanel) {
+      setAppVersion(APP_VERSION);
+      return;
+    }
+
     void refreshPdfEngineStatus();
     void getCurrentAppVersion()
       .then((version) => setAppVersion(version))
@@ -13230,7 +13255,7 @@ function SettingsPage({
           <div className="settings-status-panel website-mode-grid">
             <div className="pdf-engine-row">
               <span>Backend URL</span>
-              <strong>http://localhost:4173</strong>
+              <strong>{websiteBackendUrl}</strong>
             </div>
             <div className="pdf-engine-row">
               <span>Data mode</span>
@@ -13238,11 +13263,11 @@ function SettingsPage({
             </div>
             <div className="pdf-engine-row">
               <span>JSON backup</span>
-              <strong>Enabled / Available</strong>
+              <strong>Available / keep enabled</strong>
             </div>
             <div className="pdf-engine-row">
-              <span>CSV workflow</span>
-              <strong>Browser import/export if available</strong>
+              <span>CSV</span>
+              <strong>Browser download/upload</strong>
             </div>
           </div>
           <p className="settings-status-helper mt-4">

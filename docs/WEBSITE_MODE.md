@@ -2,7 +2,7 @@
 
 Website mode is the company-laptop setup for Maintenance Inventory Tracker 3.0.
 
-See detailed Windows backend setup in `backend/README.md` (Node 22 LTS required).
+See detailed Windows backend setup in `backend/README.md` (Node 22 LTS required; repo version files pin `22.11.0`).
 
 ## Goal
 
@@ -35,7 +35,7 @@ npm -v
 Expected Node version:
 
 ```text
-v22.x.x
+v22.11.0 or another Node 22 LTS release
 ```
 
 ### Option A: Direct Download
@@ -84,6 +84,7 @@ Implemented for website mode:
 - `backend/src/server.ts`
 - `backend/README.md`
 - `frontend/.env.website.example`
+- `frontend/src/lib/runtimeMode.ts`
 - `frontend/src/lib/db.ts` API mode support
 
 The backend exposes:
@@ -94,7 +95,7 @@ The backend exposes:
 
 ## Data Mode
 
-The first website-ready step stores the full app data payload in SQLite as an app snapshot. This keeps the current V3 data shape safe while moving the live save/load path behind a backend API.
+The current website-ready step stores the full app data payload in SQLite as an app snapshot. This keeps the current V3 data shape safe while moving the live save/load path behind a backend API.
 
 Next database hardening step:
 
@@ -104,7 +105,7 @@ Next database hardening step:
 
 ## Frontend Website Environment
 
-Create `frontend/.env.website` from `frontend/.env.website.example`:
+Create `frontend/.env.local` from `frontend/.env.website.example` for local website development:
 
 ```env
 VITE_MIT3_DATA_SOURCE=api

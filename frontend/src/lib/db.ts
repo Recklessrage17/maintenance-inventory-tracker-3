@@ -1,11 +1,10 @@
 import type { AppData } from "../types";
+import { getApiBaseUrl, isWebsiteBrowserMode } from "./runtimeMode";
 
 const DB_NAME = "maintenance-inventory-tracker";
 const DB_VERSION = 1;
 const STORE_NAME = "appData";
 const APP_KEY = "app";
-const API_DATA_SOURCE = import.meta.env.VITE_MIT3_DATA_SOURCE === "api";
-const API_BASE_URL = (import.meta.env.VITE_MIT3_API_BASE_URL ?? "").replace(/\/$/, "");
 
 type AppDataRow = {
   key: string;
@@ -17,7 +16,7 @@ type ApiLoadResponse = {
 };
 
 function apiUrl(path: string) {
-  return `${API_BASE_URL}${path}`;
+  return `${getApiBaseUrl()}${path}`;
 }
 
 async function loadAppDataFromApi() {
@@ -102,7 +101,7 @@ async function saveAppDataToIndexedDb(value: AppData) {
 }
 
 export const loadAppData = async () => {
-  if (API_DATA_SOURCE) {
+  if (isWebsiteBrowserMode()) {
     return loadAppDataFromApi();
   }
 
@@ -110,7 +109,7 @@ export const loadAppData = async () => {
 };
 
 export const saveAppData = async (value: AppData) => {
-  if (API_DATA_SOURCE) {
+  if (isWebsiteBrowserMode()) {
     await saveAppDataToApi(value);
     return;
   }
