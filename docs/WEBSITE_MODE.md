@@ -12,15 +12,75 @@ Company laptop browser -> React website -> Backend API -> SQLite database
 
 This avoids relying on each laptop browser's IndexedDB as the live source of truth.
 
+## Required Node Version on Windows
+
+Use Node.js 22 LTS for this repo.
+
+Do not use Node 25 for the backend. Native SQLite packages may not have ready Windows binaries for very new Node versions, which can force a local native build and fail if Python or Visual Studio Build Tools are missing.
+
+Version files are included at the repo root:
+
+- `.nvmrc`
+- `.node-version`
+
+Check your version:
+
+```powershell
+node -v
+npm -v
+```
+
+Expected Node version:
+
+```text
+v22.x.x
+```
+
+### Option A: Direct Download
+
+1. Go to nodejs.org.
+2. Download Node.js 22 LTS.
+3. Run the installer with default settings.
+4. Close every PowerShell, terminal, and VS Code window.
+5. Open a new PowerShell and verify:
+
+```powershell
+node -v
+npm -v
+```
+
+### Option B: nvm-windows
+
+```powershell
+nvm install 22
+nvm use 22
+node -v
+npm -v
+```
+
+### Clean Install After Switching to Node 22
+
+```powershell
+cd F:\maintenance-inventory-tracker-3\backend
+rmdir /s /q node_modules
+if (Test-Path package-lock.json) { del package-lock.json }
+npm install
+npm run build
+npm run dev
+```
+
+If `better-sqlite3` still fails, install Python 3 and Visual Studio Build Tools with **Desktop development with C++**, restart PowerShell/VS Code, then run the clean install again.
+
 ## Current Implementation
 
-Implemented in this pass:
+Implemented for website mode:
 
 - `backend/package.json`
 - `backend/tsconfig.json`
 - `backend/src/schema.ts`
 - `backend/src/db.ts`
 - `backend/src/server.ts`
+- `backend/README.md`
 - `frontend/.env.website.example`
 - `frontend/src/lib/db.ts` API mode support
 
