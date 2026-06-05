@@ -1,6 +1,6 @@
 import { getAppVersion } from "./appVersion";
 
-export const APP_VERSION = "3.0.0-rc.3";
+export const APP_VERSION = "3.0.0-rc.4";
 export const DEFAULT_MANUAL_UPDATE_FOLDER =
   "F:\\MIT3_Update_Test\\";
 

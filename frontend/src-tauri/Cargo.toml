@@ -1,6 +1,6 @@
 [package]
 name = "maintenance-inventory-tracker"
-version = "3.0.0-rc.3"
+version = "3.0.0-rc.4"
 description = "Maintenance Inventory Tracker 3.0"
 authors = ["Maintenance Inventory Tracker 3.0"]
 edition = "2021"
