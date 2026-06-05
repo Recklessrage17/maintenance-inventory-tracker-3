@@ -3,6 +3,10 @@
   "private": true,
   "version": "3.0.0-rc.3",
   "type": "module",
+  "engines": {
+    "node": ">=22 <23",
+    "npm": ">=10"
+  },
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "build": "tsc -p tsconfig.json",
@@ -17,7 +21,7 @@
     "@types/better-sqlite3": "^7.6.12",
     "@types/cors": "^2.8.17",
     "@types/express": "^5.0.0",
-    "@types/node": "^24.12.3",
+    "@types/node": "^22.10.7",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"
   }
