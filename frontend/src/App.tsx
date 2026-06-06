@@ -12371,41 +12371,35 @@ const requisitionPrintCss = `
   }
 
   .po-header {
-    align-items: center;
-    border-bottom: 2px solid #111827;
+    align-items: stretch;
+    border: 2px solid #111827;
     display: grid;
     gap: 12px;
-    grid-template-columns: 165px minmax(0, 1fr);
+    grid-template-columns: 1.75in minmax(0, 1fr);
     margin-bottom: 0.12in;
-    padding-bottom: 0.1in;
+    min-height: 0.62in;
   }
 
   .po-logo-box {
     align-items: center;
     display: flex;
     justify-content: flex-start;
-    min-height: 0.48in;
+    padding: 0.08in 0.12in;
   }
 
   .po-logo-box img {
     display: block;
-    max-height: 60px;
-    max-width: 155px;
+    max-height: 0.42in;
+    max-width: 1.6in;
     object-fit: contain;
   }
 
   .po-header-main {
-    padding: 0.04in 0;
-    text-align: center;
-  }
-
-  .po-brand-label {
-    color: #475569;
-    font-size: 11px;
-    font-weight: 900;
-    letter-spacing: 0;
-    margin: 0 0 3px;
-    text-transform: none;
+    align-items: center;
+    border-left: 2px solid #111827;
+    display: flex;
+    padding: 0.12in 0.14in;
+    text-align: left;
   }
 
   .po-header h1 {
@@ -12569,7 +12563,6 @@ function buildPrintableRequisitionDocument({
         <img src="${escapeReportHtml(jbtUsaRequisitionLogo)}" alt="JBT USA" />
       </div>
       <div class="po-header-main">
-        <p class="po-brand-label">Maintenance</p>
         <h1>${escapeReportHtml(printableTitle)}</h1>
       </div>
     </header>
