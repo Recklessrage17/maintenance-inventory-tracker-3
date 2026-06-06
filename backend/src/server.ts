@@ -3,10 +3,12 @@ import express from "express";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  getAppDataCountComparison,
+  getDataFreshnessSummary,
   getDatabase,
   getDatabasePath,
   getHealthCounts,
-  loadAppDataFromSqlite,
+  loadAppDataWithSource,
   saveAppDataSnapshot,
   saveNormalizedTablesFromAppData,
   type AppData
@@ -48,18 +50,30 @@ app.use((request, response, next) => {
 
 app.get("/api/health", (_request, response) => {
   getDatabase();
+  const loadResult = loadAppDataWithSource();
 
   response.json({
     ok: true,
     mode: "website-sqlite",
     databasePath: getDatabasePath(),
     counts: getHealthCounts(),
+    appDataLoadSource: loadResult.source,
+    normalizedLoadReady: loadResult.normalizedLoadReady,
+    normalizedLoadError: loadResult.normalizedLoadError,
+    ...getDataFreshnessSummary(),
     checkedAt: new Date().toISOString()
   });
 });
 
 app.get("/api/app-data", (_request, response) => {
-  response.json({ data: loadAppDataFromSqlite() });
+  const loadResult = loadAppDataWithSource();
+
+  response.json({
+    data: loadResult.data,
+    normalizedLoadError: loadResult.normalizedLoadError,
+    normalizedLoadReady: loadResult.normalizedLoadReady,
+    source: loadResult.source
+  });
 });
 
 app.put("/api/app-data", (request, response) => {
@@ -89,6 +103,8 @@ app.put("/api/app-data", (request, response) => {
 app.get("/api/normalized-summary", (_request, response) => {
   try {
     const counts = getHealthCounts();
+    const loadResult = loadAppDataWithSource();
+    const freshness = getDataFreshnessSummary();
     const db = getDatabase();
     const latestItem = db.prepare("SELECT MAX(updated_at) AS latest FROM inventory_items").get() as { latest: string };
     const latestStock = db.prepare("SELECT MAX(date_time) AS latest FROM stock_ledger").get() as { latest: string };
@@ -98,14 +114,37 @@ app.get("/api/normalized-summary", (_request, response) => {
     response.json({
       ok: true,
       counts,
-      latestItemUpdatedAt: latestItem.latest,
+      appDataLoadSource: loadResult.source,
+      normalizedLoadReady: loadResult.normalizedLoadReady,
+      normalizedLoadError: loadResult.normalizedLoadError,
+      latestItemUpdatedAt: latestItem.latest ?? freshness.latestItemUpdatedAt,
       latestStockDateTime: latestStock.latest,
       latestRequisitionCreatedAt: latestReq.latest,
-      latestAuditOccurredAt: latestAudit.latest
+      latestAuditOccurredAt: latestAudit.latest,
+      latestSnapshotUpdatedAt: freshness.latestSnapshotUpdatedAt
     });
   } catch (err) {
     console.error("Error fetching normalized summary:", err);
     response.status(500).json({ ok: false, error: "Failed to build normalized summary." });
+  }
+});
+
+app.get("/api/app-data/compare", (_request, response) => {
+  try {
+    const loadResult = loadAppDataWithSource();
+
+    response.json({
+      ok: true,
+      ...getAppDataCountComparison(),
+      load: {
+        normalizedLoadError: loadResult.normalizedLoadError,
+        normalizedLoadReady: loadResult.normalizedLoadReady,
+        source: loadResult.source
+      }
+    });
+  } catch (err) {
+    console.error("Error comparing app data sources:", err);
+    response.status(500).json({ ok: false, error: "Failed to compare app data sources." });
   }
 });
 
