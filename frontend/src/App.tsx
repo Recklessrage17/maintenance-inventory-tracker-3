@@ -94,7 +94,7 @@ import {
 } from "./lib/sqliteSettingsMirror";
 import { runSqliteHealthCheck } from "./lib/sqliteHealthCheck";
 import { IdleScreensaver } from "./components/layout/IdleScreensaver";
-import jbtLogo from "./assets/jbt-logo.png";
+import jbtUsaRequisitionLogo from "./assets/jbt-usa-requisition-logo.png";
 import type {
   AppData,
   AppSettings,
@@ -12375,7 +12375,7 @@ const requisitionPrintCss = `
     border-bottom: 2px solid #111827;
     display: grid;
     gap: 12px;
-    grid-template-columns: 120px minmax(0, 1fr);
+    grid-template-columns: 165px minmax(0, 1fr);
     margin-bottom: 0.12in;
     padding-bottom: 0.1in;
   }
@@ -12389,8 +12389,8 @@ const requisitionPrintCss = `
 
   .po-logo-box img {
     display: block;
-    max-height: 50px;
-    max-width: 110px;
+    max-height: 60px;
+    max-width: 155px;
     object-fit: contain;
   }
 
@@ -12566,7 +12566,7 @@ function buildPrintableRequisitionDocument({
   return `<main class="report po-requisition">
     <header class="po-header">
       <div class="po-logo-box">
-        <img src="${escapeReportHtml(jbtLogo)}" alt="JBT" />
+        <img src="${escapeReportHtml(jbtUsaRequisitionLogo)}" alt="JBT USA" />
       </div>
       <div class="po-header-main">
         <p class="po-brand-label">Maintenance</p>
