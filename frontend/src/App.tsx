@@ -94,6 +94,7 @@ import {
 } from "./lib/sqliteSettingsMirror";
 import { runSqliteHealthCheck } from "./lib/sqliteHealthCheck";
 import { IdleScreensaver } from "./components/layout/IdleScreensaver";
+import jbtLogo from "./assets/jbt-logo.png";
 import type {
   AppData,
   AppSettings,
@@ -12370,17 +12371,36 @@ const requisitionPrintCss = `
   }
 
   .po-header {
-    border: 2px solid #111827;
+    align-items: center;
+    border-bottom: 2px solid #111827;
+    display: grid;
+    gap: 12px;
+    grid-template-columns: 120px minmax(0, 1fr);
     margin-bottom: 0.12in;
+    padding-bottom: 0.1in;
+  }
+
+  .po-logo-box {
+    align-items: center;
+    display: flex;
+    justify-content: flex-start;
+    min-height: 0.48in;
+  }
+
+  .po-logo-box img {
+    display: block;
+    max-height: 50px;
+    max-width: 110px;
+    object-fit: contain;
   }
 
   .po-header-main {
-    border-left: 8px solid #0891b2;
-    padding: 0.12in 0.14in;
+    padding: 0.04in 0;
+    text-align: center;
   }
 
   .po-brand-label {
-    color: #0e7490;
+    color: #475569;
     font-size: 11px;
     font-weight: 900;
     letter-spacing: 0;
@@ -12391,6 +12411,7 @@ const requisitionPrintCss = `
   .po-header h1 {
     font-size: 18px;
     letter-spacing: 0;
+    margin: 0;
   }
 
   .po-field-grid {
@@ -12544,6 +12565,9 @@ function buildPrintableRequisitionDocument({
 
   return `<main class="report po-requisition">
     <header class="po-header">
+      <div class="po-logo-box">
+        <img src="${escapeReportHtml(jbtLogo)}" alt="JBT" />
+      </div>
       <div class="po-header-main">
         <p class="po-brand-label">Maintenance</p>
         <h1>${escapeReportHtml(printableTitle)}</h1>
