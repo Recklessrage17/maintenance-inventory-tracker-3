@@ -7503,7 +7503,43 @@ function getPrintableReportDocument(title: string, bodyHtml: string, extraCss = 
 </html>`;
 }
 
-function openPrintableReport(title: string, bodyHtml: string, extraCss = "") {
+const PRINT_IMAGE_LOAD_TIMEOUT_MS = 1500;
+
+async function waitForPrintImages(printDocument: Document) {
+  const images = Array.from(printDocument.images);
+
+  if (images.length === 0) {
+    return;
+  }
+
+  const waitForImage = (image: HTMLImageElement) => {
+    const decodeImage = () => image.decode?.().catch(() => undefined) ?? Promise.resolve();
+
+    if (image.complete) {
+      return decodeImage();
+    }
+
+    return new Promise<void>((resolve) => {
+      const finish = () => {
+        void decodeImage().finally(resolve);
+      };
+
+      image.addEventListener("load", finish, { once: true });
+      image.addEventListener("error", finish, { once: true });
+    });
+  };
+
+  const imagesReady = Promise.all(
+    images.map((image) => waitForImage(image))
+  ).then(() => undefined);
+
+  await Promise.race([
+    imagesReady,
+    new Promise<void>((resolve) => window.setTimeout(resolve, PRINT_IMAGE_LOAD_TIMEOUT_MS))
+  ]);
+}
+
+async function openPrintableReport(title: string, bodyHtml: string, extraCss = "") {
   const frame = document.createElement("iframe");
 
   frame.setAttribute("aria-hidden", "true");
@@ -7534,6 +7570,8 @@ function openPrintableReport(title: string, bodyHtml: string, extraCss = "") {
     printDocument.write(getPrintableReportDocument(title, bodyHtml, extraCss));
     printDocument.close();
 
+    await waitForPrintImages(printDocument);
+
     printWindow.addEventListener("afterprint", cleanup, { once: true });
     printWindow.focus();
     printWindow.print();
@@ -7549,7 +7587,7 @@ function openPrintableReport(title: string, bodyHtml: string, extraCss = "") {
   }
 }
 
-function printRequisitionMadeRecord(record: RequisitionMadeRecord) {
+async function printRequisitionMadeRecord(record: RequisitionMadeRecord) {
   const total = getRequisitionRecordTotal(record);
   const rows = record.itemSnapshots
     .map(
@@ -7563,7 +7601,7 @@ function printRequisitionMadeRecord(record: RequisitionMadeRecord) {
     )
     .join("");
 
-  openPrintableReport(
+  await openPrintableReport(
     `Maintenance Inventory Tracker - Requisition ${record.vendorName}`,
     `<main class="report">
       <header class="report-header">
@@ -7607,9 +7645,9 @@ function RequisitionMadeDetailDialog({
   const [printStatus, setPrintStatus] = useState("");
   const [printStatusType, setPrintStatusType] = useState<"success" | "error">("success");
 
-  function handlePrint() {
+  async function handlePrint() {
     try {
-      printRequisitionMadeRecord(record);
+      await printRequisitionMadeRecord(record);
       setPrintStatus("Print view started.");
       setPrintStatusType("success");
     } catch {
@@ -10692,7 +10730,7 @@ type PartsReportColumn = {
   value: (item: InventoryItem) => string;
 };
 
-function printPartsReport({
+async function printPartsReport({
   columns,
   entityName,
   entityType,
@@ -10714,7 +10752,7 @@ function printPartsReport({
     )
     .join("");
 
-  openPrintableReport(
+  await openPrintableReport(
     `Maintenance Inventory Tracker - ${entityType} Parts - ${entityName}`,
     `<main class="report">
       <header class="report-header">
@@ -10772,9 +10810,9 @@ function VendorItemsDialog({
   const websiteHref = getExternalHref(vendor.website);
   const title = `${vendorName} - ${formatNumber(items.length)} Inventory Items`;
 
-  function handlePrint() {
+  async function handlePrint() {
     try {
-      printPartsReport({
+      await printPartsReport({
         entityName: vendorName,
         entityType: "Vendor",
         itemCount: items.length,
@@ -10881,9 +10919,9 @@ function LocationItemsDialog({
   const locationName = location.name;
   const title = `${locationName} - ${formatNumber(items.length)} Inventory Items`;
 
-  function handlePrint() {
+  async function handlePrint() {
     try {
-      printPartsReport({
+      await printPartsReport({
         entityName: locationName,
         entityType: "Location",
         itemCount: items.length,
@@ -10957,7 +10995,7 @@ function LocationItemsDialog({
   );
 }
 
-function printReorderHistoryReport(
+async function printReorderHistoryReport(
   historyRows: { record: RequisitionMadeRecord; snapshot: RequisitionMadeRecord["itemSnapshots"][number] }[],
   historyFilters: { year: string; vendor: string; poNo: string; partNumber: string; itemName: string }
 ) {
@@ -10985,7 +11023,7 @@ function printReorderHistoryReport(
     </tr>`)
     .join("");
 
-  openPrintableReport(
+  await openPrintableReport(
     "Maintenance Inventory Tracker - Reorder History",
     `<main class="report">
       <header class="report-header">
@@ -11200,9 +11238,9 @@ function ReorderPage({
     );
   }
 
-  function handlePrintReorderHistory() {
+  async function handlePrintReorderHistory() {
     try {
-      printReorderHistoryReport(historyRows, historyFilters);
+      await printReorderHistoryReport(historyRows, historyFilters);
       setHistoryPrintStatus("Print view started.");
       setHistoryPrintStatusType("success");
     } catch {
@@ -12387,7 +12425,8 @@ const requisitionPrintCss = `
     padding: 0.08in 0.12in;
   }
 
-  .po-logo-box img {
+  .po-logo-box img,
+  .po-template-logo {
     display: block;
     max-height: 0.42in;
     max-width: 1.6in;
@@ -12560,7 +12599,7 @@ function buildPrintableRequisitionDocument({
   return `<main class="report po-requisition">
     <header class="po-header">
       <div class="po-logo-box">
-        <img src="${escapeReportHtml(jbtUsaRequisitionLogo)}" alt="JBT USA" />
+        <img class="po-template-logo" src="${escapeReportHtml(jbtUsaRequisitionLogo)}" alt="JBT USA Maintenance" />
       </div>
       <div class="po-header-main">
         <h1>${escapeReportHtml(printableTitle)}</h1>
@@ -12819,9 +12858,9 @@ function RequisitionFormPreview({
     }
   }
 
-  function handleBrowserPrintPdf() {
+  async function handleBrowserPrintPdf() {
     try {
-      openPrintableReport(
+      await openPrintableReport(
         "Maintenance Requisition",
         buildPrintableRequisitionDocument({
           group,
@@ -13123,7 +13162,7 @@ function StockBeforeAfter({
   );
 }
 
-function printStockHistoryReport(data: AppData, stockRows: StockChange[]) {
+async function printStockHistoryReport(data: AppData, stockRows: StockChange[]) {
   const rows = stockRows
     .map((change) => {
       const item = data.items.find((candidate) => candidate.id === change.itemId);
@@ -13144,7 +13183,7 @@ function printStockHistoryReport(data: AppData, stockRows: StockChange[]) {
     })
     .join("");
 
-  openPrintableReport(
+  await openPrintableReport(
     "Maintenance Inventory Tracker - Stock Change Ledger",
     `<main class="report">
       <header class="report-header">
@@ -13207,9 +13246,9 @@ function HistoryPage({ data }: { data: AppData }) {
     );
   }
 
-  function handlePrintHistory() {
+  async function handlePrintHistory() {
     try {
-      printStockHistoryReport(data, stockRows);
+      await printStockHistoryReport(data, stockRows);
       setPrintStatus("Print view started.");
       setPrintStatusType("success");
     } catch {
