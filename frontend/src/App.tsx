@@ -11884,7 +11884,6 @@ function ReorderPage({
               </div>
               <RequisitionFormPreview
                 key={activeVendorGroup.vendorKey}
-                companyShopName={data.settings.companyShopName}
                 group={activeVendorGroup}
                 header={activeRequisitionHeader}
                 isCompleted={activeVendorGroupCompleted}
@@ -12332,15 +12331,27 @@ function getPrintableRequisitionTitle(requisitionType: RequisitionMadeRecord["re
   return `PURCHASE ORDER REQUISITION ${requisitionType === "under100" ? "Under" : "Over"} $100.00`;
 }
 
-function reportValue(value: unknown) {
+function printableValue(value: unknown) {
   const text = String(value ?? "").trim();
-  return text || "-";
+  return text.length > 0 ? escapeReportHtml(text) : "&nbsp;";
 }
 
 function buildPrintableField(label: string, value: unknown, className = "") {
-  return `<div class="po-field ${className}"><span>${escapeReportHtml(label)}</span><strong>${escapeReportHtml(
-    reportValue(value)
+  return `<div class="po-field ${className}"><span>${escapeReportHtml(label)}</span><strong>${printableValue(
+    value
   )}</strong></div>`;
+}
+
+function printableDateInputValue(value: string) {
+  const text = value.trim();
+
+  if (!text) {
+    return "&nbsp;";
+  }
+
+  const date = new Date(`${text}T00:00:00`);
+
+  return printableValue(Number.isNaN(date.getTime()) ? text : date.toLocaleDateString());
 }
 
 const requisitionPrintCss = `
@@ -12359,10 +12370,7 @@ const requisitionPrintCss = `
   }
 
   .po-header {
-    align-items: stretch;
     border: 2px solid #111827;
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) 1.45in;
     margin-bottom: 0.12in;
   }
 
@@ -12371,37 +12379,18 @@ const requisitionPrintCss = `
     padding: 0.12in 0.14in;
   }
 
-  .po-header .report-kicker {
+  .po-brand-label {
     color: #0e7490;
+    font-size: 11px;
+    font-weight: 900;
+    letter-spacing: 0;
     margin: 0 0 3px;
+    text-transform: none;
   }
 
   .po-header h1 {
     font-size: 18px;
     letter-spacing: 0;
-  }
-
-  .po-header-box {
-    align-items: center;
-    border-left: 2px solid #111827;
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
-    padding: 0.08in;
-    text-align: center;
-  }
-
-  .po-header-box span {
-    color: #475569;
-    font-size: 8px;
-    font-weight: 900;
-    text-transform: uppercase;
-  }
-
-  .po-header-box strong {
-    color: #111827;
-    font-size: 12px;
-    font-weight: 900;
   }
 
   .po-field-grid {
@@ -12444,6 +12433,7 @@ const requisitionPrintCss = `
     font-size: 10px;
     font-weight: 800;
     margin-top: 2px;
+    min-height: 16px;
     overflow-wrap: anywhere;
     white-space: pre-wrap;
   }
@@ -12521,13 +12511,11 @@ const requisitionPrintCss = `
 `;
 
 function buildPrintableRequisitionDocument({
-  companyShopName,
   group,
   header,
   lineDrafts,
   requisitionType
 }: {
-  companyShopName: string;
   group: RequisitionVendorGroup;
   header: RequisitionHeaderDraft;
   lineDrafts: Record<string, RequisitionLineDraft>;
@@ -12543,13 +12531,13 @@ function buildPrintableRequisitionDocument({
       const unitPrice = Number.isFinite(item.costEach) ? item.costEach : 0;
 
       return `<tr>
-        <td class="text-right">${escapeReportHtml(formatNumber(quantity))}</td>
-        <td>${escapeReportHtml(normalizeStockUnit(item.stockUnit))}</td>
-        <td>${escapeReportHtml(item.partNumber || item.name)}</td>
-        <td>${escapeReportHtml(getRequisitionLineDescription(item))}</td>
-        <td>${escapeReportHtml(formatDateInputForDisplay(draft.dueDate))}</td>
-        <td class="text-right">${escapeReportHtml(formatCurrency(unitPrice))}</td>
-        <td class="text-right">${escapeReportHtml(formatCurrency(quantity * unitPrice))}</td>
+        <td class="text-right">${printableValue(formatNumber(quantity))}</td>
+        <td>${printableValue(normalizeStockUnit(item.stockUnit))}</td>
+        <td>${printableValue(item.partNumber || item.name)}</td>
+        <td>${printableValue(getRequisitionLineDescription(item))}</td>
+        <td>${printableDateInputValue(draft.dueDate)}</td>
+        <td class="text-right">${printableValue(formatCurrency(unitPrice))}</td>
+        <td class="text-right">${printableValue(formatCurrency(quantity * unitPrice))}</td>
       </tr>`;
     })
     .join("");
@@ -12557,12 +12545,8 @@ function buildPrintableRequisitionDocument({
   return `<main class="report po-requisition">
     <header class="po-header">
       <div class="po-header-main">
-        <p class="report-kicker">${escapeReportHtml(companyShopName || "JBT USA Maintenance")}</p>
+        <p class="po-brand-label">Maintenance</p>
         <h1>${escapeReportHtml(printableTitle)}</h1>
-      </div>
-      <div class="po-header-box">
-        <span>Maintenance</span>
-        <strong>JBT</strong>
       </div>
     </header>
 
@@ -12575,7 +12559,7 @@ function buildPrintableRequisitionDocument({
         ${buildPrintableField("P.O. Class", header.poClass)}
         ${buildPrintableField("Tax Exempt", header.taxExempt)}
         ${buildPrintableField("F.O.B.", header.fob)}
-        ${buildPrintableField("Req. Date", formatDateInputForDisplay(header.reqDate))}
+        ${buildPrintableField("Req. Date", header.reqDate.trim() ? formatDateInputForDisplay(header.reqDate) : "")}
         ${buildPrintableField("Material Cert", header.materialCert)}
       </div>
     </section>
@@ -12660,7 +12644,6 @@ function isPossiblePdfEngineSetupError(message: string) {
 }
 
 function RequisitionFormPreview({
-  companyShopName,
   group,
   header,
   isCompleted,
@@ -12669,7 +12652,6 @@ function RequisitionFormPreview({
   onOfficialPdfGenerated,
   onLineChange
 }: {
-  companyShopName: string;
   group: RequisitionVendorGroup;
   header: RequisitionHeaderDraft;
   isCompleted: boolean;
@@ -12823,9 +12805,8 @@ function RequisitionFormPreview({
   function handleBrowserPrintPdf() {
     try {
       openPrintableReport(
-        `Maintenance Inventory Tracker - Requisition ${header.vendorName || group.vendorName}`,
+        "Maintenance Requisition",
         buildPrintableRequisitionDocument({
-          companyShopName,
           group,
           header,
           lineDrafts,
@@ -13058,7 +13039,7 @@ function RequisitionFormPreview({
               Print / Save as PDF
             </button>
             <span className="requisition-action-helper">
-              Website mode uses browser print/save as PDF. Official desktop PDF export is available in the desktop app.
+              Website mode uses browser print/save as PDF. Official desktop PDF export is available in the desktop app. If Chrome prints the page URL or title, turn off Headers and footers in the print dialog.
             </span>
           </>
         ) : (
