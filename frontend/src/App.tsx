@@ -7578,9 +7578,54 @@ function getPrintableReportDocument(title: string, bodyHtml: string, extraCss = 
 }
 
 const PRINT_IMAGE_LOAD_TIMEOUT_MS = 1500;
+const STANDALONE_PRINT_URL_TTL_MS = 10 * 60 * 1000;
+const MAX_STANDALONE_PRINT_URLS = 6;
+const activeStandalonePrintUrls: string[] = [];
+
+const standalonePrintPageCss = `
+  .print-page-refresh-note {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    border-bottom: 1px solid #cbd5e1;
+    background: #f8fafc;
+    color: #334155;
+    font-size: 12px;
+    font-weight: 800;
+    line-height: 1.4;
+    padding: 10px 14px;
+  }
+
+  @media print {
+    .print-page-refresh-note {
+      display: none !important;
+    }
+  }
+`;
 
 function isMobileViewport() {
   return typeof window !== "undefined" && window.matchMedia("(max-width: 768px)").matches;
+}
+
+function rememberStandalonePrintUrl(url: string) {
+  activeStandalonePrintUrls.push(url);
+
+  while (activeStandalonePrintUrls.length > MAX_STANDALONE_PRINT_URLS) {
+    const staleUrl = activeStandalonePrintUrls.shift();
+
+    if (staleUrl) {
+      URL.revokeObjectURL(staleUrl);
+    }
+  }
+
+  window.setTimeout(() => {
+    const index = activeStandalonePrintUrls.indexOf(url);
+
+    if (index >= 0) {
+      activeStandalonePrintUrls.splice(index, 1);
+      URL.revokeObjectURL(url);
+    }
+  }, STANDALONE_PRINT_URL_TTL_MS);
 }
 
 async function waitForPrintImages(printDocument: Document) {
@@ -7618,28 +7663,32 @@ async function waitForPrintImages(printDocument: Document) {
 }
 
 async function openStandalonePrintableReport(title: string, bodyHtml: string, extraCss = "") {
-  const printWindow = window.open("", "_blank");
+  const html = getPrintableReportDocument(
+    title,
+    `<div class="print-page-refresh-note">If this page is closed, return to the app and tap Print / Save as PDF again.</div>${bodyHtml}`,
+    `${standalonePrintPageCss}\n${extraCss}`
+  );
+  const url = URL.createObjectURL(new Blob([html], { type: "text/html" }));
+  const printWindow = window.open(url, "_blank");
 
   if (!printWindow) {
+    URL.revokeObjectURL(url);
     throw new Error("Could not open print preview. Allow popups or use Copy Form Text.");
   }
 
-  const printDocument = printWindow.document;
+  rememberStandalonePrintUrl(url);
 
-  printDocument.open();
-  printDocument.write(getPrintableReportDocument(title, bodyHtml, extraCss));
-  printDocument.close();
-
-  await waitForPrintImages(printDocument);
-
-  printWindow.focus();
-  window.setTimeout(() => {
+  const startPrint = () => {
     try {
+      printWindow.focus();
       printWindow.print();
     } catch {
       // Mobile browsers may require the user to use Share/Print from the clean tab.
     }
-  }, 250);
+  };
+
+  printWindow.addEventListener("load", () => window.setTimeout(startPrint, 250), { once: true });
+  window.setTimeout(startPrint, 1500);
 }
 
 async function openPrintableReport(title: string, bodyHtml: string, extraCss = "") {
@@ -12906,14 +12955,21 @@ function RequisitionFormPreview({
     const text = buildRequisitionFormText({ group, header, lineDrafts });
 
     if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(text);
-      setCopyStatus("Copied form text.");
-      setCopyStatusType("success");
-      clearStatusAfterDelay();
-      return;
+      try {
+        await navigator.clipboard.writeText(text);
+        setCopyStatus("Copied form text.");
+        setCopyStatusType("success");
+        clearStatusAfterDelay();
+        return;
+      } catch {
+        // Some browser contexts expose clipboard but reject writes unless the page is focused.
+      }
     }
 
     window.prompt("Copy requisition text", text);
+    setCopyStatus("Copy form text opened.");
+    setCopyStatusType("success");
+    clearStatusAfterDelay();
   }
 
   async function handleGenerateOfficialPdf() {
