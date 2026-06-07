@@ -2689,6 +2689,36 @@ button:disabled {
     @apply mb-3 flex items-start justify-between gap-3;
   }
 
+  .inventory-item-card-header-actions {
+    display: flex;
+    flex: 0 0 auto;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0.45rem;
+  }
+
+  .inventory-card-requisition-select {
+    display: inline-flex;
+    min-height: 2rem;
+    align-items: center;
+    gap: 0.35rem;
+    border: 1px solid rgba(132, 204, 22, 0.38);
+    border-radius: 0.45rem;
+    background: rgba(20, 83, 45, 0.22);
+    color: #d9f99d;
+    font-size: 0.68rem;
+    font-weight: 950;
+    padding: 0.25rem 0.5rem;
+    text-transform: uppercase;
+  }
+
+  .inventory-card-requisition-select input {
+    width: 1.05rem;
+    height: 1.05rem;
+    accent-color: #84cc16;
+  }
+
   .inventory-item-card-header h3 {
     @apply text-base font-black text-white;
     overflow-wrap: anywhere;
@@ -6035,6 +6065,83 @@ button:disabled {
   .backup-dialog-detail,
   .save-health-row {
     grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 1024px) {
+  .inventory-table-desktop {
+    display: none;
+  }
+
+  .inventory-card-list {
+    display: grid;
+    gap: 0.75rem;
+    max-height: none;
+    overflow: visible;
+    padding-right: 0;
+  }
+
+  .inventory-workspace-mode .inventory-card-list,
+  .inventory-workspace-expanded .inventory-card-list {
+    max-height: none;
+  }
+}
+
+@media (max-width: 768px) {
+  .inventory-command-row,
+  .inventory-pagination,
+  .inventory-pagination-controls {
+    align-items: stretch;
+    flex-wrap: wrap;
+    width: 100%;
+  }
+
+  .inventory-status-tabs.subtab-bar,
+  .inventory-requisition-tray,
+  .inventory-pagination {
+    width: 100%;
+  }
+
+  .inventory-requisition-tray {
+    justify-content: space-between;
+  }
+
+  .inventory-requisition-tray .btn-small {
+    flex: 1 1 7rem;
+  }
+
+  .inventory-item-card {
+    width: 100%;
+  }
+
+  .requisition-form-card {
+    overflow: visible;
+    padding: 0.85rem;
+  }
+
+  .requisition-form-grid,
+  .requisition-vendor-section,
+  .requisition-bottom-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .requisition-line-table {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .requisition-line-table .data-table {
+    min-width: 44rem;
+  }
+
+  .requisition-actions {
+    position: sticky;
+    bottom: 0;
+    z-index: 4;
+    margin: 0 -0.85rem -0.85rem;
+    border-top: 1px solid rgba(71, 85, 105, 0.7);
+    background: rgba(2, 6, 23, 0.96);
+    padding: 0.75rem 0.85rem;
   }
 }
 

@@ -7617,6 +7617,31 @@ async function waitForPrintImages(printDocument: Document) {
   ]);
 }
 
+async function openStandalonePrintableReport(title: string, bodyHtml: string, extraCss = "") {
+  const printWindow = window.open("", "_blank");
+
+  if (!printWindow) {
+    throw new Error("Could not open print preview. Allow popups or use Copy Form Text.");
+  }
+
+  const printDocument = printWindow.document;
+
+  printDocument.open();
+  printDocument.write(getPrintableReportDocument(title, bodyHtml, extraCss));
+  printDocument.close();
+
+  await waitForPrintImages(printDocument);
+
+  printWindow.focus();
+  window.setTimeout(() => {
+    try {
+      printWindow.print();
+    } catch {
+      // Mobile browsers may require the user to use Share/Print from the clean tab.
+    }
+  }, 250);
+}
+
 async function openPrintableReport(title: string, bodyHtml: string, extraCss = "") {
   const frame = document.createElement("iframe");
 
@@ -9537,14 +9562,25 @@ function InventoryItemCard({
           <h3>{item.name}</h3>
           <p>{getLocationName(data, item.locationId)}</p>
         </div>
-        <StatusWithWatchVisibility
-          item={item}
-          settings={data.settings}
-          onClick={() => onStockAction(item.id)}
-          onWatchListVisibilityClick={onWatchListVisibilityClick}
-          title="Edit stock"
-          ariaLabel={`Edit stock status for ${item.partNumber || item.name || "item"}`}
-        />
+        <div className="inventory-item-card-header-actions">
+          <label className="inventory-card-requisition-select">
+            <input
+              type="checkbox"
+              checked={isSelectedForRequisition}
+              aria-label={`Select ${item.partNumber || item.name} for requisition`}
+              onChange={() => onToggleRequisition(item.id)}
+            />
+            <span>Req</span>
+          </label>
+          <StatusWithWatchVisibility
+            item={item}
+            settings={data.settings}
+            onClick={() => onStockAction(item.id)}
+            onWatchListVisibilityClick={onWatchListVisibilityClick}
+            title="Edit stock"
+            ariaLabel={`Edit stock status for ${item.partNumber || item.name || "item"}`}
+          />
+        </div>
       </div>
       <div className="inventory-item-card-grid">
         <InventoryCardField label="Part number" value={<PartNumberCell item={item} onOpenError={onItemLinkOpenError} />} />
@@ -12937,23 +12973,28 @@ function RequisitionFormPreview({
   }
 
   async function handleBrowserPrintPdf() {
+    const printTitle = "Maintenance Requisition";
+    const printBody = buildPrintableRequisitionDocument({
+      group,
+      header,
+      lineDrafts,
+      requisitionType
+    });
+
     try {
-      await openPrintableReport(
-        "Maintenance Requisition",
-        buildPrintableRequisitionDocument({
-          group,
-          header,
-          lineDrafts,
-          requisitionType
-        }),
-        requisitionPrintCss
-      );
-      setCopyStatus("Browser print view opened. Choose Save as PDF in the print dialog.");
+      if (isWebsiteMode && isMobileViewport()) {
+        await openStandalonePrintableReport(printTitle, printBody, requisitionPrintCss);
+        setCopyStatus("Clean requisition print page opened. Use Share or Print from that tab.");
+      } else {
+        await openPrintableReport(printTitle, printBody, requisitionPrintCss);
+        setCopyStatus("Browser print view opened. Choose Save as PDF in the print dialog.");
+      }
+
       setCopyStatusType("success");
       onOfficialPdfGenerated();
       clearStatusAfterDelay();
-    } catch {
-      setCopyStatus("Could not open browser print view.");
+    } catch (error) {
+      setCopyStatus(error instanceof Error ? error.message : "Could not open browser print view.");
       setCopyStatusType("error");
     }
   }
