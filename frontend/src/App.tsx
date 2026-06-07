@@ -93,6 +93,13 @@ import {
   syncAppSettingsToSqlite
 } from "./lib/sqliteSettingsMirror";
 import { runSqliteHealthCheck } from "./lib/sqliteHealthCheck";
+import {
+  getWebsiteAuthStatus,
+  isWebsiteAuthSessionUnlocked,
+  loginWebsiteAuth,
+  setWebsiteAuthSessionUnlocked,
+  setupWebsiteAuth
+} from "./lib/websiteAuth";
 import { IdleScreensaver } from "./components/layout/IdleScreensaver";
 import jbtUsaRequisitionLogo from "./assets/jbt-usa-requisition-logo.png";
 import type {
@@ -2712,18 +2719,59 @@ function AuthGate({ children }: { children: React.ReactNode }) {
   const [shownRecoveryCode, setShownRecoveryCode] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const websiteAuthMode = showWebsiteModePanel;
 
   useEffect(() => {
-    const authRecord = readAuthRecord();
+    let isActive = true;
 
-    if (!authRecord) {
-      setStartupStage("setup");
-    } else {
-      setStartupStage(isAuthSessionUnlocked() ? "ready" : "login");
+    async function checkAuthState() {
+      if (websiteAuthMode) {
+        try {
+          const status = await getWebsiteAuthStatus();
+
+          if (!isActive) {
+            return;
+          }
+
+          setStartupStage(status.configured ? (isWebsiteAuthSessionUnlocked() ? "ready" : "login") : "setup");
+        } catch (authError) {
+          if (!isActive) {
+            return;
+          }
+
+          setError(
+            authError instanceof Error
+              ? authError.message
+              : "Could not reach backend authentication service. Make sure the website backend is running."
+          );
+          setStartupStage("setup");
+        }
+        return;
+      }
+
+      const authRecord = readAuthRecord();
+
+      if (!authRecord) {
+        setStartupStage("setup");
+      } else {
+        setStartupStage(isAuthSessionUnlocked() ? "ready" : "login");
+      }
     }
-  }, []);
+
+    void checkAuthState();
+
+    return () => {
+      isActive = false;
+    };
+  }, [websiteAuthMode]);
 
   const startUnlockLoading = () => {
+    if (websiteAuthMode) {
+      setWebsiteAuthSessionUnlocked();
+      setStage("ready");
+      return;
+    }
+
     const authRecord = readAuthRecord();
 
     if (authRecord) {
@@ -2759,6 +2807,15 @@ function AuthGate({ children }: { children: React.ReactNode }) {
     setBusy(true);
 
     try {
+      if (websiteAuthMode) {
+        await setupWebsiteAuth(password, recoveryEmail);
+        setPassword("");
+        setConfirmPassword("");
+        setRecoveryEmail("");
+        setStage("ready");
+        return;
+      }
+
       const result = await createAuthRecord(password, recoveryEmail);
 
       setShownRecoveryCode(result.recoveryCode);
@@ -2778,6 +2835,17 @@ function AuthGate({ children }: { children: React.ReactNode }) {
     setBusy(true);
 
     try {
+      if (websiteAuthMode) {
+        if (!(await loginWebsiteAuth(password))) {
+          setError("Password did not match this inventory system.");
+          return;
+        }
+
+        setPassword("");
+        startUnlockLoading();
+        return;
+      }
+
       if (!(await verifyPassword(password))) {
         setError("Password did not match this inventory system.");
         return;
@@ -2857,7 +2925,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
     return <>{children}</>;
   }
 
-  const authRecord = readAuthRecord();
+  const authRecord = websiteAuthMode ? null : readAuthRecord();
 
   return (
     <main className="auth-shell app-shell min-h-screen p-4 text-slate-100">
@@ -2878,8 +2946,12 @@ function AuthGate({ children }: { children: React.ReactNode }) {
         {stage === "setup" && (
           <form className="auth-form" onSubmit={handleSetupSubmit}>
             <div>
-              <h2>Create Local Password</h2>
-              <p>Set the shop password before the inventory system opens on this device.</p>
+              <h2>{websiteAuthMode ? "Create Shop Password" : "Create Local Password"}</h2>
+              <p>
+                {websiteAuthMode
+                  ? "Set the shop password before browser and mobile access opens."
+                  : "Set the shop password before the inventory system opens on this device."}
+              </p>
             </div>
             <label className="field-label">
               Password
@@ -2906,7 +2978,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
               <input
                 className="input"
                 autoComplete="email"
-                placeholder="future email-code recovery"
+                placeholder={websiteAuthMode ? "optional recovery contact" : "future email-code recovery"}
                 type="email"
                 value={recoveryEmail}
                 onChange={(event) => setRecoveryEmail(event.target.value)}
@@ -2954,17 +3026,19 @@ function AuthGate({ children }: { children: React.ReactNode }) {
               <button className="btn-primary" type="submit" disabled={busy}>
                 Sign In
               </button>
-              <button
-                className="btn-muted"
-                type="button"
-                onClick={() => {
-                  setError("");
-                  setRecoveryCode("");
-                  setStage("recovery-code");
-                }}
-              >
-                Forgot password?
-              </button>
+              {!websiteAuthMode && (
+                <button
+                  className="btn-muted"
+                  type="button"
+                  onClick={() => {
+                    setError("");
+                    setRecoveryCode("");
+                    setStage("recovery-code");
+                  }}
+                >
+                  Forgot password?
+                </button>
+              )}
             </div>
           </form>
           </>
@@ -7504,6 +7578,10 @@ function getPrintableReportDocument(title: string, bodyHtml: string, extraCss = 
 }
 
 const PRINT_IMAGE_LOAD_TIMEOUT_MS = 1500;
+
+function isMobileViewport() {
+  return typeof window !== "undefined" && window.matchMedia("(max-width: 768px)").matches;
+}
 
 async function waitForPrintImages(printDocument: Document) {
   const images = Array.from(printDocument.images);
@@ -13774,38 +13852,40 @@ function SettingsPage({
         </>
       )}
 
-      <section className="panel">
-        <SectionHeader kicker="Security" title="Recovery Access" />
-        <div className="security-panel-content">
-          <div>
-            <p className="text-sm font-semibold text-slate-300">
-              Create a fresh recovery code for this local inventory lock without changing the current password.
-            </p>
-            <p className="mt-1 text-xs font-bold text-amber-100">
-              The previous recovery code stops working as soon as a new one is created.
-            </p>
-          </div>
-          <button className="btn-primary" type="button" onClick={onCreateRecoveryCode}>
-            Create New Recovery Code
-          </button>
-        </div>
-        {newRecoveryCode && (
-          <div className="settings-recovery-card">
+      {!showWebsiteModePanel && (
+        <section className="panel">
+          <SectionHeader kicker="Security" title="Recovery Access" />
+          <div className="security-panel-content">
             <div>
-              <p className="eyebrow">Shown one time</p>
-              <p className="mt-1 text-sm font-semibold text-slate-300">
-                Save this code now. The old recovery code no longer works.
+              <p className="text-sm font-semibold text-slate-300">
+                Create a fresh recovery code for this local inventory lock without changing the current password.
+              </p>
+              <p className="mt-1 text-xs font-bold text-amber-100">
+                The previous recovery code stops working as soon as a new one is created.
               </p>
             </div>
-            <div className="recovery-code-card" aria-label="New one-time recovery code">
-              {newRecoveryCode}
-            </div>
-            <button className="btn-muted" type="button" onClick={onDismissRecoveryCode}>
-              I Saved This Code
+            <button className="btn-primary" type="button" onClick={onCreateRecoveryCode}>
+              Create New Recovery Code
             </button>
           </div>
-        )}
-      </section>
+          {newRecoveryCode && (
+            <div className="settings-recovery-card">
+              <div>
+                <p className="eyebrow">Shown one time</p>
+                <p className="mt-1 text-sm font-semibold text-slate-300">
+                  Save this code now. The old recovery code no longer works.
+                </p>
+              </div>
+              <div className="recovery-code-card" aria-label="New one-time recovery code">
+                {newRecoveryCode}
+              </div>
+              <button className="btn-muted" type="button" onClick={onDismissRecoveryCode}>
+                I Saved This Code
+              </button>
+            </div>
+          )}
+        </section>
+      )}
 
       <section className="panel">
         <SectionHeader kicker="Backup" title="Backup Settings" />

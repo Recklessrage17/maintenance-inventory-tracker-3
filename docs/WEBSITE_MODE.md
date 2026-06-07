@@ -81,17 +81,32 @@ Implemented for website mode:
 - `backend/tsconfig.json`
 - `backend/src/schema.ts`
 - `backend/src/db.ts`
+- `backend/src/auth.ts`
 - `backend/src/server.ts`
 - `backend/README.md`
 - `frontend/.env.website.example`
 - `frontend/src/lib/runtimeMode.ts`
 - `frontend/src/lib/db.ts` API mode support
+- `frontend/src/lib/websiteAuth.ts` API mode authentication support
 
 The backend exposes:
 
+- `GET /api/auth/status` - checks whether the website shop password is configured.
+- `POST /api/auth/setup` - creates the backend-managed website shop password.
+- `POST /api/auth/login` - verifies the website shop password.
 - `GET /api/health` - verifies backend and SQLite startup.
 - `GET /api/app-data` - loads the current app data snapshot from SQLite.
 - `PUT /api/app-data` - saves the current app data snapshot to SQLite.
+
+## Website Authentication
+
+Website mode uses a backend-managed shop password for browser and mobile access. The backend stores only password hash metadata in SQLite, not the plaintext password.
+
+This avoids requiring browser Web Crypto on phones and company laptops that open the site over a local network HTTP address such as `http://192.168.x.x:4173`.
+
+For stronger security on a company network, run the website behind HTTPS or a trusted internal reverse proxy later.
+
+Do not expose this local inventory site to the public internet.
 
 ## Data Mode
 

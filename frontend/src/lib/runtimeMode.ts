@@ -15,9 +15,19 @@ export function isWebsiteBrowserMode() {
 }
 
 export function getApiBaseUrl() {
+  if (isWebsiteBrowserMode() && typeof window !== "undefined" && window.location.port === "4173") {
+    return "";
+  }
+
   return API_BASE_URL;
 }
 
 export function getWebsiteBackendUrl() {
-  return API_BASE_URL || DEFAULT_WEBSITE_BACKEND_URL;
+  const apiBaseUrl = getApiBaseUrl();
+
+  if (apiBaseUrl) {
+    return apiBaseUrl;
+  }
+
+  return typeof window !== "undefined" ? window.location.origin : DEFAULT_WEBSITE_BACKEND_URL;
 }

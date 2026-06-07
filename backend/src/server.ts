@@ -1,7 +1,13 @@
 import cors from "cors";
-import express from "express";
+import express, { type RequestHandler } from "express";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  getWebsiteAuthStatus,
+  setupWebsiteAuth,
+  verifyWebsiteAuthPassword,
+  WebsiteAuthError
+} from "./auth.js";
 import {
   getAppDataCountComparison,
   getDataFreshnessSummary,
@@ -25,16 +31,38 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const frontendDist = path.resolve(__dirname, "../../frontend/dist");
 
-const apiCors = cors({
-  origin(origin, callback) {
-    if (!origin || allowedOrigins.includes(origin)) {
-      callback(null, true);
-      return;
-    }
+function requestOrigin(request: express.Request) {
+  const host = request.get("host");
 
-    callback(new Error(`Origin ${origin} is not allowed by MIT3 backend.`));
+  return host ? `${request.protocol}://${host}` : "";
+}
+
+const apiCors: RequestHandler = (request, response, next) => {
+  cors({
+    origin(origin, callback) {
+      if (!origin || allowedOrigins.includes(origin) || origin === requestOrigin(request)) {
+        callback(null, true);
+        return;
+      }
+
+      callback(new Error(`Origin ${origin} is not allowed by MIT3 backend.`));
+    }
+  })(request, response, next);
+};
+
+function stringBodyValue(value: unknown) {
+  return typeof value === "string" ? value : "";
+}
+
+function handleAuthError(error: unknown, response: express.Response, fallbackMessage: string) {
+  if (error instanceof WebsiteAuthError) {
+    response.status(error.statusCode).json({ ok: false, error: error.message });
+    return;
   }
-});
+
+  console.error(fallbackMessage, error);
+  response.status(500).json({ ok: false, error: fallbackMessage });
+}
 
 app.use(express.json({ limit: "50mb" }));
 
@@ -52,6 +80,38 @@ app.use((request, response, next) => {
 });
 
 app.use("/api", apiCors);
+
+app.get("/api/auth/status", (_request, response) => {
+  response.json(getWebsiteAuthStatus());
+});
+
+app.post("/api/auth/setup", (request, response) => {
+  try {
+    response.json({
+      ok: true,
+      ...setupWebsiteAuth(stringBodyValue(request.body?.password), stringBodyValue(request.body?.recoveryEmail))
+    });
+  } catch (error) {
+    handleAuthError(error, response, "Could not configure website authentication.");
+  }
+});
+
+app.post("/api/auth/login", (request, response) => {
+  try {
+    if (!verifyWebsiteAuthPassword(stringBodyValue(request.body?.password))) {
+      response.status(401).json({ ok: false, error: "Password did not match this inventory system." });
+      return;
+    }
+
+    response.json({ ok: true });
+  } catch (error) {
+    handleAuthError(error, response, "Could not verify website authentication.");
+  }
+});
+
+app.post("/api/auth/logout", (_request, response) => {
+  response.json({ ok: true });
+});
 
 app.get("/api/health", (_request, response) => {
   getDatabase();
