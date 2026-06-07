@@ -102,14 +102,14 @@ If `frontend/dist` exists, the backend also serves the built frontend assets.
 ## Environment Variables
 
 - `PORT` or `MIT3_PORT`: backend port. Default: `4173`.
-- `MIT3_ALLOWED_ORIGIN`: frontend dev origin for CORS. Default: `http://localhost:5173`.
+- `MIT3_ALLOWED_ORIGINS`: comma-separated API origins for CORS. Default: `http://localhost:4173,http://localhost:5173`.
 - `MIT3_DB_PATH`: SQLite database file path. Default: `backend/data/maintenance_inventory_3_web.db`.
 
 Example:
 
 ```powershell
 $env:MIT3_PORT="4173"
-$env:MIT3_ALLOWED_ORIGIN="http://localhost:5173"
+$env:MIT3_ALLOWED_ORIGINS="http://localhost:4173,http://localhost:5173"
 $env:MIT3_DB_PATH="D:\Maintenance Inventory Tracker\maintenance_inventory_3_web.db"
 npm run dev
 ```

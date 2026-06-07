@@ -16,23 +16,26 @@ import {
 
 const app = express();
 const port = Number(process.env.PORT ?? process.env.MIT3_PORT ?? 4173);
-const allowedOrigin = process.env.MIT3_ALLOWED_ORIGIN ?? "http://localhost:5173";
+const defaultAllowedOrigins = [`http://localhost:${port}`, "http://localhost:5173"];
+const allowedOrigins = (process.env.MIT3_ALLOWED_ORIGINS ?? defaultAllowedOrigins.join(","))
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const frontendDist = path.resolve(__dirname, "../../frontend/dist");
 
-app.use(
-  cors({
-    origin(origin, callback) {
-      if (!origin || origin === allowedOrigin) {
-        callback(null, true);
-        return;
-      }
-
-      callback(new Error(`Origin ${origin} is not allowed by MIT3 backend.`));
+const apiCors = cors({
+  origin(origin, callback) {
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+      return;
     }
-  })
-);
+
+    callback(new Error(`Origin ${origin} is not allowed by MIT3 backend.`));
+  }
+});
+
 app.use(express.json({ limit: "50mb" }));
 
 // Lightweight request logging middleware: method, URL, status, response time
@@ -47,6 +50,8 @@ app.use((request, response, next) => {
   });
   next();
 });
+
+app.use("/api", apiCors);
 
 app.get("/api/health", (_request, response) => {
   getDatabase();
@@ -155,5 +160,7 @@ app.get("*", (_request, response) => {
 
 app.listen(port, () => {
   console.log(`Maintenance Inventory Tracker 3 website backend running on http://localhost:${port}`);
+  console.log(`Allowed API origins: ${allowedOrigins.join(", ")}`);
+  console.log(`Frontend dist: ${frontendDist}`);
   console.log(`SQLite database: ${getDatabasePath()}`);
 });
