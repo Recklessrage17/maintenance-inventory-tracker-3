@@ -7481,6 +7481,8 @@ function getPrintableReportDocument(title: string, bodyHtml: string, extraCss = 
         color: #111827;
         font-family: Arial, Helvetica, sans-serif;
         font-size: 11px;
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
       }
       .report {
         padding: 0.35in;
@@ -7578,11 +7580,21 @@ function getPrintableReportDocument(title: string, bodyHtml: string, extraCss = 
 }
 
 const PRINT_IMAGE_LOAD_TIMEOUT_MS = 1500;
-const STANDALONE_PRINT_URL_TTL_MS = 10 * 60 * 1000;
-const MAX_STANDALONE_PRINT_URLS = 6;
-const activeStandalonePrintUrls: string[] = [];
+const STANDALONE_PRINT_ROUTE_HASH = "#print-requisition";
+const STANDALONE_PRINT_STORAGE_KEY_PREFIX = "maintenance-inventory:standalone-print-html:";
+const STANDALONE_PRINT_LATEST_ID_KEY = "maintenance-inventory:standalone-print-latest-id";
 
 const standalonePrintPageCss = `
+  @media screen {
+    body {
+      overflow-x: auto;
+    }
+
+    .po-requisition {
+      min-width: 7.8in;
+    }
+  }
+
   .print-page-refresh-note {
     position: sticky;
     top: 0;
@@ -7607,25 +7619,141 @@ function isMobileViewport() {
   return typeof window !== "undefined" && window.matchMedia("(max-width: 768px)").matches;
 }
 
-function rememberStandalonePrintUrl(url: string) {
-  activeStandalonePrintUrls.push(url);
+function getStandalonePrintStorageKey(printId: string) {
+  return `${STANDALONE_PRINT_STORAGE_KEY_PREFIX}${printId}`;
+}
 
-  while (activeStandalonePrintUrls.length > MAX_STANDALONE_PRINT_URLS) {
-    const staleUrl = activeStandalonePrintUrls.shift();
+function createStandalonePrintId() {
+  return typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
 
-    if (staleUrl) {
-      URL.revokeObjectURL(staleUrl);
+function getBrowserStorage(kind: "local" | "session") {
+  try {
+    return kind === "local" ? window.localStorage : window.sessionStorage;
+  } catch {
+    return null;
+  }
+}
+
+function saveStandalonePrintableReportHtml(printId: string, fullHtml: string) {
+  [getBrowserStorage("session"), getBrowserStorage("local")].forEach((storage) => {
+    try {
+      storage?.setItem(getStandalonePrintStorageKey(printId), fullHtml);
+      storage?.setItem(STANDALONE_PRINT_LATEST_ID_KEY, printId);
+    } catch {
+      // Some private browsing modes can reject storage writes; the caller still has the opened tab.
+    }
+  });
+}
+
+function readStandalonePrintableReportHtml(printId: string | null) {
+  const storages = [getBrowserStorage("session"), getBrowserStorage("local")];
+  const printIds = [
+    printId,
+    ...storages.map((storage) => {
+      try {
+        return storage?.getItem(STANDALONE_PRINT_LATEST_ID_KEY) ?? null;
+      } catch {
+        return null;
+      }
+    })
+  ].filter((value, index, values): value is string => Boolean(value) && values.indexOf(value) === index);
+
+  for (const candidateId of printIds) {
+    const storageKey = getStandalonePrintStorageKey(candidateId);
+
+    for (const storage of storages) {
+      try {
+        const fullHtml = storage?.getItem(storageKey);
+
+        if (fullHtml) {
+          return fullHtml;
+        }
+      } catch {}
     }
   }
 
-  window.setTimeout(() => {
-    const index = activeStandalonePrintUrls.indexOf(url);
+  return null;
+}
 
-    if (index >= 0) {
-      activeStandalonePrintUrls.splice(index, 1);
-      URL.revokeObjectURL(url);
+function getStandalonePrintRouteId() {
+  const routeHash = typeof window === "undefined" ? "" : window.location.hash;
+
+  if (routeHash !== STANDALONE_PRINT_ROUTE_HASH && !routeHash.startsWith(`${STANDALONE_PRINT_ROUTE_HASH}?`)) {
+    return null;
+  }
+
+  const queryIndex = routeHash.indexOf("?");
+
+  if (queryIndex < 0) {
+    return "";
+  }
+
+  return new URLSearchParams(routeHash.slice(queryIndex + 1)).get("id") ?? "";
+}
+
+function getStandalonePrintRouteUrl(printId: string) {
+  const url = new URL(window.location.href);
+  url.search = "";
+  url.hash = `${STANDALONE_PRINT_ROUTE_HASH}?id=${encodeURIComponent(printId)}`;
+  return url.toString();
+}
+
+function getStandalonePrintableReportDocument(title: string, bodyHtml: string, extraCss = "") {
+  return getPrintableReportDocument(
+    title,
+    `<div class="print-page-refresh-note">If this page is closed, return to the app and tap Print / Save as PDF again.</div>${bodyHtml}`,
+    `${standalonePrintPageCss}\n${extraCss}`
+  );
+}
+
+function writeStandalonePrintFallbackDocument() {
+  document.open();
+  document.write(
+    getPrintableReportDocument(
+      "Maintenance Requisition",
+      `<main class="report">
+        <header class="report-header">
+          <p class="report-kicker">Maintenance Requisition</p>
+          <h1>Print page expired</h1>
+        </header>
+        <p>Return to the app and tap Print / Save as PDF again.</p>
+      </main>`
+    )
+  );
+  document.close();
+}
+
+export function renderStandalonePrintableReportIfRequested() {
+  const routePrintId = getStandalonePrintRouteId();
+
+  if (routePrintId === null) {
+    return false;
+  }
+
+  const fullHtml = readStandalonePrintableReportHtml(routePrintId || null);
+
+  if (!fullHtml) {
+    writeStandalonePrintFallbackDocument();
+    return true;
+  }
+
+  document.open();
+  document.write(fullHtml);
+  document.close();
+
+  window.setTimeout(() => {
+    try {
+      window.focus();
+      window.print();
+    } catch {
+      // Mobile browsers may require the user to use Share/Print from the clean tab.
     }
-  }, STANDALONE_PRINT_URL_TTL_MS);
+  }, 350);
+
+  return true;
 }
 
 async function waitForPrintImages(printDocument: Document) {
@@ -7662,33 +7790,71 @@ async function waitForPrintImages(printDocument: Document) {
   ]);
 }
 
-async function openStandalonePrintableReport(title: string, bodyHtml: string, extraCss = "") {
-  const html = getPrintableReportDocument(
-    title,
-    `<div class="print-page-refresh-note">If this page is closed, return to the app and tap Print / Save as PDF again.</div>${bodyHtml}`,
-    `${standalonePrintPageCss}\n${extraCss}`
-  );
-  const url = URL.createObjectURL(new Blob([html], { type: "text/html" }));
-  const printWindow = window.open(url, "_blank");
+function openStandalonePrintPlaceholder(title: string) {
+  const printWindow = window.open("", "_blank");
 
   if (!printWindow) {
-    URL.revokeObjectURL(url);
     throw new Error("Could not open print preview. Allow popups or use Copy Form Text.");
   }
 
-  rememberStandalonePrintUrl(url);
+  printWindow.document.open();
+  printWindow.document.write(
+    getPrintableReportDocument(
+      title,
+      `<main class="report">
+        <header class="report-header">
+          <p class="report-kicker">Maintenance Requisition</p>
+          <h1>Preparing print page...</h1>
+        </header>
+      </main>`
+    )
+  );
+  printWindow.document.close();
 
-  const startPrint = () => {
-    try {
-      printWindow.focus();
-      printWindow.print();
-    } catch {
-      // Mobile browsers may require the user to use Share/Print from the clean tab.
-    }
-  };
+  return printWindow;
+}
 
-  printWindow.addEventListener("load", () => window.setTimeout(startPrint, 250), { once: true });
-  window.setTimeout(startPrint, 1500);
+function openStandalonePrintableReport(fullHtml: string, printWindow?: Window | null) {
+  const printId = createStandalonePrintId();
+  saveStandalonePrintableReportHtml(printId, fullHtml);
+
+  const url = getStandalonePrintRouteUrl(printId);
+  const targetWindow = printWindow ?? window.open(url, "_blank");
+
+  if (!targetWindow) {
+    throw new Error("Could not open print preview. Allow popups or use Copy Form Text.");
+  }
+
+  targetWindow.location.replace(url);
+  targetWindow.focus();
+}
+
+async function imageUrlToDataUrl(imageUrl: string) {
+  if (imageUrl.startsWith("data:")) {
+    return imageUrl;
+  }
+
+  const response = await fetch(imageUrl);
+
+  if (!response.ok) {
+    throw new Error("Could not load the requisition logo for printing.");
+  }
+
+  const blob = await response.blob();
+
+  return await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+
+    reader.addEventListener("load", () => {
+      if (typeof reader.result === "string") {
+        resolve(reader.result);
+      } else {
+        reject(new Error("Could not prepare the requisition logo for printing."));
+      }
+    });
+    reader.addEventListener("error", () => reject(new Error("Could not prepare the requisition logo for printing.")));
+    reader.readAsDataURL(blob);
+  });
 }
 
 async function openPrintableReport(title: string, bodyHtml: string, extraCss = "") {
@@ -12562,6 +12728,8 @@ const requisitionPrintCss = `
   body {
     background: #ffffff;
     color: #111827;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
   }
 
   .po-requisition {
@@ -12731,11 +12899,13 @@ function buildPrintableRequisitionDocument({
   group,
   header,
   lineDrafts,
+  logoSrc = jbtUsaRequisitionLogo,
   requisitionType
 }: {
   group: RequisitionVendorGroup;
   header: RequisitionHeaderDraft;
   lineDrafts: Record<string, RequisitionLineDraft>;
+  logoSrc?: string;
   requisitionType: RequisitionMadeRecord["requisitionType"];
 }) {
   const printableTitle = getPrintableRequisitionTitle(requisitionType);
@@ -12762,7 +12932,7 @@ function buildPrintableRequisitionDocument({
   return `<main class="report po-requisition">
     <header class="po-header">
       <div class="po-logo-box">
-        <img class="po-template-logo" src="${escapeReportHtml(jbtUsaRequisitionLogo)}" alt="JBT USA Maintenance" />
+        <img class="po-template-logo" src="${escapeReportHtml(logoSrc)}" alt="JBT USA" />
       </div>
       <div class="po-header-main">
         <h1>${escapeReportHtml(printableTitle)}</h1>
@@ -13030,18 +13200,31 @@ function RequisitionFormPreview({
 
   async function handleBrowserPrintPdf() {
     const printTitle = "Maintenance Requisition";
-    const printBody = buildPrintableRequisitionDocument({
-      group,
-      header,
-      lineDrafts,
-      requisitionType
-    });
+    let standalonePrintWindow: Window | null = null;
 
     try {
       if (isWebsiteMode && isMobileViewport()) {
-        await openStandalonePrintableReport(printTitle, printBody, requisitionPrintCss);
+        standalonePrintWindow = openStandalonePrintPlaceholder(printTitle);
+        const logoDataUrl = await imageUrlToDataUrl(jbtUsaRequisitionLogo);
+        const printBody = buildPrintableRequisitionDocument({
+          group,
+          header,
+          lineDrafts,
+          logoSrc: logoDataUrl,
+          requisitionType
+        });
+        const fullHtml = getStandalonePrintableReportDocument(printTitle, printBody, requisitionPrintCss);
+
+        openStandalonePrintableReport(fullHtml, standalonePrintWindow);
         setCopyStatus("Clean requisition print page opened. Use Share or Print from that tab.");
       } else {
+        const printBody = buildPrintableRequisitionDocument({
+          group,
+          header,
+          lineDrafts,
+          requisitionType
+        });
+
         await openPrintableReport(printTitle, printBody, requisitionPrintCss);
         setCopyStatus("Browser print view opened. Choose Save as PDF in the print dialog.");
       }
@@ -13050,6 +13233,7 @@ function RequisitionFormPreview({
       onOfficialPdfGenerated();
       clearStatusAfterDelay();
     } catch (error) {
+      standalonePrintWindow?.close();
       setCopyStatus(error instanceof Error ? error.message : "Could not open browser print view.");
       setCopyStatusType("error");
     }
