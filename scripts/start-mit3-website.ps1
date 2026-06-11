@@ -16,12 +16,6 @@ Write-Host "Backend:  $BackendDir"
 Write-Host "Database: $DbPath"
 Write-Host ""
 
-if (-not (Test-Path $BackendDir)) {
-  Write-Host "ERROR: Backend folder not found. This Start button is not inside the MIT3 project folder." -ForegroundColor Red
-  pause
-  exit 1
-}
-
 $nodeVersion = node -v 2>$null
 if (-not $nodeVersion) {
   Write-Host "Node.js was not found. Install Node.js 22 LTS first." -ForegroundColor Red
