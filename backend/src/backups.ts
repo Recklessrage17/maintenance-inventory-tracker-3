@@ -5,11 +5,6 @@ import type { AppData } from "./db.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const backendRoot = path.resolve(__dirname, "..");
-const backupRoot = process.env.MIT3_BACKUP_PATH ?? path.join(backendRoot, "backups");
-const jsonBackupDir = path.join(backupRoot, "json");
-const csvBackupDir = path.join(backupRoot, "csv");
-const latestJsonFile = path.join(jsonBackupDir, "maintenance-inventory-latest.json");
 const timestampedJsonPattern = /^maintenance-inventory-\d{4}-\d{2}-\d{2}-\d{6}\.json$/;
 const timestampedJsonRetentionCount = 30;
 
@@ -26,9 +21,12 @@ type BackupFileStatus = {
 
 export type WebsiteBackupStatus = {
   backupFolder: "backend/backups";
+  backupRoot: string;
   checkedAt: string;
+  csvBackupDir: string;
   csvFiles: Record<CsvBackupKey, BackupFileStatus>;
   errors: string[];
+  jsonBackupDir: string;
   jsonLatest: BackupFileStatus;
   lastCsvExportAt: string | null;
   lastJsonBackupAt: string | null;
@@ -51,12 +49,56 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+export function getBackendRoot() {
+  let currentDir = __dirname;
+
+  while (true) {
+    const packageJsonPath = path.join(currentDir, "package.json");
+
+    if (fs.existsSync(packageJsonPath)) {
+      try {
+        const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf8")) as { name?: unknown };
+
+        if (packageJson.name === "maintenance-inventory-tracker-3-backend") {
+          return currentDir;
+        }
+      } catch {
+        // Keep walking; a malformed package file should not pin backups to the wrong directory.
+      }
+    }
+
+    const parentDir = path.dirname(currentDir);
+
+    if (parentDir === currentDir) {
+      return path.resolve(__dirname, "..");
+    }
+
+    currentDir = parentDir;
+  }
+}
+
+export function getBackupRoot() {
+  return path.join(getBackendRoot(), "backups");
+}
+
+function getJsonBackupDir() {
+  return path.join(getBackupRoot(), "json");
+}
+
+function getCsvBackupDir() {
+  return path.join(getBackupRoot(), "csv");
+}
+
+function getLatestJsonFile() {
+  return path.join(getJsonBackupDir(), "maintenance-inventory-latest.json");
+}
+
 function toTimestampFilePart(date = new Date()) {
   return date.toISOString().slice(0, 19).replace("T", "-").replace(/:/g, "");
 }
 
 function displayPath(filePath: string) {
-  return `backend/${path.relative(backendRoot, filePath).replace(/\\/g, "/")}`;
+  return `backend/${path.relative(getBackendRoot(), filePath).replace(/\\/g, "/")}`;
 }
 
 function asRecord(value: unknown): RecordLike {
@@ -143,6 +185,10 @@ function backupReadmeText() {
 }
 
 export function ensureBackupFolders() {
+  const backupRoot = getBackupRoot();
+  const jsonBackupDir = getJsonBackupDir();
+  const csvBackupDir = getCsvBackupDir();
+
   fs.mkdirSync(jsonBackupDir, { recursive: true });
   fs.mkdirSync(csvBackupDir, { recursive: true });
 
@@ -160,6 +206,8 @@ export function ensureBackupFolders() {
 }
 
 function retentionTimestampedJsonFiles() {
+  const jsonBackupDir = getJsonBackupDir();
+
   if (!fs.existsSync(jsonBackupDir)) {
     return [];
   }
@@ -172,6 +220,7 @@ function retentionTimestampedJsonFiles() {
 }
 
 function pruneOldTimestampedJsonBackups() {
+  const jsonBackupDir = getJsonBackupDir();
   const oldFiles = retentionTimestampedJsonFiles().slice(timestampedJsonRetentionCount);
 
   for (const fileName of oldFiles) {
@@ -182,6 +231,8 @@ function pruneOldTimestampedJsonBackups() {
 export function writeJsonBackup(appData: AppData) {
   ensureBackupFolders();
 
+  const jsonBackupDir = getJsonBackupDir();
+  const latestJsonFile = getLatestJsonFile();
   const backupAt = nowIso();
   const timestampedJsonFile = path.join(jsonBackupDir, `maintenance-inventory-${toTimestampFilePart(new Date(backupAt))}.json`);
   const payload = {
@@ -393,6 +444,7 @@ function buildRequisitionLinesCsv(appData: AppData) {
 export function writeCsvBackups(appData: AppData) {
   ensureBackupFolders();
 
+  const csvBackupDir = getCsvBackupDir();
   const definitions: Array<{ contents: () => string; key: CsvBackupKey }> = [
     { key: "inventory", contents: () => buildInventoryCsv(appData) },
     { key: "vendors", contents: () => buildVendorsCsv(appData) },
@@ -420,6 +472,10 @@ export function writeCsvBackups(appData: AppData) {
 export function getBackupStatus(extraErrors: string[] = []): WebsiteBackupStatus {
   ensureBackupFolders();
 
+  const backupRoot = getBackupRoot();
+  const jsonBackupDir = getJsonBackupDir();
+  const csvBackupDir = getCsvBackupDir();
+  const latestJsonFile = getLatestJsonFile();
   const jsonLatest = fileStatus(latestJsonFile);
   const csvStatuses = Object.fromEntries(
     Object.entries(csvFiles).map(([key, fileName]) => [key, fileStatus(path.join(csvBackupDir, fileName))])
@@ -451,9 +507,12 @@ export function getBackupStatus(extraErrors: string[] = []): WebsiteBackupStatus
 
   return {
     backupFolder: "backend/backups",
+    backupRoot,
     checkedAt: nowIso(),
+    csvBackupDir,
     csvFiles: csvStatuses,
     errors,
+    jsonBackupDir,
     jsonLatest,
     lastCsvExportAt,
     lastJsonBackupAt: jsonLatest.updatedAt,
@@ -475,8 +534,8 @@ export function getBackupDownloadPath(kind: "history" | "inventory" | "json") {
   ensureBackupFolders();
 
   if (kind === "json") {
-    return latestJsonFile;
+    return getLatestJsonFile();
   }
 
-  return path.join(csvBackupDir, csvFiles[kind]);
+  return path.join(getCsvBackupDir(), csvFiles[kind]);
 }

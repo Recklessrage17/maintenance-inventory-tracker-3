@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import {
   getBackupDownloadPath,
+  getBackupRoot,
   getBackupStatus,
   runWebsiteBackup
 } from "./backups.js";
@@ -442,4 +443,5 @@ app.listen(port, () => {
   console.log(`Allowed API origins: ${allowedOrigins.join(", ")}`);
   console.log(`Frontend dist: ${frontendDist}`);
   console.log(`SQLite database: ${getDatabasePath()}`);
+  console.log(`Backup folder: ${getBackupRoot()}`);
 });

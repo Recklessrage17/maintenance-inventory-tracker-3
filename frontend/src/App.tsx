@@ -136,7 +136,7 @@ import type {
 } from "./types";
 
 const DEFAULT_HEADER_BADGE_TEXT = "Private Local Desktop App";
-const WEBSITE_UPDATE_REMIND_LATER_KEY = "mit3_update_remind_later_sha";
+const WEBSITE_UPDATE_REMIND_LATER_KEY = "mit3_update_wait_sha";
 const MIN_AUTH_LOADING_MS = 1100;
 const RECENT_ACTIVITY_WINDOW_MS = 5 * 60 * 1000;
 const TRASH_RETENTION_MS = 30 * 60 * 1000;
@@ -3318,6 +3318,8 @@ function InventoryApp() {
   const [websiteUpdateMessage, setWebsiteUpdateMessage] = useState("");
   const [isCheckingWebsiteUpdate, setIsCheckingWebsiteUpdate] = useState(false);
   const [isStartingWebsiteUpdate, setIsStartingWebsiteUpdate] = useState(false);
+  const [isWebsiteUpdateRestarting, setIsWebsiteUpdateRestarting] = useState(false);
+  const [websiteUpdateRestartMessage, setWebsiteUpdateRestartMessage] = useState("");
   const [websiteBackupStatus, setWebsiteBackupStatus] = useState<WebsiteBackupStatus | null>(null);
   const [isRunningWebsiteBackup, setIsRunningWebsiteBackup] = useState(false);
   const [remindedLaterUpdateSha, setRemindedLaterUpdateSha] = useState(() => readWebsiteUpdateRemindLaterSha());
@@ -4413,6 +4415,45 @@ function InventoryApp() {
     window.setTimeout(() => setToast((current) => (current === nextToast ? null : current)), 6000);
   }
 
+  function wait(ms: number) {
+    return new Promise((resolve) => window.setTimeout(resolve, ms));
+  }
+
+  async function pollWebsiteHealthForRestart(startedAt: string) {
+    await wait(5000);
+
+    const startedAtMs = Date.parse(startedAt);
+    const deadline = Date.now() + 3 * 60 * 1000;
+
+    while (Date.now() < deadline) {
+      try {
+        const response = await fetch(`${websiteBackendUrl}/api/health`, {
+          cache: "no-store",
+          headers: { Accept: "application/json" }
+        });
+
+        if (response.ok) {
+          const payload = (await response.json().catch(() => null)) as { checkedAt?: string; ok?: boolean } | null;
+          const checkedAtMs = payload?.checkedAt ? Date.parse(payload.checkedAt) : 0;
+
+          if (payload?.ok === true && (!Number.isFinite(startedAtMs) || checkedAtMs > startedAtMs)) {
+            window.location.reload();
+            return;
+          }
+        }
+      } catch {
+        // The backend is expected to be unavailable while the update script rebuilds and restarts it.
+      }
+
+      setWebsiteUpdateRestartMessage(
+        "Update started. MIT3 is rebuilding and will restart. This page will refresh automatically."
+      );
+      await wait(3000);
+    }
+
+    setWebsiteUpdateRestartMessage("MIT3 may still be restarting. Use Refresh Now after the website is back.");
+  }
+
   async function checkWebsiteUpdate(manual = false) {
     if (!showWebsiteModePanel) {
       return;
@@ -4456,13 +4497,20 @@ function InventoryApp() {
   async function startWebsiteUpdate() {
     setIsStartingWebsiteUpdate(true);
     setWebsiteUpdateMessage("");
+    setWebsiteUpdateRestartMessage("");
 
     try {
+      const startedAt = nowIso();
       const result = await runWebsiteUpdate();
 
       if (result.ok) {
-        setWebsiteUpdateMessage("Update started. MIT3 will restart shortly. Wait about 1-2 minutes, then refresh the page.");
-        showToast("success", "Update started. MIT3 will restart shortly.");
+        const message = "Update started. MIT3 is rebuilding and will restart. This page will refresh automatically.";
+
+        setIsWebsiteUpdateRestarting(true);
+        setWebsiteUpdateMessage(message);
+        setWebsiteUpdateRestartMessage(message);
+        showToast("success", "Update started. MIT3 will restart shortly.", "Refresh Now", () => window.location.reload());
+        void pollWebsiteHealthForRestart(startedAt);
         return;
       }
 
@@ -7179,6 +7227,7 @@ function InventoryApp() {
             csvFolderStatus={csvFolderStatus}
             csvFolderSupported={csvFolderSupported}
             data={data}
+            isStartingWebsiteUpdate={isStartingWebsiteUpdate}
             isRunningWebsiteBackup={isRunningWebsiteBackup}
             lastBackupAt={lastBackupAt}
             lastAutoImportAt={lastAutoImportAt}
@@ -7198,6 +7247,7 @@ function InventoryApp() {
             onImportJson={(file) => void handleImportJson(file)}
             onRunBackup={() => void runBackup(data, true)}
             onRunWebsiteBackup={() => void handleRunBackendWebsiteBackup()}
+            onStartWebsiteUpdate={() => void startWebsiteUpdate()}
             onStartScreensaver={startManualScreensaverMode}
             newRecoveryCode={newRecoveryCode}
             onPurgeExpiredDeletedRecords={purgeExpiredDeletedRecordsFromData}
@@ -7287,6 +7337,12 @@ function InventoryApp() {
             status={websiteUpdateStatus}
             onLater={remindWebsiteUpdateLater}
             onUpdate={() => void startWebsiteUpdate()}
+          />
+        )}
+        {isWebsiteUpdateRestarting && (
+          <WebsiteUpdateRestartDialog
+            message={websiteUpdateRestartMessage}
+            onRefresh={() => window.location.reload()}
           />
         )}
         {csvImportPreview && (
@@ -8337,8 +8393,7 @@ function WebsiteUpdateNoticeDialog({
       <section className="review-modal update-available-modal" role="dialog" aria-modal="true" aria-labelledby="website-update-title">
         <h3 id="website-update-title">New MIT3 Update Available</h3>
         <p>
-          A newer version is available from GitHub. Update will backup the SQLite database, pull the latest code,
-          rebuild the website, and restart MIT3.
+          A new update is available. Update will backup the database, pull latest code, rebuild, and restart MIT3.
         </p>
         <div className="review-modal-summary">
           <strong>Branch</strong>
@@ -8354,7 +8409,23 @@ function WebsiteUpdateNoticeDialog({
             {isStarting ? "Starting Update..." : updateStarted ? "Update Started" : "Update Now"}
           </button>
           <button className="btn-muted" type="button" onClick={onLater} disabled={isStarting || updateStarted}>
-            Remind Me Later
+            Wait
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function WebsiteUpdateRestartDialog({ message, onRefresh }: { message: string; onRefresh: () => void }) {
+  return (
+    <div className="review-modal-backdrop" role="presentation">
+      <section className="review-modal update-available-modal" role="dialog" aria-modal="true" aria-labelledby="website-update-restart-title">
+        <h3 id="website-update-restart-title">MIT3 Update Started</h3>
+        <p>{message || "Update started. MIT3 is rebuilding and will restart. This page will refresh automatically."}</p>
+        <div className="review-modal-actions">
+          <button className="btn-primary" type="button" onClick={onRefresh}>
+            Refresh Now
           </button>
         </div>
       </section>
@@ -13790,6 +13861,7 @@ function SettingsPage({
   csvFolderStatus,
   csvFolderSupported,
   data,
+  isStartingWebsiteUpdate,
   isRunningWebsiteBackup,
   lastBackupAt,
   lastAutoImportAt,
@@ -13814,6 +13886,7 @@ function SettingsPage({
   onRestoreDeletedRecord,
   onRunBackup,
   onRunWebsiteBackup,
+  onStartWebsiteUpdate,
   onStartScreensaver,
   isCheckingWebsiteUpdate,
   saveHealthRows,
@@ -13826,6 +13899,7 @@ function SettingsPage({
   csvFolderStatus: string;
   csvFolderSupported: boolean;
   data: AppData;
+  isStartingWebsiteUpdate: boolean;
   isRunningWebsiteBackup: boolean;
   lastBackupAt: string | null;
   lastAutoImportAt: string | null;
@@ -13850,6 +13924,7 @@ function SettingsPage({
   onRestoreDeletedRecord: (deletedRecordId: string) => void;
   onRunBackup: () => void;
   onRunWebsiteBackup: () => void;
+  onStartWebsiteUpdate: () => void;
   onStartScreensaver: () => void;
   isCheckingWebsiteUpdate: boolean;
   saveHealthRows: SaveHealthRow[];
@@ -14201,6 +14276,11 @@ function SettingsPage({
             <button className="btn-primary" type="button" onClick={onCheckWebsiteUpdate} disabled={isCheckingWebsiteUpdate}>
               {isCheckingWebsiteUpdate ? "Checking for Updates..." : "Check for Updates"}
             </button>
+            {websiteUpdateStatus?.ok && websiteUpdateStatus.updateAvailable && (
+              <button className="btn-primary" type="button" onClick={onStartWebsiteUpdate} disabled={isStartingWebsiteUpdate}>
+                {isStartingWebsiteUpdate ? "Starting Update..." : "Update Now"}
+              </button>
+            )}
           </div>
         </section>
       )}
@@ -14357,7 +14437,9 @@ function SettingsPage({
               </div>
               <div className="field-label">
                 Backup Folder
-                <div className={`${statusLineToneClass("good")} min-h-10`}>backend/backups</div>
+                <div className={`${statusLineToneClass(websiteBackupStatus?.backupRoot ? "good" : "warning")} min-h-10`}>
+                  {websiteBackupStatus?.backupRoot ?? "Checking backend backup folder..."}
+                </div>
               </div>
               <div className="field-label">
                 Last JSON backup time

@@ -5,6 +5,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$DefaultRepoRoot = Resolve-Path (Join-Path $ScriptDir "..")
 
 if (-not $NoFolderPicker) {
   Add-Type -AssemblyName System.Windows.Forms
@@ -19,7 +21,7 @@ function Pause-IfInteractive {
 function Pick-Mit3Folder {
   $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
   $dialog.Description = "Pick your Maintenance Inventory Tracker 3 folder"
-  $dialog.SelectedPath = "F:\maintenance-inventory-tracker-3"
+  $dialog.SelectedPath = $DefaultRepoRoot.Path
   $dialog.ShowNewFolderButton = $false
 
   $result = $dialog.ShowDialog()

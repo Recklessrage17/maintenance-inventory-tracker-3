@@ -9,9 +9,12 @@ export type WebsiteBackupFileStatus = {
 
 export type WebsiteBackupStatus = {
   backupFolder: "backend/backups";
+  backupRoot: string;
   checkedAt: string;
+  csvBackupDir: string;
   csvFiles: Record<string, WebsiteBackupFileStatus>;
   errors: string[];
+  jsonBackupDir: string;
   jsonLatest: WebsiteBackupFileStatus;
   lastCsvExportAt: string | null;
   lastJsonBackupAt: string | null;
