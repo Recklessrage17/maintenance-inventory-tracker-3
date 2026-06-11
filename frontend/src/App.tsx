@@ -100,6 +100,11 @@ import {
   setWebsiteAuthSessionUnlocked,
   setupWebsiteAuth
 } from "./lib/websiteAuth";
+import {
+  getWebsiteUpdateStatus,
+  runWebsiteUpdate,
+  type WebsiteUpdateStatus
+} from "./lib/websiteUpdate";
 import { IdleScreensaver } from "./components/layout/IdleScreensaver";
 import jbtUsaRequisitionLogo from "./assets/jbt-usa-requisition-logo.png";
 import type {
@@ -125,6 +130,7 @@ import type {
 } from "./types";
 
 const DEFAULT_HEADER_BADGE_TEXT = "Private Local Desktop App";
+const WEBSITE_UPDATE_REMIND_LATER_KEY = "mit3_update_remind_later_sha";
 const MIN_AUTH_LOADING_MS = 1100;
 const RECENT_ACTIVITY_WINDOW_MS = 5 * 60 * 1000;
 const TRASH_RETENTION_MS = 30 * 60 * 1000;
@@ -166,6 +172,37 @@ const pages: Array<{ id: PageId; label: string }> = [
   { id: "reorder", label: "Reorder List" },
   { id: "history", label: "History Logs" }
 ];
+
+function readWebsiteUpdateRemindLaterSha() {
+  try {
+    return localStorage.getItem(WEBSITE_UPDATE_REMIND_LATER_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function saveWebsiteUpdateRemindLaterSha(remoteSha: string) {
+  try {
+    localStorage.setItem(WEBSITE_UPDATE_REMIND_LATER_KEY, remoteSha);
+  } catch {}
+}
+
+function websiteUpdateStatusMessage(status: WebsiteUpdateStatus | null) {
+  if (!status) {
+    return "Not checked yet.";
+  }
+
+  if (!status.ok) {
+    return status.error || "Could not check updates.";
+  }
+
+  if (status.updateAvailable) {
+    const countLabel = status.behindCount && status.behindCount > 0 ? ` (${status.behindCount} commit${status.behindCount === 1 ? "" : "s"} behind)` : "";
+    return `Update available on ${status.branch}${countLabel}.`;
+  }
+
+  return `Up to date on ${status.branch}.`;
+}
 
 const categoryOptions = [
   "Filters",
@@ -3271,6 +3308,11 @@ function InventoryApp() {
   const [toast, setToast] = useState<ToastState>(null);
   const [backupDialog, setBackupDialog] = useState<BackupDialogState | null>(null);
   const [manualUpdateNotice, setManualUpdateNotice] = useState<ManualInstallerCheckResult | null>(null);
+  const [websiteUpdateStatus, setWebsiteUpdateStatus] = useState<WebsiteUpdateStatus | null>(null);
+  const [websiteUpdateMessage, setWebsiteUpdateMessage] = useState("");
+  const [isCheckingWebsiteUpdate, setIsCheckingWebsiteUpdate] = useState(false);
+  const [isStartingWebsiteUpdate, setIsStartingWebsiteUpdate] = useState(false);
+  const [remindedLaterUpdateSha, setRemindedLaterUpdateSha] = useState(() => readWebsiteUpdateRemindLaterSha());
   const [csvImportPreview, setCsvImportPreview] = useState<CsvImportPreview | null>(null);
   const [csvFolderImportPreview, setCsvFolderImportPreview] = useState<CsvFolderImportPreview | null>(null);
   const [csvFolderStatus, setCsvFolderStatus] = useState("Choose a CSV folder to enable folder export/import.");
@@ -3298,6 +3340,7 @@ function InventoryApp() {
   const hasLoadedRef = useRef(false);
   const startupBackupCheckRef = useRef(false);
   const startupManualUpdateCheckRef = useRef(false);
+  const startupWebsiteUpdateCheckRef = useRef(false);
   const setupPromptDismissedRef = useRef(false);
   const suppressNextAutoBackupRef = useRef(false);
   const pendingTimedBackupRef = useRef(false);
@@ -3545,6 +3588,15 @@ function InventoryApp() {
 
     return () => window.clearInterval(intervalId);
   }, []);
+
+  useEffect(() => {
+    if (!data || !showWebsiteModePanel || startupWebsiteUpdateCheckRef.current) {
+      return;
+    }
+
+    startupWebsiteUpdateCheckRef.current = true;
+    void checkWebsiteUpdate(false);
+  }, [data]);
 
   useEffect(() => {
     const intervalId = window.setInterval(() => {
@@ -4328,6 +4380,71 @@ function InventoryApp() {
 
     setToast(nextToast);
     window.setTimeout(() => setToast((current) => (current === nextToast ? null : current)), 6000);
+  }
+
+  async function checkWebsiteUpdate(manual = false) {
+    if (!showWebsiteModePanel) {
+      return;
+    }
+
+    setIsCheckingWebsiteUpdate(true);
+
+    try {
+      const status = await getWebsiteUpdateStatus();
+
+      setWebsiteUpdateStatus(status);
+      setWebsiteUpdateMessage(manual ? websiteUpdateStatusMessage(status) : "");
+
+      if (manual) {
+        showToast(status.ok ? (status.updateAvailable ? "warning" : "success") : "warning", websiteUpdateStatusMessage(status));
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not check updates.";
+
+      setWebsiteUpdateStatus({ ok: false, error: message, checkedAt: nowIso() });
+      setWebsiteUpdateMessage(manual ? message : "");
+
+      if (manual) {
+        showToast("warning", message);
+      }
+    } finally {
+      setIsCheckingWebsiteUpdate(false);
+    }
+  }
+
+  function remindWebsiteUpdateLater() {
+    if (!websiteUpdateStatus?.ok) {
+      return;
+    }
+
+    saveWebsiteUpdateRemindLaterSha(websiteUpdateStatus.remoteSha);
+    setRemindedLaterUpdateSha(websiteUpdateStatus.remoteSha);
+    setWebsiteUpdateMessage("Update reminder hidden for this GitHub version.");
+  }
+
+  async function startWebsiteUpdate() {
+    setIsStartingWebsiteUpdate(true);
+    setWebsiteUpdateMessage("");
+
+    try {
+      const result = await runWebsiteUpdate();
+
+      if (result.ok) {
+        setWebsiteUpdateMessage("Update started. MIT3 will restart shortly. Wait about 1-2 minutes, then refresh the page.");
+        showToast("success", "Update started. MIT3 will restart shortly.");
+        return;
+      }
+
+      setWebsiteUpdateMessage(result.error);
+      showToast("danger", result.error);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not start the MIT3 website update.";
+
+      setWebsiteUpdateMessage(message);
+      showToast("danger", message);
+    } finally {
+      setIsStartingWebsiteUpdate(false);
+    }
   }
 
   function updateInventoryColumnFilter(key: InventoryColumnFilterKey, value: string) {
@@ -6856,6 +6973,9 @@ function InventoryApp() {
   const watchListVisibilityItem = watchListVisibilityItemId
     ? data.items.find((item) => item.id === watchListVisibilityItemId) ?? null
     : null;
+  const websiteUpdatePromptVisible =
+    showWebsiteModePanel &&
+    Boolean(websiteUpdateStatus?.ok && websiteUpdateStatus.updateAvailable && websiteUpdateStatus.remoteSha !== remindedLaterUpdateSha);
 
   if (isScreensaverModeActive) {
     return (
@@ -6968,10 +7088,13 @@ function InventoryApp() {
             onStartScreensaver={startManualScreensaverMode}
             newRecoveryCode={newRecoveryCode}
             onPurgeExpiredDeletedRecords={purgeExpiredDeletedRecordsFromData}
+            onCheckWebsiteUpdate={() => void checkWebsiteUpdate(true)}
             onDeleteDeletedRecordForever={deleteDeletedRecordForever}
             onRestoreDeletedRecord={restoreDeletedRecord}
             saveHealthRows={saveHealthRows}
+            isCheckingWebsiteUpdate={isCheckingWebsiteUpdate}
             updateSettings={updateSettings}
+            websiteUpdateStatus={websiteUpdateStatus}
           />
         )}
 
@@ -7041,6 +7164,15 @@ function InventoryApp() {
             onLater={() => setManualUpdateNotice(null)}
             onOpenFolder={() => void openManualUpdateFolderFromNotice(manualUpdateNotice)}
             onUpdate={() => void openManualUpdateInstallerFromNotice(manualUpdateNotice)}
+          />
+        )}
+        {!backupDialog && websiteUpdatePromptVisible && websiteUpdateStatus?.ok && (
+          <WebsiteUpdateNoticeDialog
+            isStarting={isStartingWebsiteUpdate}
+            message={websiteUpdateMessage}
+            status={websiteUpdateStatus}
+            onLater={remindWebsiteUpdateLater}
+            onUpdate={() => void startWebsiteUpdate()}
           />
         )}
         {csvImportPreview && (
@@ -8064,6 +8196,51 @@ function ManualUpdateNoticeDialog({
           </button>
           <button className="btn-muted" type="button" onClick={onLater}>
             Later
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function WebsiteUpdateNoticeDialog({
+  isStarting,
+  message,
+  onLater,
+  onUpdate,
+  status
+}: {
+  isStarting: boolean;
+  message: string;
+  onLater: () => void;
+  onUpdate: () => void;
+  status: Extract<WebsiteUpdateStatus, { ok: true }>;
+}) {
+  const updateStarted = message.startsWith("Update started.");
+
+  return (
+    <div className="review-modal-backdrop" role="presentation">
+      <section className="review-modal update-available-modal" role="dialog" aria-modal="true" aria-labelledby="website-update-title">
+        <h3 id="website-update-title">New MIT3 Update Available</h3>
+        <p>
+          A newer version is available from GitHub. Update will backup the SQLite database, pull the latest code,
+          rebuild the website, and restart MIT3.
+        </p>
+        <div className="review-modal-summary">
+          <strong>Branch</strong>
+          <span>{status.branch}</span>
+        </div>
+        <div className="review-modal-summary">
+          <strong>Commits behind</strong>
+          <span>{status.behindCount ?? (status.updateAvailable ? "Available" : "0")}</span>
+        </div>
+        {message && <p className="warning-bar">{message}</p>}
+        <div className="review-modal-actions">
+          <button className="btn-primary" type="button" onClick={onUpdate} disabled={isStarting || updateStarted}>
+            {isStarting ? "Starting Update..." : updateStarted ? "Update Started" : "Update Now"}
+          </button>
+          <button className="btn-muted" type="button" onClick={onLater} disabled={isStarting || updateStarted}>
+            Remind Me Later
           </button>
         </div>
       </section>
@@ -13513,13 +13690,16 @@ function SettingsPage({
   onImportInventoryCsv,
   onImportCsvFolder,
   onImportJson,
+  onCheckWebsiteUpdate,
   onDeleteDeletedRecordForever,
   onPurgeExpiredDeletedRecords,
   onRestoreDeletedRecord,
   onRunBackup,
   onStartScreensaver,
+  isCheckingWebsiteUpdate,
   saveHealthRows,
-  updateSettings
+  updateSettings,
+  websiteUpdateStatus
 }: {
   backupSupported: boolean;
   backupMessage: string;
@@ -13540,13 +13720,16 @@ function SettingsPage({
   onImportInventoryCsv: (file: File) => void;
   onImportCsvFolder: () => void;
   onImportJson: (file: File) => void;
+  onCheckWebsiteUpdate: () => void;
   onDeleteDeletedRecordForever: (deletedRecordId: string) => void;
   onPurgeExpiredDeletedRecords: () => void;
   onRestoreDeletedRecord: (deletedRecordId: string) => void;
   onRunBackup: () => void;
   onStartScreensaver: () => void;
+  isCheckingWebsiteUpdate: boolean;
   saveHealthRows: SaveHealthRow[];
   updateSettings: (settings: AppSettings, auditSummary?: string) => void;
+  websiteUpdateStatus: WebsiteUpdateStatus | null;
 }) {
   const [pdfEngineStatus, setPdfEngineStatus] = useState<PdfEngineStatus | null>(null);
   const [isCheckingPdfEngine, setIsCheckingPdfEngine] = useState(false);
@@ -13703,6 +13886,22 @@ function SettingsPage({
       : "Run a local installer folder check.";
   const csvStatusTone = toneFromStatusMessage(csvFolderStatus, data.settings.csvExportFolderPath ? "good" : "warning");
   const backupStatusTone = toneFromStatusMessage(data.settings.backupStatus || backupMessage);
+  const websiteUpdateTone: HealthTone =
+    websiteUpdateStatus?.ok && websiteUpdateStatus.updateAvailable
+      ? "warning"
+      : websiteUpdateStatus?.ok
+        ? "good"
+        : websiteUpdateStatus
+          ? "danger"
+          : "warning";
+  const websiteUpdateLabel =
+    websiteUpdateStatus?.ok && websiteUpdateStatus.updateAvailable
+      ? "Update available"
+      : websiteUpdateStatus?.ok
+        ? "Up to date"
+        : websiteUpdateStatus
+          ? "Could not check"
+          : "Not checked";
 
   return (
     <section className="settings-popout">
@@ -13840,6 +14039,27 @@ function SettingsPage({
           <p className="settings-status-helper mt-4">
             This website version saves through the backend API and SQLite database. Desktop-only update folders, local PDF engine checks, and CSV folder sync are hidden in website mode.
           </p>
+          <div className="settings-status-panel mt-4">
+            <div className="settings-health-grid update-health-grid">
+              <SettingsHealthCard
+                helper="Checks GitHub for newer commits on the current branch"
+                label="GitHub Update"
+                tone={websiteUpdateTone}
+                value={isCheckingWebsiteUpdate ? "Checking..." : websiteUpdateLabel}
+              />
+              <SettingsHealthCard
+                helper={websiteUpdateStatus?.ok ? `Local ${websiteUpdateStatus.localSha.slice(0, 7)} / Remote ${websiteUpdateStatus.remoteSha.slice(0, 7)}` : "Run a manual check from this browser"}
+                label="Update Status"
+                tone={websiteUpdateTone}
+                value={websiteUpdateStatusMessage(websiteUpdateStatus)}
+              />
+            </div>
+          </div>
+          <div className="mt-4 flex flex-wrap gap-2">
+            <button className="btn-primary" type="button" onClick={onCheckWebsiteUpdate} disabled={isCheckingWebsiteUpdate}>
+              {isCheckingWebsiteUpdate ? "Checking for Updates..." : "Check for Updates"}
+            </button>
+          </div>
         </section>
       )}
 

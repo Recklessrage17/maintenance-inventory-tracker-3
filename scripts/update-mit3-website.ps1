@@ -1,6 +1,20 @@
-﻿$ErrorActionPreference = "Stop"
+param(
+  [string]$RepoRoot,
+  [switch]$NoFolderPicker,
+  [switch]$Restart
+)
 
-Add-Type -AssemblyName System.Windows.Forms
+$ErrorActionPreference = "Stop"
+
+if (-not $NoFolderPicker) {
+  Add-Type -AssemblyName System.Windows.Forms
+}
+
+function Pause-IfInteractive {
+  if (-not $NoFolderPicker) {
+    pause
+  }
+}
 
 function Pick-Mit3Folder {
   $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
@@ -12,7 +26,7 @@ function Pick-Mit3Folder {
 
   if ($result -ne [System.Windows.Forms.DialogResult]::OK) {
     Write-Host "Update canceled. No folder selected." -ForegroundColor Yellow
-    pause
+    Pause-IfInteractive
     exit 0
   }
 
@@ -43,10 +57,19 @@ function Stop-Mit3Website {
   }
 }
 
-$RepoRoot = Pick-Mit3Folder
+if ($NoFolderPicker) {
+  if (-not $RepoRoot) {
+    Write-Host "ERROR: RepoRoot is required when NoFolderPicker is used." -ForegroundColor Red
+    exit 1
+  }
+
+  $RepoRoot = (Resolve-Path $RepoRoot).Path
+} else {
+  $RepoRoot = Pick-Mit3Folder
+}
+
 $BackendDir = Join-Path $RepoRoot "backend"
 $FrontendDir = Join-Path $RepoRoot "frontend"
-$ScriptsDir = Join-Path $RepoRoot "scripts"
 $DbDir = Join-Path $BackendDir "data"
 $DbPath = Join-Path $DbDir "maintenance_inventory_3_web.db"
 $BackupDir = Join-Path $RepoRoot "_mit3_database_backups"
@@ -62,26 +85,26 @@ Write-Host ""
 if (-not (Test-Path (Join-Path $RepoRoot ".git"))) {
   Write-Host "ERROR: This folder is not a Git repo. No .git folder was found." -ForegroundColor Red
   Write-Host "Pick the real maintenance-inventory-tracker-3 repo folder." -ForegroundColor Yellow
-  pause
+  Pause-IfInteractive
   exit 1
 }
 
 if (-not (Test-Path $BackendDir)) {
   Write-Host "ERROR: backend folder was not found." -ForegroundColor Red
-  pause
+  Pause-IfInteractive
   exit 1
 }
 
 if (-not (Test-Path $FrontendDir)) {
   Write-Host "ERROR: frontend folder was not found." -ForegroundColor Red
-  pause
+  Pause-IfInteractive
   exit 1
 }
 
 $nodeVersion = node -v 2>$null
 if (-not $nodeVersion) {
   Write-Host "ERROR: Node.js was not found. Install Node.js 22 LTS first." -ForegroundColor Red
-  pause
+  Pause-IfInteractive
   exit 1
 }
 
@@ -89,6 +112,30 @@ if ($nodeVersion -notmatch "^v22\.") {
   Write-Host "WARNING: MIT3 is built for Node.js 22 LTS." -ForegroundColor Yellow
   Write-Host "Current Node: $nodeVersion" -ForegroundColor Yellow
   Write-Host ""
+}
+
+Set-Location $RepoRoot
+
+Write-Host ""
+Write-Host "Checking Git status..." -ForegroundColor Cyan
+git status --short
+
+$dirty = git status --porcelain
+if ($dirty) {
+  Write-Host ""
+  Write-Host "ERROR: This repo has local changes." -ForegroundColor Red
+  Write-Host "Update stopped so it does not overwrite your work." -ForegroundColor Yellow
+  Write-Host ""
+  Write-Host "Review these changes first:"
+  git status --short
+  Pause-IfInteractive
+  exit 1
+}
+
+if ($NoFolderPicker) {
+  Write-Host ""
+  Write-Host "In-app update requested. Waiting 3 seconds before stopping the website..." -ForegroundColor Yellow
+  Start-Sleep -Seconds 3
 }
 
 Stop-Mit3Website -Port $Port
@@ -106,24 +153,6 @@ if (Test-Path $DbPath) {
 } else {
   Write-Host ""
   Write-Host "No SQLite database found yet. Skipping DB backup." -ForegroundColor Yellow
-}
-
-Set-Location $RepoRoot
-
-Write-Host ""
-Write-Host "Checking Git status..." -ForegroundColor Cyan
-git status --short
-
-$dirty = git status --porcelain
-if ($dirty) {
-  Write-Host ""
-  Write-Host "ERROR: This repo has local changes." -ForegroundColor Red
-  Write-Host "Update stopped so it does not overwrite your work." -ForegroundColor Yellow
-  Write-Host ""
-  Write-Host "Review these changes first:"
-  git status --short
-  pause
-  exit 1
 }
 
 Write-Host ""
@@ -152,9 +181,15 @@ npm run build
 
 Write-Host ""
 Write-Host "Starting MIT3 website..." -ForegroundColor Green
-Start-Job -ScriptBlock {
-  Start-Sleep -Seconds 4
-  Start-Process "http://localhost:4173"
-} | Out-Null
+if (-not $NoFolderPicker -or $Restart) {
+  if (-not $NoFolderPicker) {
+    Start-Job -ScriptBlock {
+      Start-Sleep -Seconds 4
+      Start-Process "http://localhost:4173"
+    } | Out-Null
+  }
 
-npm start
+  npm start
+} else {
+  Write-Host "Restart was not requested. Update complete." -ForegroundColor Green
+}

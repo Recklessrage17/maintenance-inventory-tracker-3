@@ -1,7 +1,9 @@
 import cors from "cors";
 import express, { type RequestHandler } from "express";
+import { execFile, spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import {
   getWebsiteAuthStatus,
   setupWebsiteAuth,
@@ -29,7 +31,21 @@ const allowedOrigins = (process.env.MIT3_ALLOWED_ORIGINS ?? defaultAllowedOrigin
   .filter(Boolean);
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const repoRoot = path.resolve(__dirname, "../..");
 const frontendDist = path.resolve(__dirname, "../../frontend/dist");
+const updateScriptPath = path.join(repoRoot, "scripts", "update-mit3-website.ps1");
+const execFileAsync = promisify(execFile);
+let updateRunInProgress = false;
+
+type GitUpdateStatus = {
+  behindCount: number | null;
+  branch: string;
+  checkedAt: string;
+  localSha: string;
+  ok: true;
+  remoteSha: string;
+  updateAvailable: boolean;
+};
 
 function requestOrigin(request: express.Request) {
   const host = request.get("host");
@@ -62,6 +78,68 @@ function handleAuthError(error: unknown, response: express.Response, fallbackMes
 
   console.error(fallbackMessage, error);
   response.status(500).json({ ok: false, error: fallbackMessage });
+}
+
+async function runGit(args: string[]) {
+  const { stdout } = await execFileAsync("git", args, {
+    cwd: repoRoot,
+    maxBuffer: 1024 * 1024,
+    timeout: 30_000,
+    windowsHide: true
+  });
+
+  return stdout.trim();
+}
+
+function updateErrorMessage(error: unknown, fallback: string) {
+  if (error instanceof Error && error.message.trim()) {
+    return error.message.trim();
+  }
+
+  return fallback;
+}
+
+async function getGitUpdateStatus(): Promise<GitUpdateStatus> {
+  const branch = await runGit(["rev-parse", "--abbrev-ref", "HEAD"]);
+
+  if (!branch || branch === "HEAD") {
+    throw new Error("Cannot check updates while the repository is detached from a branch.");
+  }
+
+  const localSha = await runGit(["rev-parse", "HEAD"]);
+
+  await runGit(["fetch", "--quiet"]);
+
+  const remoteRef = `origin/${branch}`;
+  const remoteSha = await runGit(["rev-parse", remoteRef]);
+  const behindCountText = await runGit(["rev-list", "--count", `HEAD..${remoteRef}`]).catch(() => "");
+  const behindCount = behindCountText ? Number.parseInt(behindCountText, 10) : null;
+
+  return {
+    ok: true,
+    branch,
+    localSha,
+    remoteSha,
+    updateAvailable: localSha !== remoteSha,
+    behindCount: Number.isFinite(behindCount) ? behindCount : null,
+    checkedAt: new Date().toISOString()
+  };
+}
+
+function isIgnoredRuntimeStatusLine(line: string) {
+  const normalizedPath = line.slice(3).replace(/\\/g, "/");
+
+  return /^backend\/data\/.+\.(db|db-shm|db-wal|sqlite|sqlite-shm|sqlite-wal)$/i.test(normalizedPath);
+}
+
+async function getDirtyStatusLines() {
+  const status = await runGit(["status", "--porcelain"]);
+
+  return status
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd())
+    .filter(Boolean)
+    .filter((line) => !isIgnoredRuntimeStatusLine(line));
 }
 
 app.use(express.json({ limit: "50mb" }));
@@ -111,6 +189,75 @@ app.post("/api/auth/login", (request, response) => {
 
 app.post("/api/auth/logout", (_request, response) => {
   response.json({ ok: true });
+});
+
+app.get("/api/update/status", async (_request, response) => {
+  try {
+    response.json(await getGitUpdateStatus());
+  } catch (error) {
+    response.status(200).json({
+      ok: false,
+      error: updateErrorMessage(error, "Could not check GitHub update status."),
+      checkedAt: new Date().toISOString()
+    });
+  }
+});
+
+app.post("/api/update/run", async (_request, response) => {
+  if (updateRunInProgress) {
+    response.status(409).json({ ok: false, error: "An MIT3 website update is already running." });
+    return;
+  }
+
+  try {
+    const dirtyLines = await getDirtyStatusLines();
+
+    if (dirtyLines.length > 0) {
+      response.status(409).json({
+        ok: false,
+        error: "Local changes found. Use Update MIT3 Website.cmd or commit changes before updating.",
+        dirtyFiles: dirtyLines
+      });
+      return;
+    }
+
+    updateRunInProgress = true;
+
+    const child = spawn(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        updateScriptPath,
+        "-RepoRoot",
+        repoRoot,
+        "-NoFolderPicker",
+        "-Restart"
+      ],
+      {
+        cwd: repoRoot,
+        detached: true,
+        stdio: "ignore",
+        windowsHide: true
+      }
+    );
+
+    child.on("error", (error) => {
+      updateRunInProgress = false;
+      console.error("Could not start MIT3 website update:", error);
+    });
+    child.unref();
+
+    response.json({ ok: true, message: "Update started. Website will restart shortly." });
+  } catch (error) {
+    updateRunInProgress = false;
+    response.status(500).json({
+      ok: false,
+      error: updateErrorMessage(error, "Could not start MIT3 website update.")
+    });
+  }
 });
 
 app.get("/api/health", (_request, response) => {
