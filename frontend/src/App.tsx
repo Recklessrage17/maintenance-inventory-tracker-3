@@ -14020,6 +14020,10 @@ function SettingsPage({
           />
           <div className="settings-status-panel website-mode-grid">
             <div className="pdf-engine-row">
+              <span>Runtime</span>
+              <strong>Website Browser</strong>
+            </div>
+            <div className="pdf-engine-row">
               <span>Backend URL</span>
               <strong>{websiteBackendUrl}</strong>
             </div>

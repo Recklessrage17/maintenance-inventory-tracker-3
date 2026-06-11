@@ -10,12 +10,16 @@ export function hasTauriRuntime() {
   return typeof window !== "undefined" && Boolean((window as TauriWindow).__TAURI__);
 }
 
+export function isBackendServedWebsite() {
+  return typeof window !== "undefined" && window.location.port === "4173";
+}
+
 export function isWebsiteBrowserMode() {
-  return API_DATA_SOURCE && !hasTauriRuntime();
+  return !hasTauriRuntime() && (API_DATA_SOURCE || isBackendServedWebsite());
 }
 
 export function getApiBaseUrl() {
-  if (isWebsiteBrowserMode() && typeof window !== "undefined" && window.location.port === "4173") {
+  if (isWebsiteBrowserMode() && isBackendServedWebsite()) {
     return "";
   }
 
