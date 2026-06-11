@@ -1,5 +1,6 @@
 import type { AppData } from "../types";
 import { getApiBaseUrl, isWebsiteBrowserMode } from "./runtimeMode";
+import type { WebsiteBackupStatus } from "./websiteBackup";
 
 const DB_NAME = "maintenance-inventory-tracker";
 const DB_VERSION = 1;
@@ -13,6 +14,12 @@ type AppDataRow = {
 
 type ApiLoadResponse = {
   data: AppData | null;
+};
+
+export type ApiSaveResponse = {
+  backup?: WebsiteBackupStatus;
+  ok: boolean;
+  savedAt?: string;
 };
 
 function apiUrl(path: string) {
@@ -45,6 +52,8 @@ async function saveAppDataToApi(value: AppData) {
   if (!response.ok) {
     throw new Error(`App data API save failed with HTTP ${response.status}.`);
   }
+
+  return (await response.json()) as ApiSaveResponse;
 }
 
 const openDatabase = () =>
@@ -110,8 +119,7 @@ export const loadAppData = async () => {
 
 export const saveAppData = async (value: AppData) => {
   if (isWebsiteBrowserMode()) {
-    await saveAppDataToApi(value);
-    return;
+    return saveAppDataToApi(value);
   }
 
   await saveAppDataToIndexedDb(value);

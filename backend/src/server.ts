@@ -1,9 +1,15 @@
 import cors from "cors";
 import express, { type RequestHandler } from "express";
 import { execFile, spawn } from "node:child_process";
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import {
+  getBackupDownloadPath,
+  getBackupStatus,
+  runWebsiteBackup
+} from "./backups.js";
 import {
   getWebsiteAuthStatus,
   setupWebsiteAuth,
@@ -97,6 +103,10 @@ function updateErrorMessage(error: unknown, fallback: string) {
   }
 
   return fallback;
+}
+
+function backupErrorMessage(error: unknown) {
+  return error instanceof Error && error.message.trim() ? error.message.trim() : "Backend backup failed.";
 }
 
 async function getGitUpdateStatus(): Promise<GitUpdateStatus> {
@@ -298,7 +308,22 @@ app.put("/api/app-data", (request, response) => {
 
   try {
     const result = saveNormalizedTablesFromAppData(data as AppData);
-    response.json({ ok: true, ...result });
+
+    try {
+      const backup = runWebsiteBackup(data as AppData);
+
+      response.json({ ok: true, ...result, backup });
+    } catch (backupError) {
+      const error = backupErrorMessage(backupError);
+
+      console.error("Error writing website backup:", backupError);
+      response.status(500).json({
+        ok: false,
+        error: "App data saved to SQLite, but backend backup failed.",
+        backup: getBackupStatus([error]),
+        sqlite: result
+      });
+    }
   } catch (err) {
     console.error("Error saving normalized tables:", err);
     // Attempt at least to save snapshot as fallback
@@ -310,6 +335,53 @@ app.put("/api/app-data", (request, response) => {
       response.status(500).json({ ok: false, error: "Failed to save app data." });
     }
   }
+});
+
+app.get("/api/backup/status", (_request, response) => {
+  response.json(getBackupStatus());
+});
+
+app.post("/api/backup/run", (_request, response) => {
+  const loadResult = loadAppDataWithSource();
+
+  if (!loadResult.data) {
+    response.status(404).json({ ok: false, error: "No app data is available to back up." });
+    return;
+  }
+
+  try {
+    const backup = runWebsiteBackup(loadResult.data);
+
+    response.json({ ok: backup.status !== "failed", backup });
+  } catch (error) {
+    const message = backupErrorMessage(error);
+
+    console.error("Error running website backup:", error);
+    response.status(500).json({ ok: false, error: message, backup: getBackupStatus([message]) });
+  }
+});
+
+function sendBackupDownload(response: express.Response, kind: "history" | "inventory" | "json", fileName: string, contentType: string) {
+  const filePath = getBackupDownloadPath(kind);
+
+  if (!fs.existsSync(filePath)) {
+    response.status(404).json({ ok: false, error: `${fileName} has not been created yet. Run Backup Now first.` });
+    return;
+  }
+
+  response.download(filePath, fileName, { headers: { "Content-Type": contentType } });
+}
+
+app.get("/api/backup/download/json", (_request, response) => {
+  sendBackupDownload(response, "json", "maintenance-inventory-latest.json", "application/json; charset=utf-8");
+});
+
+app.get("/api/backup/download/csv/inventory", (_request, response) => {
+  sendBackupDownload(response, "inventory", "inventory.csv", "text/csv; charset=utf-8");
+});
+
+app.get("/api/backup/download/csv/history", (_request, response) => {
+  sendBackupDownload(response, "history", "history.csv", "text/csv; charset=utf-8");
 });
 
 app.get("/api/normalized-summary", (_request, response) => {

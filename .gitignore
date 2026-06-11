@@ -32,3 +32,9 @@ backend/data/*.db-wal
 backend/data/*.sqlite
 backend/data/*.sqlite-shm
 backend/data/*.sqlite-wal
+
+# Website-mode generated backups
+backend/backups/**
+!backend/backups/
+!backend/backups/.gitkeep
+!backend/backups/README.txt

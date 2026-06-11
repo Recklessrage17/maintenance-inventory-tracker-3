@@ -105,6 +105,12 @@ import {
   runWebsiteUpdate,
   type WebsiteUpdateStatus
 } from "./lib/websiteUpdate";
+import {
+  downloadWebsiteBackupFile,
+  getWebsiteBackupStatus,
+  runWebsiteBackup as runBackendWebsiteBackup,
+  type WebsiteBackupStatus
+} from "./lib/websiteBackup";
 import { IdleScreensaver } from "./components/layout/IdleScreensaver";
 import jbtUsaRequisitionLogo from "./assets/jbt-usa-requisition-logo.png";
 import type {
@@ -3312,6 +3318,8 @@ function InventoryApp() {
   const [websiteUpdateMessage, setWebsiteUpdateMessage] = useState("");
   const [isCheckingWebsiteUpdate, setIsCheckingWebsiteUpdate] = useState(false);
   const [isStartingWebsiteUpdate, setIsStartingWebsiteUpdate] = useState(false);
+  const [websiteBackupStatus, setWebsiteBackupStatus] = useState<WebsiteBackupStatus | null>(null);
+  const [isRunningWebsiteBackup, setIsRunningWebsiteBackup] = useState(false);
   const [remindedLaterUpdateSha, setRemindedLaterUpdateSha] = useState(() => readWebsiteUpdateRemindLaterSha());
   const [csvImportPreview, setCsvImportPreview] = useState<CsvImportPreview | null>(null);
   const [csvFolderImportPreview, setCsvFolderImportPreview] = useState<CsvFolderImportPreview | null>(null);
@@ -3597,6 +3605,14 @@ function InventoryApp() {
     startupWebsiteUpdateCheckRef.current = true;
     void checkWebsiteUpdate(false);
   }, [data]);
+
+  useEffect(() => {
+    if (!data || !showWebsiteModePanel || !isSettingsOpen) {
+      return;
+    }
+
+    void refreshWebsiteBackupStatus();
+  }, [data, isSettingsOpen]);
 
   useEffect(() => {
     const intervalId = window.setInterval(() => {
@@ -4170,7 +4186,22 @@ function InventoryApp() {
 
     const timeoutId = window.setTimeout(() => {
       saveAppData(data)
-        .then(async () => {
+        .then(async (saveResult) => {
+          if (showWebsiteModePanel) {
+            if (saveResult?.backup) {
+              applyWebsiteBackupStatus(saveResult.backup);
+            }
+
+            setBackupIndicator(saveResult?.backup?.status === "failed" ? "failed" : "done");
+            setBackupMessage(
+              saveResult?.backup
+                ? websiteBackupMessageFromStatus(saveResult.backup)
+                : `Saved to backend ${formatDateTime(data.lastSavedAt)}`
+            );
+            window.setTimeout(() => setBackupIndicator((current) => (current === "done" ? "saved" : current)), 2000);
+            return;
+          }
+
           const hasBackupTarget = Boolean(data.settings.backupDirectoryPath || data.settings.backupDirectoryHandle);
 
           if (!skipAutoBackup && data.settings.backupEnabled && hasBackupTarget) {
@@ -5042,6 +5073,83 @@ function InventoryApp() {
           }
         : current
     );
+  }
+
+  function websiteBackupMessageFromStatus(status: WebsiteBackupStatus) {
+    if (status.status === "healthy") {
+      return status.lastJsonBackupAt ? `Backend backup healthy ${formatDateTime(status.lastJsonBackupAt)}` : "Backend backup healthy.";
+    }
+
+    if (status.status === "warning") {
+      return status.message || "Backend backup has a warning.";
+    }
+
+    return status.message || "Backend backup failed.";
+  }
+
+  function applyWebsiteBackupStatus(status: WebsiteBackupStatus) {
+    setWebsiteBackupStatus(status);
+
+    if (status.lastJsonBackupAt) {
+      setLastBackupAt(status.lastJsonBackupAt);
+    }
+
+    if (status.lastCsvExportAt) {
+      setCsvFolderStatus(`Backend CSV export updated ${formatDateTime(status.lastCsvExportAt)}.`);
+    }
+
+    setBackupMessage(websiteBackupMessageFromStatus(status));
+  }
+
+  async function refreshWebsiteBackupStatus() {
+    if (!showWebsiteModePanel) {
+      return;
+    }
+
+    try {
+      applyWebsiteBackupStatus(await getWebsiteBackupStatus());
+    } catch (error) {
+      setBackupIndicator("failed");
+      setBackupMessage(error instanceof Error ? error.message : "Could not check backend backup status.");
+    }
+  }
+
+  async function handleRunBackendWebsiteBackup() {
+    if (!data) {
+      return;
+    }
+
+    setIsRunningWebsiteBackup(true);
+    setBackupIndicator("running");
+    setBackupMessage("Backend backup running");
+
+    try {
+      const status = await runBackendWebsiteBackup();
+
+      applyWebsiteBackupStatus(status);
+      setBackupIndicator(status.status === "failed" ? "failed" : "done");
+      showToast(status.status === "failed" ? "danger" : "success", websiteBackupMessageFromStatus(status));
+      window.setTimeout(() => setBackupIndicator((current) => (current === "done" ? "saved" : current)), 2000);
+    } catch (error) {
+      setBackupIndicator("failed");
+      setBackupMessage(error instanceof Error ? error.message : "Backend backup failed.");
+      showToast("danger", error instanceof Error ? error.message : "Backend backup failed.");
+    } finally {
+      setIsRunningWebsiteBackup(false);
+    }
+  }
+
+  async function handleDownloadWebsiteBackup(kind: "history-csv" | "inventory-csv" | "json") {
+    if (!ensurePermission("reports:export")) {
+      return;
+    }
+
+    try {
+      await downloadWebsiteBackupFile(kind);
+      showToast("success", "Backend backup download started.");
+    } catch (error) {
+      showToast("danger", error instanceof Error ? error.message : "Could not download backend backup.");
+    }
   }
 
   function applyCsvFolderSelection(directoryPath: string) {
@@ -7071,6 +7179,7 @@ function InventoryApp() {
             csvFolderStatus={csvFolderStatus}
             csvFolderSupported={csvFolderSupported}
             data={data}
+            isRunningWebsiteBackup={isRunningWebsiteBackup}
             lastBackupAt={lastBackupAt}
             lastAutoImportAt={lastAutoImportAt}
             onChooseBackupFolder={() => void handleChooseBackupFolder()}
@@ -7080,11 +7189,15 @@ function InventoryApp() {
             onDismissRecoveryCode={() => setNewRecoveryCode("")}
             onDownloadHistoryCsv={handleExportHistoryCsv}
             onDownloadInventoryCsv={handleExportCsv}
+            onDownloadWebsiteBackupHistoryCsv={() => void handleDownloadWebsiteBackup("history-csv")}
+            onDownloadWebsiteBackupInventoryCsv={() => void handleDownloadWebsiteBackup("inventory-csv")}
+            onDownloadWebsiteBackupJson={() => void handleDownloadWebsiteBackup("json")}
             onExportCsvFolderNow={() => void handleExportCsvFolderNow()}
             onImportInventoryCsv={(file) => void handleImportCsv(file)}
             onImportCsvFolder={() => void handlePrepareCsvFolderImport()}
             onImportJson={(file) => void handleImportJson(file)}
             onRunBackup={() => void runBackup(data, true)}
+            onRunWebsiteBackup={() => void handleRunBackendWebsiteBackup()}
             onStartScreensaver={startManualScreensaverMode}
             newRecoveryCode={newRecoveryCode}
             onPurgeExpiredDeletedRecords={purgeExpiredDeletedRecordsFromData}
@@ -7094,6 +7207,7 @@ function InventoryApp() {
             saveHealthRows={saveHealthRows}
             isCheckingWebsiteUpdate={isCheckingWebsiteUpdate}
             updateSettings={updateSettings}
+            websiteBackupStatus={websiteBackupStatus}
             websiteUpdateStatus={websiteUpdateStatus}
           />
         )}
@@ -13676,6 +13790,7 @@ function SettingsPage({
   csvFolderStatus,
   csvFolderSupported,
   data,
+  isRunningWebsiteBackup,
   lastBackupAt,
   lastAutoImportAt,
   newRecoveryCode,
@@ -13686,6 +13801,9 @@ function SettingsPage({
   onDismissRecoveryCode,
   onDownloadHistoryCsv,
   onDownloadInventoryCsv,
+  onDownloadWebsiteBackupHistoryCsv,
+  onDownloadWebsiteBackupInventoryCsv,
+  onDownloadWebsiteBackupJson,
   onExportCsvFolderNow,
   onImportInventoryCsv,
   onImportCsvFolder,
@@ -13695,10 +13813,12 @@ function SettingsPage({
   onPurgeExpiredDeletedRecords,
   onRestoreDeletedRecord,
   onRunBackup,
+  onRunWebsiteBackup,
   onStartScreensaver,
   isCheckingWebsiteUpdate,
   saveHealthRows,
   updateSettings,
+  websiteBackupStatus,
   websiteUpdateStatus
 }: {
   backupSupported: boolean;
@@ -13706,6 +13826,7 @@ function SettingsPage({
   csvFolderStatus: string;
   csvFolderSupported: boolean;
   data: AppData;
+  isRunningWebsiteBackup: boolean;
   lastBackupAt: string | null;
   lastAutoImportAt: string | null;
   newRecoveryCode: string;
@@ -13716,6 +13837,9 @@ function SettingsPage({
   onDismissRecoveryCode: () => void;
   onDownloadHistoryCsv: () => void;
   onDownloadInventoryCsv: () => void;
+  onDownloadWebsiteBackupHistoryCsv: () => void;
+  onDownloadWebsiteBackupInventoryCsv: () => void;
+  onDownloadWebsiteBackupJson: () => void;
   onExportCsvFolderNow: () => void;
   onImportInventoryCsv: (file: File) => void;
   onImportCsvFolder: () => void;
@@ -13725,10 +13849,12 @@ function SettingsPage({
   onPurgeExpiredDeletedRecords: () => void;
   onRestoreDeletedRecord: (deletedRecordId: string) => void;
   onRunBackup: () => void;
+  onRunWebsiteBackup: () => void;
   onStartScreensaver: () => void;
   isCheckingWebsiteUpdate: boolean;
   saveHealthRows: SaveHealthRow[];
   updateSettings: (settings: AppSettings, auditSummary?: string) => void;
+  websiteBackupStatus: WebsiteBackupStatus | null;
   websiteUpdateStatus: WebsiteUpdateStatus | null;
 }) {
   const [pdfEngineStatus, setPdfEngineStatus] = useState<PdfEngineStatus | null>(null);
@@ -13886,6 +14012,18 @@ function SettingsPage({
       : "Run a local installer folder check.";
   const csvStatusTone = toneFromStatusMessage(csvFolderStatus, data.settings.csvExportFolderPath ? "good" : "warning");
   const backupStatusTone = toneFromStatusMessage(data.settings.backupStatus || backupMessage);
+  const websiteBackupTone: HealthTone = websiteBackupStatus?.status === "healthy"
+    ? "good"
+    : websiteBackupStatus?.status === "failed"
+      ? "danger"
+      : "warning";
+  const websiteBackupLabel = websiteBackupStatus
+    ? websiteBackupStatus.status === "healthy"
+      ? "Healthy"
+      : websiteBackupStatus.status === "failed"
+        ? "Failed"
+        : "Warning"
+    : "Not checked";
   const websiteUpdateTone: HealthTone =
     websiteUpdateStatus?.ok && websiteUpdateStatus.updateAvailable
       ? "warning"
@@ -14210,113 +14348,186 @@ function SettingsPage({
 
       <section className="panel">
         <SectionHeader kicker="Backup" title="Backup Settings" />
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-          <label className="field-label">
-            Auto Backup
-            <select
-              className="input"
-              value={data.settings.backupEnabled ? "on" : "off"}
-              onChange={(event) =>
-                updateSettings(
-                  { ...data.settings, backupEnabled: event.target.value === "on" },
-                  "Auto JSON backup setting was updated."
-                )
-              }
-            >
-              <option value="off">Off</option>
-              <option value="on">On</option>
-            </select>
-          </label>
-          <label className="field-label">
-            Auto Import
-            <select
-              className="input"
-              value={data.settings.autoImportEnabled ? "on" : "off"}
-              onChange={(event) =>
-                updateSettings(
-                  { ...data.settings, autoImportEnabled: event.target.value === "on" },
-                  "Auto import setting was updated."
-                )
-              }
-            >
-              <option value="on">On</option>
-              <option value="off">Off</option>
-            </select>
-          </label>
-          <label className="field-label">
-            Backup interval
-            <select
-              className="input"
-              value={data.settings.backupInterval}
-              onChange={(event) =>
-                updateSettings(
-                  { ...data.settings, backupInterval: event.target.value as BackupInterval },
-                  "Backup interval was updated."
-                )
-              }
-            >
-              <option value="change">After every change</option>
-              <option value="5min">Every 5 minutes</option>
-              <option value="15min">Every 15 minutes</option>
-              <option value="manual">Manual only</option>
-            </select>
-          </label>
-          <div className="field-label">
-            Current selected backup folder
-            <div className={`${statusLineToneClass(data.settings.backupDirectoryName ? "good" : "warning")} min-h-10`}>
-              {data.settings.backupDirectoryName || "No folder selected"}
+        {showWebsiteModePanel ? (
+          <>
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+              <div className="field-label">
+                Backup Mode
+                <div className={`${statusLineToneClass("good")} min-h-10`}>Backend Auto Backup</div>
+              </div>
+              <div className="field-label">
+                Backup Folder
+                <div className={`${statusLineToneClass("good")} min-h-10`}>backend/backups</div>
+              </div>
+              <div className="field-label">
+                Last JSON backup time
+                <div className={`${statusLineToneClass(websiteBackupStatus?.lastJsonBackupAt ? "good" : "warning")} min-h-10`}>
+                  {websiteBackupStatus?.lastJsonBackupAt ? formatDateTime(websiteBackupStatus.lastJsonBackupAt) : "No JSON backup has run yet"}
+                </div>
+              </div>
+              <div className="field-label">
+                Last CSV export time
+                <div className={`${statusLineToneClass(websiteBackupStatus?.lastCsvExportAt ? "good" : "warning")} min-h-10`}>
+                  {websiteBackupStatus?.lastCsvExportAt ? formatDateTime(websiteBackupStatus.lastCsvExportAt) : "No CSV export has run yet"}
+                </div>
+              </div>
+              <div className="field-label">
+                Backup status
+                <div className={`${statusLineToneClass(websiteBackupTone)} min-h-10`}>
+                  {websiteBackupLabel}
+                  {websiteBackupStatus?.message && websiteBackupStatus.message !== websiteBackupLabel ? ` - ${websiteBackupStatus.message}` : ""}
+                </div>
+              </div>
+              <div className="field-label">
+                Auto Backup
+                <div className={`${statusLineToneClass("good")} min-h-10`}>On</div>
+              </div>
+              <div className="field-label">
+                Backup Interval
+                <div className={`${statusLineToneClass("good")} min-h-10`}>After every saved change</div>
+              </div>
             </div>
-          </div>
-          <div className="field-label">
-            Last backup time
-            <div className={`${statusLineToneClass(lastBackupAt || data.settings.lastBackupTimestamp ? "good" : "warning")} min-h-10`}>
-              {lastBackupAt || data.settings.lastBackupTimestamp
-                ? formatDateTime(lastBackupAt || data.settings.lastBackupTimestamp)
-                : "No backup has run yet"}
+            <div className="mt-4 flex flex-wrap gap-2">
+              <button className="btn-primary" type="button" onClick={onRunWebsiteBackup} disabled={isRunningWebsiteBackup}>
+                {isRunningWebsiteBackup ? "Backing Up..." : "Backup Now"}
+              </button>
+              <button className="btn-muted" type="button" onClick={onDownloadWebsiteBackupJson}>
+                Download Latest JSON
+              </button>
+              <button className="btn-muted" type="button" onClick={onDownloadWebsiteBackupInventoryCsv}>
+                Download Inventory CSV
+              </button>
+              <button className="btn-muted" type="button" onClick={onDownloadWebsiteBackupHistoryCsv}>
+                Download History CSV
+              </button>
+              <label className="btn-muted cursor-pointer">
+                Import JSON
+                <input
+                  hidden
+                  accept=".json,application/json"
+                  type="file"
+                  onChange={(event) => {
+                    const file = event.target.files?.[0];
+                    if (file) {
+                      onImportJson(file);
+                    }
+                    event.currentTarget.value = "";
+                  }}
+                />
+              </label>
             </div>
-          </div>
-          <div className="field-label">
-            Last auto import time
-            <div className={`${statusLineToneClass(lastAutoImportAt || data.settings.lastAutoImportTimestamp ? "good" : "warning")} min-h-10`}>
-              {lastAutoImportAt || data.settings.lastAutoImportTimestamp
-                ? formatDateTime(lastAutoImportAt || data.settings.lastAutoImportTimestamp)
-                : "Auto import has not run yet"}
+          </>
+        ) : (
+          <>
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+              <label className="field-label">
+                Auto Backup
+                <select
+                  className="input"
+                  value={data.settings.backupEnabled ? "on" : "off"}
+                  onChange={(event) =>
+                    updateSettings(
+                      { ...data.settings, backupEnabled: event.target.value === "on" },
+                      "Auto JSON backup setting was updated."
+                    )
+                  }
+                >
+                  <option value="off">Off</option>
+                  <option value="on">On</option>
+                </select>
+              </label>
+              <label className="field-label">
+                Auto Import
+                <select
+                  className="input"
+                  value={data.settings.autoImportEnabled ? "on" : "off"}
+                  onChange={(event) =>
+                    updateSettings(
+                      { ...data.settings, autoImportEnabled: event.target.value === "on" },
+                      "Auto import setting was updated."
+                    )
+                  }
+                >
+                  <option value="on">On</option>
+                  <option value="off">Off</option>
+                </select>
+              </label>
+              <label className="field-label">
+                Backup interval
+                <select
+                  className="input"
+                  value={data.settings.backupInterval}
+                  onChange={(event) =>
+                    updateSettings(
+                      { ...data.settings, backupInterval: event.target.value as BackupInterval },
+                      "Backup interval was updated."
+                    )
+                  }
+                >
+                  <option value="change">After every change</option>
+                  <option value="5min">Every 5 minutes</option>
+                  <option value="15min">Every 15 minutes</option>
+                  <option value="manual">Manual only</option>
+                </select>
+              </label>
+              <div className="field-label">
+                Current selected backup folder
+                <div className={`${statusLineToneClass(data.settings.backupDirectoryName ? "good" : "warning")} min-h-10`}>
+                  {data.settings.backupDirectoryName || "No folder selected"}
+                </div>
+              </div>
+              <div className="field-label">
+                Last backup time
+                <div className={`${statusLineToneClass(lastBackupAt || data.settings.lastBackupTimestamp ? "good" : "warning")} min-h-10`}>
+                  {lastBackupAt || data.settings.lastBackupTimestamp
+                    ? formatDateTime(lastBackupAt || data.settings.lastBackupTimestamp)
+                    : "No backup has run yet"}
+                </div>
+              </div>
+              <div className="field-label">
+                Last auto import time
+                <div className={`${statusLineToneClass(lastAutoImportAt || data.settings.lastAutoImportTimestamp ? "good" : "warning")} min-h-10`}>
+                  {lastAutoImportAt || data.settings.lastAutoImportTimestamp
+                    ? formatDateTime(lastAutoImportAt || data.settings.lastAutoImportTimestamp)
+                    : "Auto import has not run yet"}
+                </div>
+              </div>
+              <div className="field-label xl:col-span-3">
+                Backup status
+                <div className={`${statusLineToneClass(backupStatusTone)} min-h-10`}>{data.settings.backupStatus || backupMessage}</div>
+              </div>
             </div>
-          </div>
-          <div className="field-label xl:col-span-3">
-            Backup status
-            <div className={`${statusLineToneClass(backupStatusTone)} min-h-10`}>{data.settings.backupStatus || backupMessage}</div>
-          </div>
-        </div>
-        <div className="mt-4 flex flex-wrap gap-2">
-          <button className="btn-primary" type="button" onClick={onChooseBackupFolder} disabled={!backupSupported}>
-            Choose Backup Folder
-          </button>
-          <button className="btn-muted" type="button" onClick={onRunBackup}>
-            Backup Now
-          </button>
-          <label className="btn-muted cursor-pointer">
-            Import JSON
-            <input
-              hidden
-              accept=".json,application/json"
-              type="file"
-              onChange={(event) => {
-                const file = event.target.files?.[0];
-                if (file) {
-                  onImportJson(file);
-                }
-                event.currentTarget.value = "";
-              }}
-            />
-          </label>
-          <p className="w-full text-xs font-semibold text-slate-500">
-            Recommended folder: {BACKUP_RECOMMENDED_FOLDER}
-          </p>
-          <p className="w-full text-xs font-semibold text-slate-500">
-            Main backup file: {BACKUP_LATEST_FILENAME}
-          </p>
-        </div>
+            <div className="mt-4 flex flex-wrap gap-2">
+              <button className="btn-primary" type="button" onClick={onChooseBackupFolder} disabled={!backupSupported}>
+                Choose Backup Folder
+              </button>
+              <button className="btn-muted" type="button" onClick={onRunBackup}>
+                Backup Now
+              </button>
+              <label className="btn-muted cursor-pointer">
+                Import JSON
+                <input
+                  hidden
+                  accept=".json,application/json"
+                  type="file"
+                  onChange={(event) => {
+                    const file = event.target.files?.[0];
+                    if (file) {
+                      onImportJson(file);
+                    }
+                    event.currentTarget.value = "";
+                  }}
+                />
+              </label>
+              <p className="w-full text-xs font-semibold text-slate-500">
+                Recommended folder: {BACKUP_RECOMMENDED_FOLDER}
+              </p>
+              <p className="w-full text-xs font-semibold text-slate-500">
+                Main backup file: {BACKUP_LATEST_FILENAME}
+              </p>
+            </div>
+          </>
+        )}
       </section>
 
       <section className="panel">
@@ -14347,6 +14558,9 @@ function SettingsPage({
             />
             <p className="w-full text-sm font-semibold text-slate-300">
               Website mode uses browser download/upload. Folder sync is only available in the desktop app.
+            </p>
+            <p className="w-full text-sm font-semibold text-slate-300">
+              Website mode auto-saves backend CSV files after each successful change. Browser downloads are manual copies.
             </p>
           </div>
         ) : (
