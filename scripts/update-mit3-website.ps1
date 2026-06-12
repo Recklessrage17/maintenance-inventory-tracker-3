@@ -7,6 +7,9 @@ param(
 $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $DefaultRepoRoot = Resolve-Path (Join-Path $ScriptDir "..")
+$Status = $null
+$StatusPath = $null
+$LogFile = $null
 
 if (-not $NoFolderPicker) {
   Add-Type -AssemblyName System.Windows.Forms
@@ -35,16 +38,87 @@ function Pick-Mit3Folder {
   return $dialog.SelectedPath
 }
 
+function Write-UpdateLog {
+  param([string]$Message)
+
+  $line = "[{0}] {1}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $Message
+  Write-Host $Message
+
+  if ($LogFile) {
+    Add-Content -Path $LogFile -Value $line -Encoding UTF8
+  }
+}
+
+function Save-UpdateStatus {
+  param(
+    [string]$Phase,
+    [string]$Message,
+    [bool]$Running = $true,
+    [Nullable[bool]]$Ok = $null,
+    [string]$ErrorMessage = $null
+  )
+
+  if (-not $StatusPath -or -not $Status) {
+    return
+  }
+
+  $now = (Get-Date).ToUniversalTime().ToString("o")
+  $Status.running = $Running
+  $Status.phase = $Phase
+  $Status.message = $Message
+  $Status.updatedAt = $now
+  $Status.ok = $Ok
+  $Status.error = $ErrorMessage
+
+  if (-not $Running) {
+    $Status.completedAt = $now
+  }
+
+  if ($Phase -eq "complete") {
+    try { $Status.afterSha = (& git -C $Status.repoRoot rev-parse HEAD 2>$null) } catch {}
+  }
+
+  $Status | ConvertTo-Json -Depth 4 | Set-Content -Path $StatusPath -Encoding UTF8
+}
+
+function Invoke-LoggedCommand {
+  param(
+    [string]$FilePath,
+    [string[]]$Arguments,
+    [string]$WorkingDirectory,
+    [string]$Description
+  )
+
+  Write-UpdateLog "COMMAND: $Description"
+  Write-UpdateLog "WORKDIR: $WorkingDirectory"
+  Write-UpdateLog ("RUN: {0} {1}" -f $FilePath, ($Arguments -join " "))
+
+  Push-Location $WorkingDirectory
+  try {
+    $output = & $FilePath @Arguments 2>&1
+    $exitCode = $LASTEXITCODE
+
+    foreach ($line in $output) {
+      Write-UpdateLog ([string]$line)
+    }
+
+    if ($exitCode -ne 0) {
+      throw "Command failed with exit code $exitCode`: $Description"
+    }
+  } finally {
+    Pop-Location
+  }
+}
+
 function Stop-Mit3Website {
   param([int]$Port = 4173)
 
-  Write-Host ""
-  Write-Host "Stopping website on port $Port if running..." -ForegroundColor Yellow
+  Write-UpdateLog "Stopping website on port $Port if running..."
 
   $connections = Get-NetTCPConnection -LocalPort $Port -ErrorAction SilentlyContinue
 
   if (-not $connections) {
-    Write-Host "Nothing running on port $Port." -ForegroundColor Gray
+    Write-UpdateLog "Nothing running on port $Port."
     return
   }
 
@@ -53,145 +127,164 @@ function Stop-Mit3Website {
   foreach ($pidToStop in $processIds) {
     $proc = Get-Process -Id $pidToStop -ErrorAction SilentlyContinue
     if ($proc) {
-      Write-Host "Stopping $($proc.ProcessName) PID $pidToStop..." -ForegroundColor Yellow
+      Write-UpdateLog "Stopping $($proc.ProcessName) PID $pidToStop..."
       Stop-Process -Id $pidToStop -Force
     }
   }
 }
 
-if ($NoFolderPicker) {
-  if (-not $RepoRoot) {
-    Write-Host "ERROR: RepoRoot is required when NoFolderPicker is used." -ForegroundColor Red
-    exit 1
+try {
+  if ($NoFolderPicker) {
+    if (-not $RepoRoot) {
+      Write-Host "ERROR: RepoRoot is required when NoFolderPicker is used." -ForegroundColor Red
+      exit 1
+    }
+
+    $RepoRoot = (Resolve-Path -LiteralPath $RepoRoot).Path
+  } else {
+    $RepoRoot = Pick-Mit3Folder
   }
 
-  $RepoRoot = (Resolve-Path $RepoRoot).Path
-} else {
-  $RepoRoot = Pick-Mit3Folder
-}
-
-$BackendDir = Join-Path $RepoRoot "backend"
-$FrontendDir = Join-Path $RepoRoot "frontend"
-$DbDir = Join-Path $BackendDir "data"
-$DbPath = Join-Path $DbDir "maintenance_inventory_3_web.db"
-$BackupDir = Join-Path $RepoRoot "_mit3_database_backups"
-$Port = 4173
-
-Write-Host ""
-Write-Host "=========================================" -ForegroundColor Cyan
-Write-Host " MIT3 Website Update Puller              " -ForegroundColor Cyan
-Write-Host "=========================================" -ForegroundColor Cyan
-Write-Host "Selected folder: $RepoRoot"
-Write-Host ""
-
-if (-not (Test-Path (Join-Path $RepoRoot ".git"))) {
-  Write-Host "ERROR: This folder is not a Git repo. No .git folder was found." -ForegroundColor Red
-  Write-Host "Pick the real maintenance-inventory-tracker-3 repo folder." -ForegroundColor Yellow
-  Pause-IfInteractive
-  exit 1
-}
-
-if (-not (Test-Path $BackendDir)) {
-  Write-Host "ERROR: backend folder was not found." -ForegroundColor Red
-  Pause-IfInteractive
-  exit 1
-}
-
-if (-not (Test-Path $FrontendDir)) {
-  Write-Host "ERROR: frontend folder was not found." -ForegroundColor Red
-  Pause-IfInteractive
-  exit 1
-}
-
-$nodeVersion = node -v 2>$null
-if (-not $nodeVersion) {
-  Write-Host "ERROR: Node.js was not found. Install Node.js 22 LTS first." -ForegroundColor Red
-  Pause-IfInteractive
-  exit 1
-}
-
-if ($nodeVersion -notmatch "^v22\.") {
-  Write-Host "WARNING: MIT3 is built for Node.js 22 LTS." -ForegroundColor Yellow
-  Write-Host "Current Node: $nodeVersion" -ForegroundColor Yellow
-  Write-Host ""
-}
-
-Set-Location $RepoRoot
-
-Write-Host ""
-Write-Host "Checking Git status..." -ForegroundColor Cyan
-git status --short
-
-$dirty = git status --porcelain
-if ($dirty) {
-  Write-Host ""
-  Write-Host "ERROR: This repo has local changes." -ForegroundColor Red
-  Write-Host "Update stopped so it does not overwrite your work." -ForegroundColor Yellow
-  Write-Host ""
-  Write-Host "Review these changes first:"
-  git status --short
-  Pause-IfInteractive
-  exit 1
-}
-
-if ($NoFolderPicker) {
-  Write-Host ""
-  Write-Host "In-app update requested. Waiting 3 seconds before stopping the website..." -ForegroundColor Yellow
-  Start-Sleep -Seconds 3
-}
-
-Stop-Mit3Website -Port $Port
-
-New-Item -ItemType Directory -Force -Path $BackupDir | Out-Null
-
-if (Test-Path $DbPath) {
+  $BackendDir = Join-Path $RepoRoot "backend"
+  $FrontendDir = Join-Path $RepoRoot "frontend"
+  $DbDir = Join-Path $BackendDir "data"
+  $DbPath = Join-Path $DbDir "maintenance_inventory_3_web.db"
+  $BackupDir = Join-Path $RepoRoot "_mit3_database_backups"
+  $StatusPath = Join-Path $BackendDir "update-status.json"
+  $LogDir = Join-Path $BackendDir "update-logs"
+  $Port = 4173
   $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
-  $backupPath = Join-Path $BackupDir "maintenance_inventory_3_web-$timestamp.db"
-  Write-Host ""
-  Write-Host "Backing up SQLite database..." -ForegroundColor Green
-  Copy-Item $DbPath $backupPath -Force
-  Write-Host "Backup saved:" -ForegroundColor Green
-  Write-Host $backupPath
-} else {
-  Write-Host ""
-  Write-Host "No SQLite database found yet. Skipping DB backup." -ForegroundColor Yellow
-}
 
-Write-Host ""
-Write-Host "Pulling latest update from GitHub..." -ForegroundColor Green
-git fetch
-git pull --ff-only
+  New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
+  $LogFile = Join-Path $LogDir "update-$timestamp.log"
 
-Write-Host ""
-Write-Host "Installing/building frontend..." -ForegroundColor Green
-Set-Location $FrontendDir
+  $beforeSha = $null
+  try { $beforeSha = (& git -C $RepoRoot rev-parse HEAD 2>$null) } catch {}
 
-if (Test-Path ".env.production.website") {
-  Copy-Item ".env.production.website" ".env.local" -Force
-} elseif (Test-Path ".env.website.example") {
-  Copy-Item ".env.website.example" ".env.local" -Force
-}
+  $Status = [ordered]@{
+    running = $true
+    phase = "starting"
+    message = "Starting MIT3 website update..."
+    repoRoot = $RepoRoot
+    startedAt = (Get-Date).ToUniversalTime().ToString("o")
+    updatedAt = (Get-Date).ToUniversalTime().ToString("o")
+    completedAt = $null
+    ok = $null
+    error = $null
+    beforeSha = $beforeSha
+    afterSha = $null
+    logFile = $LogFile
+  }
+  Save-UpdateStatus -Phase "starting" -Message "Starting MIT3 website update..."
 
-npm install
-npm run build
+  Write-UpdateLog "========================================="
+  Write-UpdateLog " MIT3 Website Update Puller"
+  Write-UpdateLog "========================================="
+  Write-UpdateLog "RepoRoot in use: $RepoRoot"
+  Write-UpdateLog "NoFolderPicker: $NoFolderPicker"
+  Write-UpdateLog "Restart: $Restart"
+  Write-UpdateLog "Status file: $StatusPath"
+  Write-UpdateLog "Log file: $LogFile"
 
-Write-Host ""
-Write-Host "Installing/building backend..." -ForegroundColor Green
-Set-Location $BackendDir
-npm install
-npm run build
-
-Write-Host ""
-Write-Host "Starting MIT3 website..." -ForegroundColor Green
-if (-not $NoFolderPicker -or $Restart) {
-  if (-not $NoFolderPicker) {
-    Start-Job -ScriptBlock {
-      Start-Sleep -Seconds 4
-      Start-Process "http://localhost:4173"
-    } | Out-Null
+  if (-not (Test-Path (Join-Path $RepoRoot ".git"))) {
+    throw "This folder is not a Git repo. No .git folder was found: $RepoRoot"
   }
 
-  npm start
-} else {
-  Write-Host "Restart was not requested. Update complete." -ForegroundColor Green
+  if (-not (Test-Path $BackendDir)) {
+    throw "backend folder was not found: $BackendDir"
+  }
+
+  if (-not (Test-Path $FrontendDir)) {
+    throw "frontend folder was not found: $FrontendDir"
+  }
+
+  $nodeVersion = node -v 2>$null
+  if (-not $nodeVersion) {
+    throw "Node.js was not found. Install Node.js 22 LTS first."
+  }
+
+  if ($nodeVersion -notmatch "^v22\.") {
+    Write-UpdateLog "WARNING: MIT3 is built for Node.js 22 LTS. Current Node: $nodeVersion"
+  }
+
+  Set-Location $RepoRoot
+
+  Save-UpdateStatus -Phase "git-status" -Message "Checking local Git status..."
+  Invoke-LoggedCommand -FilePath "git" -Arguments @("status", "--short") -WorkingDirectory $RepoRoot -Description "git status --short"
+
+  $dirty = & git -C $RepoRoot status --porcelain
+  if ($dirty) {
+    foreach ($line in $dirty) { Write-UpdateLog $line }
+    throw "This repo has local changes. Update stopped so it does not overwrite your work."
+  }
+
+  Save-UpdateStatus -Phase "backup" -Message "Backing up SQLite database..."
+  New-Item -ItemType Directory -Force -Path $BackupDir | Out-Null
+
+  if (Test-Path $DbPath) {
+    $backupPath = Join-Path $BackupDir "maintenance_inventory_3_web-$timestamp.db"
+    Write-UpdateLog "Backing up SQLite database to $backupPath"
+    Copy-Item $DbPath $backupPath -Force
+  } else {
+    Write-UpdateLog "No SQLite database found yet. Skipping DB backup."
+  }
+
+  if ($NoFolderPicker) {
+    Write-UpdateLog "In-app update requested. Waiting 5 seconds before stopping the website so the browser receives the start response..."
+    Start-Sleep -Seconds 5
+  }
+
+  Save-UpdateStatus -Phase "restarting" -Message "Stopping the current MIT3 website process before pulling/building..."
+  Stop-Mit3Website -Port $Port
+
+  Save-UpdateStatus -Phase "pulling" -Message "Pulling latest code from GitHub..."
+  Invoke-LoggedCommand -FilePath "git" -Arguments @("fetch") -WorkingDirectory $RepoRoot -Description "git fetch"
+  Invoke-LoggedCommand -FilePath "git" -Arguments @("pull", "--ff-only") -WorkingDirectory $RepoRoot -Description "git pull --ff-only"
+
+  Save-UpdateStatus -Phase "frontend-install" -Message "Installing frontend dependencies..."
+  if (Test-Path (Join-Path $FrontendDir ".env.production.website")) {
+    Copy-Item (Join-Path $FrontendDir ".env.production.website") (Join-Path $FrontendDir ".env.local") -Force
+    Write-UpdateLog "Copied frontend .env.production.website to .env.local"
+  } elseif (Test-Path (Join-Path $FrontendDir ".env.website.example")) {
+    Copy-Item (Join-Path $FrontendDir ".env.website.example") (Join-Path $FrontendDir ".env.local") -Force
+    Write-UpdateLog "Copied frontend .env.website.example to .env.local"
+  }
+  Invoke-LoggedCommand -FilePath "npm" -Arguments @("install") -WorkingDirectory $FrontendDir -Description "frontend npm install"
+
+  Save-UpdateStatus -Phase "frontend-build" -Message "Building frontend website files..."
+  Invoke-LoggedCommand -FilePath "npm" -Arguments @("run", "build") -WorkingDirectory $FrontendDir -Description "frontend npm run build"
+
+  Save-UpdateStatus -Phase "backend-install" -Message "Installing backend dependencies..."
+  Invoke-LoggedCommand -FilePath "npm" -Arguments @("install") -WorkingDirectory $BackendDir -Description "backend npm install"
+
+  Save-UpdateStatus -Phase "backend-build" -Message "Building backend server..."
+  Invoke-LoggedCommand -FilePath "npm" -Arguments @("run", "build") -WorkingDirectory $BackendDir -Description "backend npm run build"
+
+  Save-UpdateStatus -Phase "restarting" -Message "Starting MIT3 website on port $Port..."
+  if (-not $NoFolderPicker -or $Restart) {
+    if ($NoFolderPicker) {
+      Start-Process -FilePath "powershell.exe" -WorkingDirectory $BackendDir -WindowStyle Hidden -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "npm start")
+      Write-UpdateLog "Started MIT3 website in a detached PowerShell process."
+    } else {
+      Start-Job -ScriptBlock {
+        Start-Sleep -Seconds 4
+        Start-Process "http://localhost:4173"
+      } | Out-Null
+      Save-UpdateStatus -Phase "complete" -Message "Update complete. Starting MIT3 website in this window..." -Running $false -Ok $true
+      npm start
+      exit 0
+    }
+  } else {
+    Write-UpdateLog "Restart was not requested. Update complete."
+  }
+
+  Save-UpdateStatus -Phase "complete" -Message "Update complete. MIT3 website is restarting." -Running $false -Ok $true
+  Write-UpdateLog "Update complete."
+} catch {
+  $message = $_.Exception.Message
+  if (-not $message) { $message = [string]$_ }
+  Write-UpdateLog "ERROR: $message"
+  Save-UpdateStatus -Phase "failed" -Message "Update failed." -Running $false -Ok $false -ErrorMessage $message
+  Pause-IfInteractive
+  exit 1
 }
