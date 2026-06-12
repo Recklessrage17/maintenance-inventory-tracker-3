@@ -38,3 +38,5 @@ backend/backups/**
 !backend/backups/
 !backend/backups/.gitkeep
 !backend/backups/README.txt
+backend/update-status.json
+backend/update-logs/
