@@ -18577,35 +18577,30 @@ function PartNumberCell({
   item: InventoryItem;
   onOpenError?: (message: string) => void;
 }) {
-  const partNumber = item.partNumber || "No part number";
-  const hasSavedUrl = item.itemUrl.trim().length > 0;
+  const partNumber = item.partNumber || "-";
+  const savedItemUrl = item.itemUrl.trim();
+  const href = getItemUrlHref(savedItemUrl);
+
+  if (!savedItemUrl) {
+    return <span className="part-number-plain">{partNumber}</span>;
+  }
+
+  if (!href) {
+    return (
+      <span
+        className="part-number-plain part-number-invalid"
+        title="Invalid item link saved"
+      >
+        {partNumber}
+      </span>
+    );
+  }
 
   async function openItemLink(event: React.MouseEvent<HTMLButtonElement>) {
     event.preventDefault();
     event.stopPropagation();
 
-    const normalizedUrl = normalizeExternalUrl(item.itemUrl);
-
-    if (!normalizedUrl) {
-      onOpenError?.("No item link saved for this part.");
-      return;
-    }
-
-    let href = "";
-
-    try {
-      const parsed = new URL(normalizedUrl);
-
-      if (
-        (parsed.protocol !== "https:" && parsed.protocol !== "http:") ||
-        !parsed.hostname
-      ) {
-        onOpenError?.("Invalid item link.");
-        return;
-      }
-
-      href = parsed.href;
-    } catch {
+    if (!href) {
       onOpenError?.("Invalid item link.");
       return;
     }
@@ -18631,13 +18626,16 @@ function PartNumberCell({
 
   return (
     <button
-      className={`part-link ${hasSavedUrl ? "" : "part-link-empty"}`}
+      className="part-link part-link-jbt"
       type="button"
-      title={hasSavedUrl ? "Open item link" : "No item link saved"}
+      title="Open item link"
       aria-label={`Open item link for ${partNumber}`}
       onClick={(event) => void openItemLink(event)}
     >
-      {item.partNumber || "-"}
+      <span>{partNumber}</span>
+      <span aria-hidden="true" className="part-link-icon">
+        ↗
+      </span>
     </button>
   );
 }

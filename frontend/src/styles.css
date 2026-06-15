@@ -3756,13 +3756,45 @@ button:disabled {
     @apply border-lime-300/60 bg-lime-400/10 text-lime-100;
   }
 
+  .part-number-plain {
+    @apply inline text-sm font-bold text-slate-100;
+    overflow-wrap: anywhere;
+  }
+
+  .part-number-invalid {
+    @apply decoration-amber-300/60 decoration-dotted underline-offset-4;
+    text-decoration-line: underline;
+    text-decoration-thickness: 0.08em;
+  }
+
   .part-link {
-    @apply inline-flex max-w-56 items-center rounded-md border border-cyan-300/70 bg-cyan-400/10 px-2.5 py-1.5 text-xs font-black text-cyan-100 shadow-lg shadow-cyan-500/20 transition hover:border-cyan-100 hover:bg-cyan-300/20 hover:text-white focus:outline-none focus:ring-2 focus:ring-cyan-300/50;
     appearance: none;
-    cursor: pointer;
     overflow-wrap: anywhere;
     text-align: left;
     text-decoration: none;
+  }
+
+  .part-link.part-link-jbt {
+    @apply inline-flex max-w-56 items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-black text-cyan-100 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-200/80 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950;
+    background: linear-gradient(135deg, rgba(8, 47, 73, 0.85), rgba(15, 23, 42, 0.9));
+    border: 1px solid rgba(34, 211, 238, 0.65);
+    box-shadow:
+      0 0 0 1px rgba(34, 211, 238, 0.08) inset,
+      0 0.35rem 1.1rem rgba(34, 211, 238, 0.14);
+    cursor: pointer;
+  }
+
+  .part-link.part-link-jbt:hover {
+    background: linear-gradient(135deg, rgba(14, 116, 144, 0.72), rgba(15, 23, 42, 0.94));
+    border-color: rgba(103, 232, 249, 0.9);
+    box-shadow:
+      0 0 0 1px rgba(103, 232, 249, 0.15) inset,
+      0 0.45rem 1.25rem rgba(34, 211, 238, 0.22);
+    color: #ffffff;
+  }
+
+  .part-link-icon {
+    @apply text-[0.7rem] leading-none text-cyan-200/90;
   }
 
   .vendor-table .data-table {
