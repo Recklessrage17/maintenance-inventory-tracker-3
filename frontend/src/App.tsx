@@ -2,6 +2,7 @@ import {
   type Dispatch,
   FormEvent,
   type SetStateAction,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -3132,7 +3133,7 @@ function itemFromForm(
   );
 
   return {
-    id: existing?.id ?? itemId ?? createId(),
+    id: existing?.id ?? createId(),
     name: form.name.trim(),
     partNumber: form.partNumber.trim(),
     description: form.description.trim(),
@@ -3967,6 +3968,11 @@ function InventoryApp() {
   const [headerBadgeDraft, setHeaderBadgeDraft] = useState(
     DEFAULT_HEADER_BADGE_TEXT,
   );
+  const [newestAddedInventoryItemId, setNewestAddedInventoryItemId] = useState<
+    string | null
+  >(null);
+  const [newInventoryItemHighlightIds, setNewInventoryItemHighlightIds] =
+    useState<string[]>([]);
   const hasLoadedRef = useRef(false);
   const startupBackupCheckRef = useRef(false);
   const startupManualUpdateCheckRef = useRef(false);
@@ -18563,7 +18569,7 @@ function PartNumberCell({
   onOpenError,
 }: {
   item: InventoryItem;
-  onOpenError?: () => void;
+  onOpenError?: (message: string) => void;
 }) {
   const partNumber = item.partNumber || "No part number";
   const hasSavedUrl = item.itemUrl.trim().length > 0;
@@ -18575,7 +18581,7 @@ function PartNumberCell({
     const normalizedUrl = normalizeExternalUrl(item.itemUrl);
 
     if (!normalizedUrl) {
-      onOpenMessage?.("No item link saved for this part.");
+      onOpenError?.("No item link saved for this part.");
       return;
     }
 
@@ -18588,13 +18594,13 @@ function PartNumberCell({
         (parsed.protocol !== "https:" && parsed.protocol !== "http:") ||
         !parsed.hostname
       ) {
-        onOpenMessage?.("Invalid item link.");
+        onOpenError?.("Invalid item link.");
         return;
       }
 
       href = parsed.href;
     } catch {
-      onOpenMessage?.("Invalid item link.");
+      onOpenError?.("Invalid item link.");
       return;
     }
 
@@ -18602,7 +18608,7 @@ function PartNumberCell({
       const opened = window.open(href, "_blank", "noopener,noreferrer");
 
       if (!opened) {
-        onOpenMessage?.(
+        onOpenError?.(
           "Browser blocked the item link popup. Allow popups or open the link manually.",
         );
       }
@@ -18613,7 +18619,7 @@ function PartNumberCell({
     try {
       await openUrl(href);
     } catch {
-      onOpenMessage?.("Could not open item link.");
+      onOpenError?.("Could not open item link.");
     }
   }
 
