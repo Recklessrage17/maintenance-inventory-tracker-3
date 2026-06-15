@@ -172,6 +172,10 @@ import type {
 const DEFAULT_HEADER_BADGE_TEXT = "Private Local Desktop App";
 const WEBSITE_UPDATE_REMIND_LATER_KEY = "mit3_update_wait_sha";
 const SEEN_NEW_INVENTORY_ITEMS_KEY = "mit3_seen_new_inventory_items";
+const NEW_LOCATION_NOTICE_IDS_KEY = "mit3_new_location_notice_ids";
+const SEEN_LOCATION_NOTICE_IDS_KEY = "mit3_seen_location_notice_ids";
+const NEW_VENDOR_NOTICE_IDS_KEY = "mit3_new_vendor_notice_ids";
+const SEEN_VENDOR_NOTICE_IDS_KEY = "mit3_seen_vendor_notice_ids";
 const MIN_AUTH_LOADING_MS = 1100;
 const RECENT_ACTIVITY_WINDOW_MS = 5 * 60 * 1000;
 const TRASH_RETENTION_MS = 30 * 60 * 1000;
@@ -271,6 +275,50 @@ function markNewInventoryItemsSeen(itemIds: string[]) {
   }
 
   saveSeenNewInventoryItemIds([...readSeenNewInventoryItemIds(), ...itemIds]);
+}
+
+function noticeStorageUserKey() {
+  try {
+    const authRecord = readAuthRecord();
+    const identity =
+      authRecord?.recoveryEmail || authRecord?.passwordHash || "browser-local";
+
+    return identity.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 80);
+  } catch {
+    return "browser-local";
+  }
+}
+
+function noticeStorageKey(baseKey: string) {
+  return `${baseKey}:${noticeStorageUserKey()}`;
+}
+
+function readNoticeIds(baseKey: string) {
+  try {
+    const raw =
+      localStorage.getItem(noticeStorageKey(baseKey)) ??
+      localStorage.getItem(baseKey);
+    const parsed = raw ? JSON.parse(raw) : [];
+
+    return Array.isArray(parsed)
+      ? parsed.filter((value): value is string => typeof value === "string")
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveNoticeIds(baseKey: string, ids: string[]) {
+  try {
+    localStorage.setItem(
+      noticeStorageKey(baseKey),
+      JSON.stringify(Array.from(new Set(ids))),
+    );
+  } catch {}
+}
+
+function mergeNoticeIds(currentIds: string[], addedIds: string[]) {
+  return Array.from(new Set([...addedIds, ...currentIds].filter(Boolean)));
 }
 
 function inventoryItemRecencyTime(item: InventoryItem) {
@@ -3969,6 +4017,18 @@ function InventoryApp() {
   >(null);
   const [newInventoryItemHighlightIds, setNewInventoryItemHighlightIds] =
     useState<string[]>([]);
+  const [newLocationNoticeIds, setNewLocationNoticeIds] = useState<string[]>(
+    () => readNoticeIds(NEW_LOCATION_NOTICE_IDS_KEY),
+  );
+  const [seenLocationNoticeIds, setSeenLocationNoticeIds] = useState<string[]>(
+    () => readNoticeIds(SEEN_LOCATION_NOTICE_IDS_KEY),
+  );
+  const [newVendorNoticeIds, setNewVendorNoticeIds] = useState<string[]>(() =>
+    readNoticeIds(NEW_VENDOR_NOTICE_IDS_KEY),
+  );
+  const [seenVendorNoticeIds, setSeenVendorNoticeIds] = useState<string[]>(() =>
+    readNoticeIds(SEEN_VENDOR_NOTICE_IDS_KEY),
+  );
   const hasLoadedRef = useRef(false);
   const startupBackupCheckRef = useRef(false);
   const startupManualUpdateCheckRef = useRef(false);
@@ -3991,6 +4051,81 @@ function InventoryApp() {
   const vendorAiPromptResolveRef = useRef<
     ((note: string | null) => void) | null
   >(null);
+
+  const addNewLocationNotices = useCallback((locationIds: string[]) => {
+    if (locationIds.length === 0) {
+      return;
+    }
+
+    setNewLocationNoticeIds((current) =>
+      mergeNoticeIds(current, locationIds),
+    );
+  }, []);
+
+  const addNewVendorNotices = useCallback((vendorIds: string[]) => {
+    if (vendorIds.length === 0) {
+      return;
+    }
+
+    setNewVendorNoticeIds((current) => mergeNoticeIds(current, vendorIds));
+  }, []);
+
+  const unseenNewLocationNoticeIds = useMemo(
+    () =>
+      newLocationNoticeIds.filter(
+        (id) => !seenLocationNoticeIds.includes(id),
+      ),
+    [newLocationNoticeIds, seenLocationNoticeIds],
+  );
+  const unseenNewVendorNoticeIds = useMemo(
+    () =>
+      newVendorNoticeIds.filter((id) => !seenVendorNoticeIds.includes(id)),
+    [newVendorNoticeIds, seenVendorNoticeIds],
+  );
+
+  useEffect(() => {
+    saveNoticeIds(NEW_LOCATION_NOTICE_IDS_KEY, newLocationNoticeIds);
+  }, [newLocationNoticeIds]);
+
+  useEffect(() => {
+    saveNoticeIds(SEEN_LOCATION_NOTICE_IDS_KEY, seenLocationNoticeIds);
+  }, [seenLocationNoticeIds]);
+
+  useEffect(() => {
+    saveNoticeIds(NEW_VENDOR_NOTICE_IDS_KEY, newVendorNoticeIds);
+  }, [newVendorNoticeIds]);
+
+  useEffect(() => {
+    saveNoticeIds(SEEN_VENDOR_NOTICE_IDS_KEY, seenVendorNoticeIds);
+  }, [seenVendorNoticeIds]);
+
+  useEffect(() => {
+    if (activePage !== "locations" || unseenNewLocationNoticeIds.length === 0) {
+      return;
+    }
+
+    const timeout = window.setTimeout(() => {
+      setSeenLocationNoticeIds((current) =>
+        mergeNoticeIds(current, unseenNewLocationNoticeIds),
+      );
+    }, 1400);
+
+    return () => window.clearTimeout(timeout);
+  }, [activePage, unseenNewLocationNoticeIds]);
+
+  useEffect(() => {
+    if (activePage !== "vendors" || unseenNewVendorNoticeIds.length === 0) {
+      return;
+    }
+
+    const timeout = window.setTimeout(() => {
+      setSeenVendorNoticeIds((current) =>
+        mergeNoticeIds(current, unseenNewVendorNoticeIds),
+      );
+    }, 1400);
+
+    return () => window.clearTimeout(timeout);
+  }, [activePage, unseenNewVendorNoticeIds]);
 
   useEffect(() => {
     let cancelled = false;
@@ -8169,7 +8304,7 @@ function InventoryApp() {
 
       showToast(
         preview.warnings.length > 0 ? "warning" : "success",
-        `Excel template import complete. ${result.created} created, ${result.updated} updated, ${result.skipped} skipped, ${result.duplicatePartNumberMatches} duplicate part number match(es), ${result.hyperlinksImported} hyperlink(s) imported, ${result.hyperlinksSkipped} hyperlink(s) skipped.${warningText}`,
+        `Excel template import complete. ${result.created} created, ${result.updated} updated, ${result.locationsCreated} new location(s), ${result.vendorsCreated} new vendor(s), ${result.skipped} skipped, ${result.duplicatePartNumberMatches} duplicate part number match(es), ${result.hyperlinksImported} hyperlink(s) imported, ${result.hyperlinksSkipped} hyperlink(s) skipped.${warningText}`,
       );
     } catch (error) {
       showToast(
@@ -8225,7 +8360,7 @@ function InventoryApp() {
       }
       showToast(
         "success",
-        `CSV import complete. ${result.created} created, ${result.updated} updated.`,
+        `CSV import complete. ${result.created} created, ${result.updated} updated, ${result.locationsCreated} new location(s), ${result.vendorsCreated} new vendor(s), ${Math.max(0, result.rowsFound - result.created - result.updated)} skipped.`,
       );
     } catch (error) {
       showToast(
@@ -8257,6 +8392,8 @@ function InventoryApp() {
     const nextLocations = [...current.locations];
     const nextVendors = [...current.vendors];
     const auditEntries: AuditEntry[] = [];
+    const createdLocationNoticeIds: string[] = [];
+    const createdVendorNoticeIds: string[] = [];
 
     const findOrCreateLocation = (name: string) => {
       const trimmed = name.trim();
@@ -8265,6 +8402,7 @@ function InventoryApp() {
       if (existing) return existing.id;
       const location = createLocation(trimmed);
       nextLocations.push(location);
+      createdLocationNoticeIds.push(location.id);
       result.locationsCreated += 1;
       return location.id;
     };
@@ -8276,6 +8414,7 @@ function InventoryApp() {
       if (existing) return existing.id;
       const vendor = createVendor(trimmed);
       nextVendors.push(vendor);
+      createdVendorNoticeIds.push(vendor.id);
       result.vendorsCreated += 1;
       return vendor.id;
     };
@@ -8358,6 +8497,9 @@ function InventoryApp() {
       }),
     );
 
+    addNewLocationNotices(createdLocationNoticeIds);
+    addNewVendorNotices(createdVendorNoticeIds);
+
     return result;
   }
 
@@ -8379,6 +8521,8 @@ function InventoryApp() {
     const nextVendors = [...current.vendors];
     const nextItems = [...current.items];
     const auditEntries: AuditEntry[] = [];
+    const createdLocationNoticeIds: string[] = [];
+    const createdVendorNoticeIds: string[] = [];
 
     const findOrCreateLocation = (name: string) => {
       const trimmed = name.trim();
@@ -8398,6 +8542,7 @@ function InventoryApp() {
       const location = createLocation(trimmed);
 
       nextLocations.push(location);
+      createdLocationNoticeIds.push(location.id);
       result = { ...result, locationsCreated: result.locationsCreated + 1 };
       auditEntries.push(
         createAuditEntry(
@@ -8429,6 +8574,7 @@ function InventoryApp() {
       const vendor = createVendor(trimmed);
 
       nextVendors.push(vendor);
+      createdVendorNoticeIds.push(vendor.id);
       result = { ...result, vendorsCreated: result.vendorsCreated + 1 };
       auditEntries.push(
         createAuditEntry(
@@ -8541,6 +8687,9 @@ function InventoryApp() {
       }),
     );
 
+    addNewLocationNotices(createdLocationNoticeIds);
+    addNewVendorNotices(createdVendorNoticeIds);
+
     return result;
   }
 
@@ -8567,6 +8716,8 @@ function InventoryApp() {
     const nextItems = [...current.items];
     const auditEntries: AuditEntry[] = [];
     const importedCategories = new Set<string>();
+    const createdLocationNoticeIds: string[] = [];
+    const createdVendorNoticeIds: string[] = [];
 
     const upsertVendor = (record: CsvFolderVendorRecord) => {
       const existing = existingVendorMatch(record, nextVendors);
@@ -8614,6 +8765,7 @@ function InventoryApp() {
       });
 
       nextVendors.push(vendor);
+      createdVendorNoticeIds.push(vendor.id);
       result = { ...result, vendorsCreated: result.vendorsCreated + 1 };
       auditEntries.push(
         createAuditEntry(
@@ -8665,6 +8817,7 @@ function InventoryApp() {
       });
 
       nextLocations.push(location);
+      createdLocationNoticeIds.push(location.id);
       result = { ...result, locationsCreated: result.locationsCreated + 1 };
       auditEntries.push(
         createAuditEntry(
@@ -8874,6 +9027,9 @@ function InventoryApp() {
       }),
     );
 
+    addNewLocationNotices(createdLocationNoticeIds);
+    addNewVendorNotices(createdVendorNoticeIds);
+
     return result;
   }
 
@@ -8888,7 +9044,7 @@ function InventoryApp() {
 
     try {
       const result = importCsvFolderRows(csvFolderImportPreview);
-      const message = `CSV folder import complete. ${result.created} created, ${result.updated} updated.`;
+      const message = `CSV folder import complete. ${result.created} created, ${result.updated} updated, ${result.locationsCreated} new location(s), ${result.vendorsCreated} new vendor(s), ${result.locationsUpdated} location(s) updated, ${result.vendorsUpdated} vendor(s) updated.`;
 
       setCsvFolderImportPreview(null);
       setCsvFolderStatus(message);
@@ -9168,7 +9324,21 @@ function InventoryApp() {
                   type="button"
                   onClick={() => openPage(page.id)}
                 >
-                  {page.label}
+                  <span className="tab-label-with-notice">
+                    {page.label}
+                    {page.id === "locations" &&
+                      unseenNewLocationNoticeIds.length > 0 && (
+                        <NewEntityBadge
+                          count={unseenNewLocationNoticeIds.length}
+                        />
+                      )}
+                    {page.id === "vendors" &&
+                      unseenNewVendorNoticeIds.length > 0 && (
+                        <NewEntityBadge
+                          count={unseenNewVendorNoticeIds.length}
+                        />
+                      )}
+                  </span>
                 </button>
               ))}
             </nav>
@@ -9400,6 +9570,7 @@ function InventoryApp() {
             onOpenItems={setSelectedLocationId}
             onSubmit={handleLocationSubmit}
             onToggleAdd={() => setIsAddLocationOpen((open) => !open)}
+            newLocationNoticeIds={unseenNewLocationNoticeIds}
             updateSettings={updateSettings}
           />
         )}
@@ -9420,6 +9591,7 @@ function InventoryApp() {
             onToggleAdd={toggleVendorAddPanel}
             onUpdateNotes={updateVendorNotes}
             recentlySavedVendorNoteId={recentlySavedVendorNoteId}
+            newVendorNoticeIds={unseenNewVendorNoticeIds}
           />
         )}
         {activePage === "reorder" && (
@@ -13579,6 +13751,7 @@ function LocationsPage({
   onOpenItems,
   onSubmit,
   onToggleAdd,
+  newLocationNoticeIds,
   updateSettings,
 }: {
   data: AppData;
@@ -13589,6 +13762,7 @@ function LocationsPage({
   onOpenItems: (locationId: string) => void;
   onSubmit: (event: FormEvent) => void;
   onToggleAdd: () => void;
+  newLocationNoticeIds: string[];
   updateSettings: (settings: AppSettings, auditSummary?: string) => void;
 }) {
   const [locationSearch, setLocationSearch] = useState("");
@@ -13696,11 +13870,21 @@ function LocationsPage({
             "Actions",
           ]}
           rowKeys={filteredLocations.map((location) => location.id)}
+          rowClassNames={filteredLocations.map((location) =>
+            newLocationNoticeIds.includes(location.id)
+              ? "new-entity-row"
+              : "",
+          )}
           rows={filteredLocations.map((location) => {
             const itemCount = locationItemCounts.get(location.id) ?? 0;
 
             return [
-              location.name,
+              <span key="name" className="entity-name-with-chip">
+                {location.name}
+                {newLocationNoticeIds.includes(location.id) && (
+                  <NewEntityChip />
+                )}
+              </span>,
               location.description || "-",
               <button
                 key="items"
@@ -13761,6 +13945,7 @@ function VendorsPage({
   onToggleAdd,
   onUpdateNotes,
   recentlySavedVendorNoteId,
+  newVendorNoticeIds,
 }: {
   data: AppData;
   editingVendorId: string | null;
@@ -13780,6 +13965,7 @@ function VendorsPage({
   onToggleAdd: () => void;
   onUpdateNotes: (vendorId: string, notes: string) => void;
   recentlySavedVendorNoteId: string | null;
+  newVendorNoticeIds: string[];
 }) {
   const isEditing = Boolean(editingVendorId);
   const panelTitle = isEditing ? "Edit Vendor" : "Add Vendor";
@@ -13987,11 +14173,19 @@ function VendorsPage({
             rowKeys={filteredVendors.map(
               (vendor) => `${vendor.id}-${vendor.updatedAt}-${vendor.notes}`,
             )}
+            rowClassNames={filteredVendors.map((vendor) =>
+              newVendorNoticeIds.includes(vendor.id) ? "new-entity-row" : "",
+            )}
             rows={filteredVendors.map((vendor) => {
               const itemCount = vendorItemCounts.get(vendor.id) ?? 0;
 
               return [
-                vendor.name,
+                <span key="name" className="entity-name-with-chip">
+                  {vendor.name}
+                  {newVendorNoticeIds.includes(vendor.id) && (
+                    <NewEntityChip />
+                  )}
+                </span>,
                 <VendorContactCell key="contact" vendor={vendor} />,
                 vendor.phone || "-",
                 <VendorEmailCell key="email" email={vendor.email} />,
@@ -19255,6 +19449,22 @@ function SectionHeader({
   );
 }
 
+function NewEntityBadge({ count }: { count?: number }) {
+  return (
+    <span className="new-entity-badge" aria-label="New records">
+      NEW{count && count > 1 ? ` ${count}` : ""}
+    </span>
+  );
+}
+
+function NewEntityChip() {
+  return (
+    <span className="new-entity-chip" aria-label="Newly created">
+      NEW
+    </span>
+  );
+}
+
 function StatusDot({ state }: { state: BackupIndicatorState }) {
   return (
     <span
@@ -19549,6 +19759,3 @@ function SimpleTable({
 }
 
 export default App;
-
-
-
