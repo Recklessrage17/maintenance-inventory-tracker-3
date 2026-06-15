@@ -1773,15 +1773,22 @@ function stockQuantityClassName(status: InventoryStatus) {
   }
 }
 
-function getItemUrlHref(value: string) {
+function normalizeExternalUrl(value: string) {
   const trimmed = value.trim();
 
   if (!trimmed) {
     return "";
   }
 
-  const hasProtocol = /^[a-z][a-z\d+.-]*:/i.test(trimmed);
-  const candidate = hasProtocol ? trimmed : `https://${trimmed}`;
+  return /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+}
+
+function getItemUrlHref(value: string) {
+  const candidate = normalizeExternalUrl(value);
+
+  if (!candidate) {
+    return "";
+  }
 
   try {
     const parsed = new URL(candidate);
@@ -9093,9 +9100,7 @@ function InventoryApp() {
             onStockAction={startStockAction}
             onStatusFilter={setStatusFilter}
             onWatchListVisibilityClick={setWatchListVisibilityItemId}
-            onItemLinkOpenError={() =>
-              showToast("warning", "Could not open item link.")
-            }
+            onItemLinkOpenMessage={(message) => showToast("warning", message)}
             statusFilter={statusFilter}
           />
         )}
@@ -10917,7 +10922,7 @@ function InventoryPage({
   onExportCsv,
   onExportExcelCsv,
   onImportCsv,
-  onItemLinkOpenError,
+  onItemLinkOpenMessage,
   newestAddedItemId,
   newItemHighlightIds,
   onCreateRequisition,
@@ -10941,7 +10946,7 @@ function InventoryPage({
   onExportCsv: () => void;
   onExportExcelCsv: () => void;
   onImportCsv: (file: File) => void;
-  onItemLinkOpenError: () => void;
+  onItemLinkOpenMessage: (message: string) => void;
   newestAddedItemId: string;
   newItemHighlightIds: string[];
   onCreateRequisition: (itemIds: string[]) => void;
@@ -11713,7 +11718,7 @@ function InventoryPage({
               <PartNumberCell
                 key="part-number"
                 item={item}
-                onOpenError={onItemLinkOpenError}
+                onOpenMessage={onItemLinkOpenMessage}
               />,
               item.category || "-",
               item.description || "-",
@@ -11773,7 +11778,7 @@ function InventoryPage({
               item={item}
               onDelete={onDelete}
               onEdit={onEdit}
-              onItemLinkOpenError={onItemLinkOpenError}
+              onItemLinkOpenMessage={onItemLinkOpenMessage}
               onPrintLabel={onPrintLabel}
               onToggleRequisition={toggleInventoryRequisitionSelection}
               isNewItem={newItemHighlightIdSet.has(item.id)}
@@ -12233,7 +12238,7 @@ function InventoryItemCard({
   item,
   onDelete,
   onEdit,
-  onItemLinkOpenError,
+  onItemLinkOpenMessage,
   onPrintLabel,
   onToggleRequisition,
   onStockAction,
@@ -12245,7 +12250,7 @@ function InventoryItemCard({
   item: InventoryItem;
   onDelete: (itemId: string) => void;
   onEdit: (item: InventoryItem) => void;
-  onItemLinkOpenError: () => void;
+  onItemLinkOpenMessage: (message: string) => void;
   onPrintLabel: (item: InventoryItem) => void;
   onToggleRequisition: (itemId: string) => void;
   onStockAction: (itemId: string, actionType?: StockActionType | "") => void;
@@ -12284,7 +12289,7 @@ function InventoryItemCard({
         <InventoryCardField
           label="Part number"
           value={
-            <PartNumberCell item={item} onOpenError={onItemLinkOpenError} />
+            <PartNumberCell item={item} onOpenMessage={onItemLinkOpenMessage} />
           }
         />
         <InventoryCardField
@@ -18541,35 +18546,72 @@ function StatusStatCard({
 
 function PartNumberCell({
   item,
-  onOpenError,
+  onOpenMessage,
 }: {
   item: InventoryItem;
-  onOpenError?: () => void;
+  onOpenMessage?: (message: string) => void;
 }) {
   const partNumber = item.partNumber || "No part number";
-  const href = getItemUrlHref(item.itemUrl);
+  const hasSavedUrl = item.itemUrl.trim().length > 0;
 
-  if (!href) {
-    return <span>{item.partNumber || "-"}</span>;
-  }
+  async function openItemLink(event: React.MouseEvent<HTMLButtonElement>) {
+    event.preventDefault();
+    event.stopPropagation();
 
-  async function openItemLink() {
+    const normalizedUrl = normalizeExternalUrl(item.itemUrl);
+
+    if (!normalizedUrl) {
+      onOpenMessage?.("No item link saved for this part.");
+      return;
+    }
+
+    let href = "";
+
+    try {
+      const parsed = new URL(normalizedUrl);
+
+      if (
+        (parsed.protocol !== "https:" && parsed.protocol !== "http:") ||
+        !parsed.hostname
+      ) {
+        onOpenMessage?.("Invalid item link.");
+        return;
+      }
+
+      href = parsed.href;
+    } catch {
+      onOpenMessage?.("Invalid item link.");
+      return;
+    }
+
+    if (isWebsiteBrowserMode()) {
+      const opened = window.open(href, "_blank", "noopener,noreferrer");
+
+      if (!opened) {
+        onOpenMessage?.(
+          "Browser blocked the item link popup. Allow popups or open the link manually.",
+        );
+      }
+
+      return;
+    }
+
     try {
       await openUrl(href);
     } catch {
-      onOpenError?.();
+      onOpenMessage?.("Could not open item link.");
     }
   }
 
   return (
     <button
-      className="part-link"
+      className={`part-link ${hasSavedUrl ? "" : "part-link-empty"}`}
       type="button"
-      title="Open item link"
+      title={hasSavedUrl ? "Open item link" : "No item link saved"}
       aria-label={`Open item link for ${partNumber}`}
-      onClick={() => void openItemLink()}
+      onClick={(event) => void openItemLink(event)}
     >
-      {partNumber}
+      {item.partNumber || "-"}
     </button>
   );
 }
