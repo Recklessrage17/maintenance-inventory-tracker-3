@@ -16,12 +16,30 @@ export type WebsiteUpdateStatus =
       ok: false;
     };
 
+export type WebsiteUpdateRunStatus = {
+  afterSha: string | null;
+  beforeSha: string | null;
+  completedAt: string | null;
+  error: string | null;
+  logFile: string | null;
+  message: string;
+  ok: boolean | null;
+  phase: string;
+  repoRoot?: string;
+  running: boolean;
+  startedAt: string | null;
+  updatedAt: string | null;
+};
+
 export type WebsiteUpdateRunResult =
   | {
       message: string;
       ok: true;
+      repoRoot: string;
+      statusUrl: string;
     }
   | {
+      details?: string;
       dirtyFiles?: string[];
       error: string;
       ok: false;
@@ -37,7 +55,8 @@ async function readJsonResponse<T>(response: Response) {
 
 export async function getWebsiteUpdateStatus() {
   const response = await fetch(apiUrl("/api/update/status"), {
-    headers: { Accept: "application/json" }
+    cache: "no-store",
+    headers: { Accept: "application/json" },
   });
 
   if (!response.ok) {
@@ -47,10 +66,42 @@ export async function getWebsiteUpdateStatus() {
   return readJsonResponse<WebsiteUpdateStatus>(response);
 }
 
+export async function getWebsiteUpdateRunStatus() {
+  const response = await fetch(apiUrl("/api/update/run/status"), {
+    cache: "no-store",
+    headers: { Accept: "application/json" },
+  });
+
+  if (!response.ok) {
+    throw new Error(
+      `Update progress check failed with HTTP ${response.status}.`,
+    );
+  }
+
+  return readJsonResponse<WebsiteUpdateRunStatus>(response);
+}
+
+export async function getWebsiteUpdateRunLog() {
+  const response = await fetch(apiUrl("/api/update/run/log"), {
+    cache: "no-store",
+    headers: { Accept: "text/plain" },
+  });
+
+  const text = await response.text().catch(() => "");
+
+  if (!response.ok) {
+    throw new Error(
+      text || `Update log check failed with HTTP ${response.status}.`,
+    );
+  }
+
+  return text;
+}
+
 export async function runWebsiteUpdate() {
   const response = await fetch(apiUrl("/api/update/run"), {
     method: "POST",
-    headers: { Accept: "application/json" }
+    headers: { Accept: "application/json" },
   });
   const payload = await readJsonResponse<WebsiteUpdateRunResult>(response);
 
