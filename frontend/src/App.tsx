@@ -156,6 +156,7 @@ import type {
 
 const DEFAULT_HEADER_BADGE_TEXT = "Private Local Desktop App";
 const WEBSITE_UPDATE_REMIND_LATER_KEY = "mit3_update_wait_sha";
+const SEEN_NEW_INVENTORY_ITEMS_KEY = "mit3_seen_new_inventory_items";
 const MIN_AUTH_LOADING_MS = 1100;
 const RECENT_ACTIVITY_WINDOW_MS = 5 * 60 * 1000;
 const TRASH_RETENTION_MS = 30 * 60 * 1000;
@@ -225,6 +226,46 @@ function saveWebsiteUpdateRemindLaterSha(remoteSha: string) {
   try {
     localStorage.setItem(WEBSITE_UPDATE_REMIND_LATER_KEY, remoteSha);
   } catch {}
+}
+
+function readSeenNewInventoryItemIds() {
+  try {
+    const raw = localStorage.getItem(SEEN_NEW_INVENTORY_ITEMS_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+
+    return Array.isArray(parsed)
+      ? parsed.filter((value): value is string => typeof value === "string")
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveSeenNewInventoryItemIds(itemIds: string[]) {
+  try {
+    localStorage.setItem(
+      SEEN_NEW_INVENTORY_ITEMS_KEY,
+      JSON.stringify(Array.from(new Set(itemIds))),
+    );
+  } catch {}
+}
+
+function markNewInventoryItemsSeen(itemIds: string[]) {
+  if (itemIds.length === 0) {
+    return;
+  }
+
+  saveSeenNewInventoryItemIds([...readSeenNewInventoryItemIds(), ...itemIds]);
+}
+
+function inventoryItemRecencyTime(item: InventoryItem) {
+  const createdAt = Date.parse(item.createdAt || "");
+  const updatedAt = Date.parse(item.updatedAt || "");
+
+  return Math.max(
+    Number.isFinite(createdAt) ? createdAt : 0,
+    Number.isFinite(updatedAt) ? updatedAt : 0,
+  );
 }
 
 function websiteUpdateStatusMessage(status: WebsiteUpdateStatus | null) {
@@ -1731,15 +1772,22 @@ function stockQuantityClassName(status: InventoryStatus) {
   }
 }
 
-function getItemUrlHref(value: string) {
+function normalizeExternalUrl(value: string) {
   const trimmed = value.trim();
 
   if (!trimmed) {
     return "";
   }
 
-  const hasProtocol = /^[a-z][a-z\d+.-]*:/i.test(trimmed);
-  const candidate = hasProtocol ? trimmed : `https://${trimmed}`;
+  return /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+}
+
+function getItemUrlHref(value: string) {
+  const candidate = normalizeExternalUrl(value);
+
+  if (!candidate) {
+    return "";
+  }
 
   try {
     const parsed = new URL(candidate);
@@ -3084,7 +3132,7 @@ function itemFromForm(
   );
 
   return {
-    id: existing?.id ?? createId(),
+    id: existing?.id ?? itemId ?? createId(),
     name: form.name.trim(),
     partNumber: form.partNumber.trim(),
     description: form.description.trim(),
@@ -5872,7 +5920,6 @@ function InventoryApp() {
   function closeItemForm() {
     setIsItemFormOpen(false);
     setEditingItemId(null);
-    setPendingNewItemVisibilityForm(null);
     setItemForm(blankItemForm(data?.settings.defaultLocationId ?? ""));
     setActivePage("inventory");
     closeSettingsPanel();
@@ -6658,11 +6705,6 @@ function InventoryApp() {
       return;
     }
 
-    if (!editingItemId) {
-      setPendingNewItemVisibilityForm(itemForm);
-      return;
-    }
-
     saveItemForm(itemForm, editingItemId);
   }
 
@@ -6672,6 +6714,7 @@ function InventoryApp() {
     }
 
     const wasEditing = Boolean(itemId);
+    const newItemId = wasEditing ? "" : createId();
 
     commitData((current) => {
       const existing = itemId
@@ -6698,8 +6741,13 @@ function InventoryApp() {
     showToast("success", wasEditing ? "Item updated." : "Item added.");
     if (!wasEditing) {
       setActivityNow(Date.now());
+      setNewestAddedInventoryItemId(newItemId);
+      if (!readSeenNewInventoryItemIds().includes(newItemId)) {
+        setNewInventoryItemHighlightIds((current) =>
+          current.includes(newItemId) ? current : [newItemId, ...current],
+        );
+      }
     }
-    setPendingNewItemVisibilityForm(null);
     setEditingItemId(null);
     setItemForm(blankItemForm(data?.settings.defaultLocationId ?? ""));
     setIsItemFormOpen(false);
@@ -8635,6 +8683,15 @@ function InventoryApp() {
     showToast("success", "Demo data cleared.");
   }
 
+  const markShownNewInventoryItems = useCallback((itemIds: string[]) => {
+    markNewInventoryItemsSeen(itemIds);
+    window.setTimeout(() => {
+      setNewInventoryItemHighlightIds((current) =>
+        current.filter((itemId) => !itemIds.includes(itemId)),
+      );
+    }, 8000);
+  }, []);
+
   if (!data) {
     return <MaintenanceLoadingScreen />;
   }
@@ -8968,12 +9025,6 @@ function InventoryApp() {
             onPrint={printInventoryLabel}
           />
         )}
-        {pendingNewItemVisibilityForm && (
-          <NewItemWatchListSettingDialog
-            onCancel={() => setPendingNewItemVisibilityForm(null)}
-            onChoose={chooseNewItemWatchListVisibility}
-          />
-        )}
         {watchListVisibilityItem && (
           <ShowWatchListDialog
             item={watchListVisibilityItem}
@@ -9034,6 +9085,8 @@ function InventoryApp() {
             columnFilters={inventoryColumnFilters}
             data={data}
             filteredItems={filteredItems}
+            newestAddedItemId={newestAddedInventoryItemId}
+            newItemHighlightIds={newInventoryItemHighlightIds}
             onClearColumnFilters={clearInventoryColumnFilters}
             onColumnFilterChange={updateInventoryColumnFilter}
             onDelete={deleteItem}
@@ -9044,6 +9097,7 @@ function InventoryApp() {
             onAddItem={startAddItem}
             onManageCategories={openCategoryManager}
             onCreateRequisition={startInventoryRequisition}
+            onNewItemsShown={markShownNewInventoryItems}
             onPrintLabel={openLabelPreview}
             onScanLookupWarning={(message) => showToast("warning", message)}
             onStockAction={startStockAction}
@@ -10873,8 +10927,11 @@ function InventoryPage({
   onExportCsv,
   onExportExcelCsv,
   onImportCsv,
-  onItemLinkOpenError,
+  onItemLinkOpenMessage,
+  newestAddedItemId,
+  newItemHighlightIds,
   onCreateRequisition,
+  onNewItemsShown,
   onPrintLabel,
   onScanLookupWarning,
   onStockAction,
@@ -10894,8 +10951,11 @@ function InventoryPage({
   onExportCsv: () => void;
   onExportExcelCsv: () => void;
   onImportCsv: (file: File) => void;
-  onItemLinkOpenError: () => void;
+  onItemLinkOpenMessage: (message: string) => void;
+  newestAddedItemId: string;
+  newItemHighlightIds: string[];
   onCreateRequisition: (itemIds: string[]) => void;
+  onNewItemsShown: (itemIds: string[]) => void;
   onPrintLabel: (item: InventoryItem) => void;
   onScanLookupWarning: (message: string) => void;
   onStockAction: (itemId: string, actionType?: StockActionType | "") => void;
@@ -11146,6 +11206,26 @@ function InventoryPage({
     resetInventoryScrollTracking();
     setInventoryPage(1);
   }, [inventoryPageSize, columnFilters, statusFilter]);
+
+  useEffect(() => {
+    if (!newestAddedItemId) {
+      return;
+    }
+
+    clearInventoryAutoPaging();
+    requestInventoryScrollReset();
+    setInventoryPage(1);
+  }, [newestAddedItemId]);
+
+  useEffect(() => {
+    const shownNewItemIds = paginatedItems
+      .map((item) => item.id)
+      .filter((itemId) => newItemHighlightIdSet.has(itemId));
+
+    if (shownNewItemIds.length > 0) {
+      onNewItemsShown(shownNewItemIds);
+    }
+  }, [newItemHighlightIdSet, onNewItemsShown, paginatedItems]);
 
   useEffect(() => {
     if (!activeColumnFilter) {
@@ -11622,6 +11702,9 @@ function InventoryPage({
               </>
             }
             onScroll={handleInventoryScroll}
+            rowClassNames={paginatedItems.map((item) =>
+              newItemHighlightIdSet.has(item.id) ? "inventory-row-new" : "",
+            )}
             rowKeys={paginatedItems.map((item) => item.id)}
             rows={paginatedItems.map((item) => [
               <label key="req-select" className="inventory-requisition-select">
@@ -11696,7 +11779,7 @@ function InventoryPage({
               item={item}
               onDelete={onDelete}
               onEdit={onEdit}
-              onItemLinkOpenError={onItemLinkOpenError}
+              onItemLinkOpenMessage={onItemLinkOpenMessage}
               onPrintLabel={onPrintLabel}
               onToggleRequisition={toggleInventoryRequisitionSelection}
               isSelectedForRequisition={selectedRequisitionItemIdSet.has(
@@ -12150,29 +12233,33 @@ function PrintActionIcon() {
 
 function InventoryItemCard({
   data,
+  isNewItem,
   isSelectedForRequisition,
   item,
   onDelete,
   onEdit,
-  onItemLinkOpenError,
+  onItemLinkOpenMessage,
   onPrintLabel,
   onToggleRequisition,
   onStockAction,
   onWatchListVisibilityClick,
 }: {
   data: AppData;
+  isNewItem: boolean;
   isSelectedForRequisition: boolean;
   item: InventoryItem;
   onDelete: (itemId: string) => void;
   onEdit: (item: InventoryItem) => void;
-  onItemLinkOpenError: () => void;
+  onItemLinkOpenMessage: (message: string) => void;
   onPrintLabel: (item: InventoryItem) => void;
   onToggleRequisition: (itemId: string) => void;
   onStockAction: (itemId: string, actionType?: StockActionType | "") => void;
   onWatchListVisibilityClick: (itemId: string) => void;
 }) {
   return (
-    <article className="inventory-item-card">
+    <article
+      className={`inventory-item-card ${isNewItem ? "inventory-card-new" : ""}`}
+    >
       <div className="inventory-item-card-header">
         <div>
           <h3>{item.name}</h3>
@@ -15464,6 +15551,20 @@ function ReorderPage({
                   <button
                     className="btn-muted"
                     type="button"
+                    onClick={() =>
+                      setActiveRequisitionGroupIndex((current) =>
+                        Math.min(vendorGroups.length - 1, current + 1),
+                      )
+                    }
+                    disabled={
+                      activeRequisitionGroupIndex >= vendorGroups.length - 1
+                    }
+                  >
+                    Next Vendor
+                  </button>
+                  <button
+                    className="btn-muted"
+                    type="button"
                     onClick={skipActiveVendor}
                   >
                     Skip Vendor
@@ -18465,29 +18566,66 @@ function PartNumberCell({
   onOpenError?: () => void;
 }) {
   const partNumber = item.partNumber || "No part number";
-  const href = getItemUrlHref(item.itemUrl);
+  const hasSavedUrl = item.itemUrl.trim().length > 0;
 
-  if (!href) {
-    return <span>{item.partNumber || "-"}</span>;
-  }
+  async function openItemLink(event: React.MouseEvent<HTMLButtonElement>) {
+    event.preventDefault();
+    event.stopPropagation();
 
-  async function openItemLink() {
+    const normalizedUrl = normalizeExternalUrl(item.itemUrl);
+
+    if (!normalizedUrl) {
+      onOpenMessage?.("No item link saved for this part.");
+      return;
+    }
+
+    let href = "";
+
+    try {
+      const parsed = new URL(normalizedUrl);
+
+      if (
+        (parsed.protocol !== "https:" && parsed.protocol !== "http:") ||
+        !parsed.hostname
+      ) {
+        onOpenMessage?.("Invalid item link.");
+        return;
+      }
+
+      href = parsed.href;
+    } catch {
+      onOpenMessage?.("Invalid item link.");
+      return;
+    }
+
+    if (isWebsiteBrowserMode()) {
+      const opened = window.open(href, "_blank", "noopener,noreferrer");
+
+      if (!opened) {
+        onOpenMessage?.(
+          "Browser blocked the item link popup. Allow popups or open the link manually.",
+        );
+      }
+
+      return;
+    }
+
     try {
       await openUrl(href);
     } catch {
-      onOpenError?.();
+      onOpenMessage?.("Could not open item link.");
     }
   }
 
   return (
     <button
-      className="part-link"
+      className={`part-link ${hasSavedUrl ? "" : "part-link-empty"}`}
       type="button"
-      title="Open item link"
+      title={hasSavedUrl ? "Open item link" : "No item link saved"}
       aria-label={`Open item link for ${partNumber}`}
-      onClick={() => void openItemLink()}
+      onClick={(event) => void openItemLink(event)}
     >
-      {partNumber}
+      {item.partNumber || "-"}
     </button>
   );
 }
@@ -19068,6 +19206,7 @@ function SimpleTable({
   headers,
   leading,
   onScroll,
+  rowClassNames,
   rowKeys,
   rows,
   scrollRef,
@@ -19077,6 +19216,7 @@ function SimpleTable({
   headers: React.ReactNode[];
   leading?: React.ReactNode;
   onScroll?: () => void;
+  rowClassNames?: string[];
   rowKeys?: string[];
   rows: React.ReactNode[][];
   scrollRef?: React.Ref<HTMLDivElement>;
@@ -19094,7 +19234,10 @@ function SimpleTable({
         </thead>
         <tbody>
           {rows.map((row, index) => (
-            <tr key={rowKeys?.[index] ?? index}>
+            <tr
+              key={rowKeys?.[index] ?? index}
+              className={rowClassNames?.[index] || undefined}
+            >
               {row.map((cell, cellIndex) => (
                 <td key={`${rowKeys?.[index] ?? index}-${cellIndex}`}>
                   {cell}
