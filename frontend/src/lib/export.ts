@@ -1,5 +1,4 @@
-export const downloadTextFile = (filename: string, contents: string, type: string) => {
-  const blob = new Blob([contents], { type });
+export const downloadBlobFile = (filename: string, blob: Blob) => {
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
 
@@ -9,6 +8,10 @@ export const downloadTextFile = (filename: string, contents: string, type: strin
   link.click();
   link.remove();
   URL.revokeObjectURL(url);
+};
+
+export const downloadTextFile = (filename: string, contents: string, type: string) => {
+  downloadBlobFile(filename, new Blob([contents], { type }));
 };
 
 export const csvEscape = (value: unknown) => {

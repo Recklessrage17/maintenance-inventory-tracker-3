@@ -60,7 +60,18 @@ import {
   verifyRecoveryCode,
 } from "./lib/auth";
 import { loadAppData, saveAppData } from "./lib/db";
-import { downloadTextFile, parseCsv, rowsToCsv } from "./lib/export";
+import {
+  downloadBlobFile,
+  downloadTextFile,
+  parseCsv,
+  rowsToCsv,
+} from "./lib/export";
+import {
+  buildInventoryExcelTemplate,
+  MIT3_INVENTORY_TEMPLATE_FILENAME,
+  readInventoryExcelTemplate,
+  type InventoryExcelTemplatePreview,
+} from "./lib/inventoryExcelTemplate";
 import {
   DEFAULT_HISTORY_LOG_PAGE_SIZE,
   HISTORY_LOG_PAGE_SIZE_OPTIONS,
@@ -8059,6 +8070,70 @@ function InventoryApp() {
     showToast("success", "CSV export downloaded.");
   }
 
+  async function handleExportExcelTemplate() {
+    if (!ensurePermission("reports:export")) {
+      return;
+    }
+
+    if (!data) {
+      return;
+    }
+
+    try {
+      const blob = await buildInventoryExcelTemplate({
+        items: data.items,
+        locations: data.locations,
+        vendors: data.vendors,
+      });
+
+      downloadBlobFile(MIT3_INVENTORY_TEMPLATE_FILENAME, blob);
+      showToast("success", "Excel update template downloaded.");
+    } catch (error) {
+      showToast(
+        "danger",
+        error instanceof Error ? error.message : "Excel template export failed.",
+      );
+    }
+  }
+
+  async function handleInventoryImportFile(file: File) {
+    if (/\.xlsx$/i.test(file.name)) {
+      await handleImportExcelTemplate(file);
+      return;
+    }
+
+    await handleImportCsv(file);
+  }
+
+  async function handleImportExcelTemplate(file: File) {
+    if (!ensurePermission("data:import")) {
+      return;
+    }
+
+    if (!data) {
+      return;
+    }
+
+    try {
+      const preview = await readInventoryExcelTemplate(file, data.items);
+      const result = importExcelTemplateRows(preview);
+      const warningText =
+        preview.warnings.length > 0
+          ? ` ${preview.warnings.length} warning(s).`
+          : "";
+
+      showToast(
+        preview.warnings.length > 0 ? "warning" : "success",
+        `Excel template import complete. ${result.updated} updated, ${result.skipped} skipped.${warningText}`,
+      );
+    } catch (error) {
+      showToast(
+        "danger",
+        error instanceof Error ? error.message : "Excel template import failed.",
+      );
+    }
+  }
+
   async function handleImportCsv(file: File) {
     if (!ensurePermission("data:import")) {
       return;
@@ -8113,6 +8188,94 @@ function InventoryApp() {
         error instanceof Error ? error.message : "CSV import failed.",
       );
     }
+  }
+
+  function importExcelTemplateRows(preview: InventoryExcelTemplatePreview) {
+    const result = { skipped: preview.skippedRows, updated: 0 };
+
+    if (!data) {
+      return result;
+    }
+
+    const current = data;
+    const importedAt = nowIso();
+    const nextItems = [...current.items];
+    const auditEntries: AuditEntry[] = [];
+
+    preview.records.forEach((record) => {
+      const existingIndex = record.id
+        ? nextItems.findIndex((item) => item.id === record.id)
+        : nextItems.findIndex(
+            (item) => nameKey(item.partNumber) === nameKey(record.partNumber),
+          );
+
+      if (existingIndex < 0) {
+        result.skipped += 1;
+        return;
+      }
+
+      const existing = nextItems[existingIndex];
+      const minimumStockLevel = Math.max(
+        0,
+        record.minimumStockLevel ?? existing.minimumStockLevel,
+      );
+      const lowStockAlertLevel = normalizeLowStockAlertLevel(
+        minimumStockLevel,
+        record.lowStockAlertLevel ?? existing.lowStockAlertLevel,
+      );
+      const updatedItem: InventoryItem = {
+        ...existing,
+        partNumber: record.partNumber || existing.partNumber,
+        description: record.description || existing.description,
+        name: record.description || existing.name,
+        category: record.category || existing.category,
+        quantityOnHand: Math.max(
+          0,
+          record.quantityOnHand ?? existing.quantityOnHand,
+        ),
+        minimumStockLevel,
+        lowStockAlertLevel,
+        costEach: Math.max(0, record.costEach ?? existing.costEach),
+        itemUrl: record.itemUrl,
+        notes: record.notes || existing.notes,
+        updatedAt: importedAt,
+      };
+
+      nextItems[existingIndex] = updatedItem;
+      result.updated += 1;
+      auditEntries.push(
+        createAuditEntry(
+          "Item",
+          updatedItem.id,
+          "Excel Template Item Updated",
+          `${updatedItem.partNumber || updatedItem.name} was updated from Excel template.`,
+          "Excel Import",
+        ),
+      );
+    });
+
+    auditEntries.push(
+      createAuditEntry(
+        "Import",
+        "excel-template",
+        "Excel Template Import Completed",
+        `Excel template import completed: ${result.updated} updated, ${result.skipped} skipped.`,
+        "Excel Import",
+      ),
+    );
+
+    setData(
+      stampData({
+        ...current,
+        items: nextItems,
+        auditLog: trimAuditLogEntries([
+          ...auditEntries.reverse(),
+          ...current.auditLog,
+        ]),
+      }),
+    );
+
+    return result;
   }
 
   function importCsvRows(preview: CsvImportPreview): CsvImportResult {
@@ -9100,7 +9263,8 @@ function InventoryApp() {
             onEdit={editItem}
             onExportCsv={handleExportCsv}
             onExportExcelCsv={handleExportExcelCsv}
-            onImportCsv={(file) => void handleImportCsv(file)}
+            onExportExcelTemplate={() => void handleExportExcelTemplate()}
+            onImportCsv={(file) => void handleInventoryImportFile(file)}
             onAddItem={startAddItem}
             onManageCategories={openCategoryManager}
             onCreateRequisition={startInventoryRequisition}
@@ -9936,10 +10100,12 @@ function RequisitionMadeDetailDialog({
 function InventoryCsvMenu({
   onExportCsv,
   onExportExcelCsv,
+  onExportExcelTemplate,
   onImportCsv,
 }: {
   onExportCsv: () => void;
   onExportExcelCsv: () => void;
+  onExportExcelTemplate: () => void;
   onImportCsv: (file: File) => void;
 }) {
   const [isOpen, setIsOpen] = useState(false);
@@ -10007,12 +10173,22 @@ function InventoryCsvMenu({
           >
             Export Excel-friendly CSV
           </button>
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              setIsOpen(false);
+              onExportExcelTemplate();
+            }}
+          >
+            Export Excel Update Template
+          </button>
         </div>
       )}
       <input
         ref={inputRef}
         hidden
-        accept=".csv,text/csv"
+        accept=".csv,text/csv,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         type="file"
         onChange={(event) => {
           const file = event.target.files?.[0];
@@ -10933,6 +11109,7 @@ function InventoryPage({
   onEdit,
   onExportCsv,
   onExportExcelCsv,
+  onExportExcelTemplate,
   onImportCsv,
   onItemLinkOpenMessage,
   newestAddedItemId,
@@ -10957,6 +11134,7 @@ function InventoryPage({
   onEdit: (item: InventoryItem) => void;
   onExportCsv: () => void;
   onExportExcelCsv: () => void;
+  onExportExcelTemplate: () => void;
   onImportCsv: (file: File) => void;
   onItemLinkOpenMessage: (message: string) => void;
   newestAddedItemId: string | null;
@@ -11558,6 +11736,7 @@ safeInventoryPageRef.current = safeInventoryPage;
           <InventoryCsvMenu
             onExportCsv={onExportCsv}
             onExportExcelCsv={onExportExcelCsv}
+            onExportExcelTemplate={onExportExcelTemplate}
             onImportCsv={onImportCsv}
           />
         </div>
