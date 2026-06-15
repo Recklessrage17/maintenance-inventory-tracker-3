@@ -1,4 +1,4 @@
-import {
+﻿import {
   type Dispatch,
   FormEvent,
   type SetStateAction,
@@ -3121,6 +3121,7 @@ function buildCsvFolderImportPreview(
 function itemFromForm(
   form: ItemFormState,
   existing?: InventoryItem,
+  forcedItemId?: string,
 ): InventoryItem {
   const now = nowIso();
   const minimumStockLevel = Math.max(
@@ -3133,7 +3134,7 @@ function itemFromForm(
   );
 
   return {
-    id: existing?.id ?? createId(),
+    id: existing?.id ?? forcedItemId ?? createId(),
     name: form.name.trim(),
     partNumber: form.partNumber.trim(),
     description: form.description.trim(),
@@ -6726,7 +6727,7 @@ function InventoryApp() {
       const existing = itemId
         ? current.items.find((item) => item.id === itemId)
         : undefined;
-      const item = itemFromForm(formToSave, existing);
+      const item = itemFromForm(formToSave, existing, newItemId || undefined);
       const nextItems = existing
         ? current.items.map((candidate) =>
             candidate.id === existing.id ? item : candidate,
@@ -9109,7 +9110,7 @@ function InventoryApp() {
             onStockAction={startStockAction}
             onStatusFilter={setStatusFilter}
             onWatchListVisibilityClick={setWatchListVisibilityItemId}
-            onItemLinkOpenError={() =>
+            onItemLinkOpenMessage={() =>
               showToast("warning", "Could not open item link.")
             }
             statusFilter={statusFilter}
@@ -10958,7 +10959,7 @@ function InventoryPage({
   onExportExcelCsv: () => void;
   onImportCsv: (file: File) => void;
   onItemLinkOpenMessage: (message: string) => void;
-  newestAddedItemId: string;
+  newestAddedItemId: string | null;
   newItemHighlightIds: string[];
   onCreateRequisition: (itemIds: string[]) => void;
   onNewItemsShown: (itemIds: string[]) => void;
@@ -11039,7 +11040,11 @@ function InventoryPage({
     () => new Set(selectedRequisitionItemIds),
     [selectedRequisitionItemIds],
   );
-  safeInventoryPageRef.current = safeInventoryPage;
+    const newItemHighlightIdSet = useMemo(
+    () => new Set(newItemHighlightIds),
+    [newItemHighlightIds],
+  );
+safeInventoryPageRef.current = safeInventoryPage;
   totalInventoryPagesRef.current = totalInventoryPages;
 
   function scrollInventoryListToPosition(position: "bottom" | "top") {
@@ -11725,7 +11730,7 @@ function InventoryPage({
               <PartNumberCell
                 key="part-number"
                 item={item}
-                onOpenError={onItemLinkOpenError}
+                onOpenError={onItemLinkOpenMessage}
               />,
               item.category || "-",
               item.description || "-",
@@ -11783,6 +11788,7 @@ function InventoryPage({
               key={item.id}
               data={data}
               item={item}
+              isNewItem={newItemHighlightIdSet.has(item.id)}
               onDelete={onDelete}
               onEdit={onEdit}
               onItemLinkOpenMessage={onItemLinkOpenMessage}
@@ -12295,7 +12301,7 @@ function InventoryItemCard({
         <InventoryCardField
           label="Part number"
           value={
-            <PartNumberCell item={item} onOpenError={onItemLinkOpenError} />
+            <PartNumberCell item={item} onOpenError={onItemLinkOpenMessage} />
           }
         />
         <InventoryCardField
@@ -19269,3 +19275,6 @@ function SimpleTable({
 }
 
 export default App;
+
+
+
