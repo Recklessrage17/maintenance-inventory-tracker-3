@@ -67,8 +67,11 @@ import {
   rowsToCsv,
 } from "./lib/export";
 import {
+  buildBlankInventoryExcelTemplate,
   buildInventoryExcelTemplate,
+  MIT3_BLANK_INVENTORY_TEMPLATE_FILENAME,
   MIT3_INVENTORY_TEMPLATE_FILENAME,
+  normalizeInventoryItemUrl,
   readInventoryExcelTemplate,
   type InventoryExcelTemplatePreview,
 } from "./lib/inventoryExcelTemplate";
@@ -1795,26 +1798,7 @@ function normalizeExternalUrl(value: string) {
 }
 
 function getItemUrlHref(value: string) {
-  const candidate = normalizeExternalUrl(value);
-
-  if (!candidate) {
-    return "";
-  }
-
-  try {
-    const parsed = new URL(candidate);
-
-    if (
-      (parsed.protocol !== "https:" && parsed.protocol !== "http:") ||
-      !parsed.hostname
-    ) {
-      return "";
-    }
-
-    return parsed.href;
-  } catch {
-    return "";
-  }
+  return normalizeInventoryItemUrl(value);
 }
 
 function getExternalHref(value: string) {
@@ -8096,6 +8080,24 @@ function InventoryApp() {
     }
   }
 
+  async function handleExportBlankImportTemplate() {
+    if (!ensurePermission("reports:export")) {
+      return;
+    }
+
+    try {
+      const blob = await buildBlankInventoryExcelTemplate();
+
+      downloadBlobFile(MIT3_BLANK_INVENTORY_TEMPLATE_FILENAME, blob);
+      showToast("success", "Blank inventory import template downloaded.");
+    } catch (error) {
+      showToast(
+        "danger",
+        error instanceof Error ? error.message : "Blank import template export failed.",
+      );
+    }
+  }
+
   async function handleInventoryImportFile(file: File) {
     if (/\.xlsx$/i.test(file.name)) {
       await handleImportExcelTemplate(file);
@@ -8124,7 +8126,7 @@ function InventoryApp() {
 
       showToast(
         preview.warnings.length > 0 ? "warning" : "success",
-        `Excel template import complete. ${result.updated} updated, ${result.skipped} skipped.${warningText}`,
+        `Excel template import complete. ${result.created} created, ${result.updated} updated, ${result.skipped} skipped, ${result.duplicatePartNumberMatches} duplicate part number match(es), ${result.hyperlinksImported} hyperlink(s) imported, ${result.hyperlinksSkipped} hyperlink(s) skipped.${warningText}`,
       );
     } catch (error) {
       showToast(
@@ -8191,7 +8193,16 @@ function InventoryApp() {
   }
 
   function importExcelTemplateRows(preview: InventoryExcelTemplatePreview) {
-    const result = { skipped: preview.skippedRows, updated: 0 };
+    const result = {
+      created: 0,
+      skipped: preview.skippedRows,
+      updated: 0,
+      duplicatePartNumberMatches: preview.duplicatePartNumberMatches,
+      hyperlinksImported: 0,
+      hyperlinksSkipped: preview.hyperlinksSkipped,
+      locationsCreated: 0,
+      vendorsCreated: 0,
+    };
 
     if (!data) {
       return result;
@@ -8200,7 +8211,31 @@ function InventoryApp() {
     const current = data;
     const importedAt = nowIso();
     const nextItems = [...current.items];
+    const nextLocations = [...current.locations];
+    const nextVendors = [...current.vendors];
     const auditEntries: AuditEntry[] = [];
+
+    const findOrCreateLocation = (name: string) => {
+      const trimmed = name.trim();
+      if (!trimmed) return "";
+      const existing = nextLocations.find((location) => nameKey(location.name) === nameKey(trimmed));
+      if (existing) return existing.id;
+      const location = createLocation(trimmed);
+      nextLocations.push(location);
+      result.locationsCreated += 1;
+      return location.id;
+    };
+
+    const findOrCreateVendor = (name: string) => {
+      const trimmed = name.trim();
+      if (!trimmed) return "";
+      const existing = nextVendors.find((vendor) => nameKey(vendor.name) === nameKey(trimmed));
+      if (existing) return existing.id;
+      const vendor = createVendor(trimmed);
+      nextVendors.push(vendor);
+      result.vendorsCreated += 1;
+      return vendor.id;
+    };
 
     preview.records.forEach((record) => {
       const existingIndex = record.id
@@ -8208,50 +8243,53 @@ function InventoryApp() {
         : nextItems.findIndex(
             (item) => nameKey(item.partNumber) === nameKey(record.partNumber),
           );
-
-      if (existingIndex < 0) {
-        result.skipped += 1;
-        return;
-      }
-
-      const existing = nextItems[existingIndex];
+      const existing = existingIndex >= 0 ? nextItems[existingIndex] : undefined;
       const minimumStockLevel = Math.max(
         0,
-        record.minimumStockLevel ?? existing.minimumStockLevel,
+        record.minimumStockLevel ?? existing?.minimumStockLevel ?? 0,
       );
       const lowStockAlertLevel = normalizeLowStockAlertLevel(
         minimumStockLevel,
-        record.lowStockAlertLevel ?? existing.lowStockAlertLevel,
+        record.lowStockAlertLevel ?? existing?.lowStockAlertLevel ?? defaultLowStockAlertLevel(),
       );
-      const updatedItem: InventoryItem = {
-        ...existing,
-        partNumber: record.partNumber || existing.partNumber,
-        description: record.description || existing.description,
-        name: record.description || existing.name,
-        category: record.category || existing.category,
-        quantityOnHand: Math.max(
-          0,
-          record.quantityOnHand ?? existing.quantityOnHand,
-        ),
-        minimumStockLevel,
-        lowStockAlertLevel,
-        costEach: Math.max(0, record.costEach ?? existing.costEach),
-        itemUrl: record.itemUrl,
-        notes: record.notes || existing.notes,
-        updatedAt: importedAt,
-      };
+      const name = record.description || existing?.name || record.partNumber;
+      const importedItem = itemFromForm(
+        {
+          name,
+          partNumber: record.partNumber || existing?.partNumber || "",
+          description: record.description || existing?.description || "",
+          category: record.category || existing?.category || "Other",
+          quantityOnHand: Math.max(0, record.quantityOnHand ?? existing?.quantityOnHand ?? 0),
+          stockUnit: existing?.stockUnit || DEFAULT_STOCK_UNIT,
+          minimumStockLevel,
+          lowStockAlertLevel,
+          locationId: findOrCreateLocation(record.locationName) || existing?.locationId || current.settings.defaultLocationId,
+          vendorId: findOrCreateVendor(record.vendorName) || existing?.vendorId || "",
+          costEach: Math.max(0, record.costEach ?? existing?.costEach ?? 0),
+          itemUrl: record.itemUrl || existing?.itemUrl || "",
+          notes: record.notes || existing?.notes || "",
+          imagePlaceholder: existing?.imagePlaceholder || "",
+          imageDataUrl: existing?.imageDataUrl || "",
+          barcodePlaceholder: existing?.barcodePlaceholder || "",
+          reorderHold: existing?.reorderHold === true,
+          orderPlaced: existing?.orderPlaced === false ? false : true,
+        },
+        existing,
+      );
 
-      nextItems[existingIndex] = updatedItem;
-      result.updated += 1;
-      auditEntries.push(
-        createAuditEntry(
-          "Item",
-          updatedItem.id,
-          "Excel Template Item Updated",
-          `${updatedItem.partNumber || updatedItem.name} was updated from Excel template.`,
-          "Excel Import",
-        ),
-      );
+      if (existing && existingIndex >= 0) {
+        nextItems[existingIndex] = { ...importedItem, updatedAt: importedAt };
+        result.updated += 1;
+        auditEntries.push(createAuditEntry("Item", importedItem.id, "Excel Template Item Updated", `${importedItem.partNumber || importedItem.name} was updated from Excel template.`, "Excel Import"));
+      } else {
+        nextItems.unshift(importedItem);
+        result.created += 1;
+        auditEntries.push(createAuditEntry("Item", importedItem.id, "Excel Template Item Created", `${importedItem.partNumber || importedItem.name} was created from Excel template.`, "Excel Import"));
+      }
+
+      if (record.itemUrl) {
+        result.hyperlinksImported += 1;
+      }
     });
 
     auditEntries.push(
@@ -8259,7 +8297,7 @@ function InventoryApp() {
         "Import",
         "excel-template",
         "Excel Template Import Completed",
-        `Excel template import completed: ${result.updated} updated, ${result.skipped} skipped.`,
+        `Excel template import completed: ${result.created} created, ${result.updated} updated, ${result.skipped} skipped.`,
         "Excel Import",
       ),
     );
@@ -8268,6 +8306,8 @@ function InventoryApp() {
       stampData({
         ...current,
         items: nextItems,
+        locations: nextLocations,
+        vendors: nextVendors,
         auditLog: trimAuditLogEntries([
           ...auditEntries.reverse(),
           ...current.auditLog,
@@ -9264,6 +9304,7 @@ function InventoryApp() {
             onExportCsv={handleExportCsv}
             onExportExcelCsv={handleExportExcelCsv}
             onExportExcelTemplate={() => void handleExportExcelTemplate()}
+            onExportBlankImportTemplate={() => void handleExportBlankImportTemplate()}
             onImportCsv={(file) => void handleInventoryImportFile(file)}
             onAddItem={startAddItem}
             onManageCategories={openCategoryManager}
@@ -10101,11 +10142,13 @@ function InventoryCsvMenu({
   onExportCsv,
   onExportExcelCsv,
   onExportExcelTemplate,
+  onExportBlankImportTemplate,
   onImportCsv,
 }: {
   onExportCsv: () => void;
   onExportExcelCsv: () => void;
   onExportExcelTemplate: () => void;
+  onExportBlankImportTemplate: () => void;
   onImportCsv: (file: File) => void;
 }) {
   const [isOpen, setIsOpen] = useState(false);
@@ -10151,7 +10194,7 @@ function InventoryCsvMenu({
       {isOpen && (
         <div className="inventory-transfer-dropdown" role="menu">
           <button type="button" role="menuitem" onClick={chooseImportFile}>
-            Import CSV
+            Import CSV / Excel
           </button>
           <button
             type="button"
@@ -10182,6 +10225,16 @@ function InventoryCsvMenu({
             }}
           >
             Export Excel Update Template
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              setIsOpen(false);
+              onExportBlankImportTemplate();
+            }}
+          >
+            Export Blank Import Template
           </button>
         </div>
       )}
@@ -11110,6 +11163,7 @@ function InventoryPage({
   onExportCsv,
   onExportExcelCsv,
   onExportExcelTemplate,
+  onExportBlankImportTemplate,
   onImportCsv,
   onItemLinkOpenMessage,
   newestAddedItemId,
@@ -11135,6 +11189,7 @@ function InventoryPage({
   onExportCsv: () => void;
   onExportExcelCsv: () => void;
   onExportExcelTemplate: () => void;
+  onExportBlankImportTemplate: () => void;
   onImportCsv: (file: File) => void;
   onItemLinkOpenMessage: (message: string) => void;
   newestAddedItemId: string | null;
@@ -11737,6 +11792,7 @@ safeInventoryPageRef.current = safeInventoryPage;
             onExportCsv={onExportCsv}
             onExportExcelCsv={onExportExcelCsv}
             onExportExcelTemplate={onExportExcelTemplate}
+            onExportBlankImportTemplate={onExportBlankImportTemplate}
             onImportCsv={onImportCsv}
           />
         </div>
