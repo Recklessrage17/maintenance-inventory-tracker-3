@@ -2,7 +2,6 @@ import {
   type Dispatch,
   FormEvent,
   type SetStateAction,
-  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -3121,7 +3120,6 @@ function buildCsvFolderImportPreview(
 function itemFromForm(
   form: ItemFormState,
   existing?: InventoryItem,
-  itemId?: string,
 ): InventoryItem {
   const now = nowIso();
   const minimumStockLevel = Math.max(
@@ -3935,10 +3933,8 @@ function InventoryApp() {
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
   const [isItemFormOpen, setIsItemFormOpen] = useState(false);
   const [isCategoryManagerOpen, setIsCategoryManagerOpen] = useState(false);
-  const [newestAddedInventoryItemId, setNewestAddedInventoryItemId] =
-    useState("");
-  const [newInventoryItemHighlightIds, setNewInventoryItemHighlightIds] =
-    useState<string[]>([]);
+  const [pendingNewItemVisibilityForm, setPendingNewItemVisibilityForm] =
+    useState<ItemFormState | null>(null);
   const [watchListVisibilityItemId, setWatchListVisibilityItemId] = useState<
     string | null
   >(null);
@@ -5185,11 +5181,7 @@ function InventoryApp() {
 
         return true;
       })
-      .sort(
-        (a, b) =>
-          inventoryItemRecencyTime(b) - inventoryItemRecencyTime(a) ||
-          a.name.localeCompare(b.name),
-      );
+      .sort((a, b) => a.name.localeCompare(b.name));
   }, [
     data?.items,
     debouncedInventoryColumnFilters,
@@ -6728,7 +6720,7 @@ function InventoryApp() {
       const existing = itemId
         ? current.items.find((item) => item.id === itemId)
         : undefined;
-      const item = itemFromForm(formToSave, existing, newItemId);
+      const item = itemFromForm(formToSave, existing);
       const nextItems = existing
         ? current.items.map((candidate) =>
             candidate.id === existing.id ? item : candidate,
@@ -6761,6 +6753,17 @@ function InventoryApp() {
     setIsItemFormOpen(false);
     setActivePage("inventory");
     closeSettingsPanel();
+  }
+
+  function chooseNewItemWatchListVisibility(choice: WatchListVisibilityChoice) {
+    if (!pendingNewItemVisibilityForm) {
+      return;
+    }
+
+    saveItemForm(
+      applyWatchListVisibilityChoice(pendingNewItemVisibilityForm, choice),
+      null,
+    );
   }
 
   function editItem(item: InventoryItem) {
@@ -9100,7 +9103,9 @@ function InventoryApp() {
             onStockAction={startStockAction}
             onStatusFilter={setStatusFilter}
             onWatchListVisibilityClick={setWatchListVisibilityItemId}
-            onItemLinkOpenMessage={(message) => showToast("warning", message)}
+            onItemLinkOpenError={() =>
+              showToast("warning", "Could not open item link.")
+            }
             statusFilter={statusFilter}
           />
         )}
@@ -11028,10 +11033,6 @@ function InventoryPage({
     () => new Set(selectedRequisitionItemIds),
     [selectedRequisitionItemIds],
   );
-  const newItemHighlightIdSet = useMemo(
-    () => new Set(newItemHighlightIds),
-    [newItemHighlightIds],
-  );
   safeInventoryPageRef.current = safeInventoryPage;
   totalInventoryPagesRef.current = totalInventoryPages;
 
@@ -11718,7 +11719,7 @@ function InventoryPage({
               <PartNumberCell
                 key="part-number"
                 item={item}
-                onOpenMessage={onItemLinkOpenMessage}
+                onOpenError={onItemLinkOpenError}
               />,
               item.category || "-",
               item.description || "-",
@@ -11781,7 +11782,6 @@ function InventoryPage({
               onItemLinkOpenMessage={onItemLinkOpenMessage}
               onPrintLabel={onPrintLabel}
               onToggleRequisition={toggleInventoryRequisitionSelection}
-              isNewItem={newItemHighlightIdSet.has(item.id)}
               isSelectedForRequisition={selectedRequisitionItemIdSet.has(
                 item.id,
               )}
@@ -12289,7 +12289,7 @@ function InventoryItemCard({
         <InventoryCardField
           label="Part number"
           value={
-            <PartNumberCell item={item} onOpenMessage={onItemLinkOpenMessage} />
+            <PartNumberCell item={item} onOpenError={onItemLinkOpenError} />
           }
         />
         <InventoryCardField
@@ -15551,6 +15551,20 @@ function ReorderPage({
                   <button
                     className="btn-muted"
                     type="button"
+                    onClick={() =>
+                      setActiveRequisitionGroupIndex((current) =>
+                        Math.min(vendorGroups.length - 1, current + 1),
+                      )
+                    }
+                    disabled={
+                      activeRequisitionGroupIndex >= vendorGroups.length - 1
+                    }
+                  >
+                    Next Vendor
+                  </button>
+                  <button
+                    className="btn-muted"
+                    type="button"
                     onClick={skipActiveVendor}
                   >
                     Skip Vendor
@@ -18546,10 +18560,10 @@ function StatusStatCard({
 
 function PartNumberCell({
   item,
-  onOpenMessage,
+  onOpenError,
 }: {
   item: InventoryItem;
-  onOpenMessage?: (message: string) => void;
+  onOpenError?: () => void;
 }) {
   const partNumber = item.partNumber || "No part number";
   const hasSavedUrl = item.itemUrl.trim().length > 0;
@@ -19046,6 +19060,81 @@ function EyeOffIcon() {
       <path d="M9.8 5.2A10.7 10.7 0 0 1 12 5c5 0 8.5 4.2 10 7-.5 1-1.4 2.2-2.5 3.3" />
       <path d="M6.1 6.8C4.3 8 3 10 2 12c1.5 2.8 5 7 10 7 1.4 0 2.7-.3 3.8-.9" />
     </svg>
+  );
+}
+
+function NewItemWatchListSettingDialog({
+  onCancel,
+  onChoose,
+}: {
+  onCancel: () => void;
+  onChoose: (choice: WatchListVisibilityChoice) => void;
+}) {
+  const [selectedChoice, setSelectedChoice] =
+    useState<WatchListVisibilityChoice>("hidden");
+  const choices: Array<{
+    description: string;
+    label: string;
+    value: WatchListVisibilityChoice;
+  }> = [
+    {
+      description: "Default for new items.",
+      label: "Hide from Dashboard Watch List",
+      value: "hidden",
+    },
+    {
+      description: "Use normal low-stock and out-of-stock alerts.",
+      label: "Show on Dashboard when Low/Out of Stock",
+      value: "visible",
+    },
+    {
+      description: "Keep it in the held reorder group.",
+      label: "Hold for Reorder List",
+      value: "held",
+    },
+  ];
+
+  return (
+    <div className="review-modal-backdrop">
+      <section
+        className="review-modal watch-list-setting-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="watch-list-setting-title"
+      >
+        <h3 id="watch-list-setting-title">Dashboard Watch List Setting</h3>
+        <p>
+          Choose how this item should appear when it reaches low stock or out of
+          stock.
+        </p>
+        <div className="watch-list-choice-grid">
+          {choices.map((choice) => (
+            <button
+              key={choice.value}
+              className={`watch-list-choice-button ${selectedChoice === choice.value ? "watch-list-choice-button-selected" : ""}`}
+              type="button"
+              aria-pressed={selectedChoice === choice.value}
+              onClick={() => setSelectedChoice(choice.value)}
+            >
+              <strong>{choice.label}</strong>
+              <span>{choice.description}</span>
+            </button>
+          ))}
+        </div>
+        <div className="review-modal-actions">
+          <button
+            className="btn-primary"
+            type="button"
+            onClick={() => onChoose(selectedChoice)}
+          >
+            Save Watch List Setting
+          </button>
+          <button className="btn-muted" type="button" onClick={onCancel}>
+            Cancel
+          </button>
+        </div>
+      </section>
+    </div>
   );
 }
 
