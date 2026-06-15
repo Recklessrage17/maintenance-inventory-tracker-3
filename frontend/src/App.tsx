@@ -5231,6 +5231,7 @@ function InventoryApp() {
 
   async function pollWebsiteUpdateProgress() {
     const deadline = Date.now() + 10 * 60 * 1000;
+    const idleLaunchDeadline = Date.now() + 6000;
     let sawBackendOffline = false;
 
     while (Date.now() < deadline) {
@@ -5240,6 +5241,28 @@ function InventoryApp() {
         setWebsiteUpdateRestartMessage(
           runStatus.message || "Update running...",
         );
+
+        if (
+          !runStatus.running &&
+          runStatus.phase === "idle" &&
+          Date.now() >= idleLaunchDeadline
+        ) {
+          const message =
+            "Update launch failed. No updater status file was created.";
+          const failedStatus = {
+            ...runStatus,
+            error: message,
+            message,
+            ok: false as const,
+            phase: "failed",
+          };
+
+          setWebsiteUpdateRunStatus(failedStatus);
+          setWebsiteUpdateMessage(message);
+          setWebsiteUpdateRestartMessage(message);
+          showToast("danger", message);
+          return;
+        }
 
         if (runStatus.phase === "failed" || runStatus.ok === false) {
           setWebsiteUpdateMessage("Update failed");
@@ -5369,25 +5392,45 @@ function InventoryApp() {
       const result = await runWebsiteUpdate();
 
       if (result.ok) {
-        const message = "Update running...";
+        const launchDeadline = Date.now() + 6000;
+        let runStatus = await getWebsiteUpdateRunStatus();
+
+        while (
+          !runStatus.running &&
+          runStatus.phase === "idle" &&
+          Date.now() < launchDeadline
+        ) {
+          await wait(1000);
+          runStatus = await getWebsiteUpdateRunStatus();
+        }
+
+        if (!runStatus.running && runStatus.phase === "idle") {
+          const message =
+            "Update launch failed. No updater status file was created.";
+
+          setIsWebsiteUpdateRestarting(true);
+          setWebsiteUpdateMessage(message);
+          setWebsiteUpdateRestartMessage(message);
+          setWebsiteUpdateRunStatus({
+            ...runStatus,
+            error: message,
+            message,
+            ok: false,
+            phase: "failed",
+            repoRoot: runStatus.repoRoot || result.repoRoot,
+            scriptPath: runStatus.scriptPath || result.scriptPath,
+            pid: runStatus.pid ?? result.pid,
+          });
+          showToast("danger", message);
+          return;
+        }
+
+        const message = runStatus.message || "Update running...";
 
         setIsWebsiteUpdateRestarting(true);
         setWebsiteUpdateMessage(message);
         setWebsiteUpdateRestartMessage(message);
-        setWebsiteUpdateRunStatus({
-          afterSha: null,
-          beforeSha: null,
-          completedAt: null,
-          error: null,
-          logFile: null,
-          message: result.message,
-          ok: null,
-          phase: "starting",
-          repoRoot: result.repoRoot,
-          running: true,
-          startedAt: nowIso(),
-          updatedAt: nowIso(),
-        });
+        setWebsiteUpdateRunStatus(runStatus);
         showToast(
           "success",
           "Update started. MIT3 will show progress here.",
@@ -9194,6 +9237,7 @@ function InventoryApp() {
             message={websiteUpdateRestartMessage}
             runStatus={websiteUpdateRunStatus}
             onCheckAgain={() => void checkWebsiteUpdate(true)}
+            onClose={() => setIsWebsiteUpdateRestarting(false)}
             onRefresh={() => window.location.reload()}
             onViewLog={() => void viewWebsiteUpdateLog()}
           />
@@ -10432,6 +10476,7 @@ function WebsiteUpdateRestartDialog({
   logText,
   message,
   onCheckAgain,
+  onClose,
   onRefresh,
   onViewLog,
   runStatus,
@@ -10440,6 +10485,7 @@ function WebsiteUpdateRestartDialog({
   logText: string;
   message: string;
   onCheckAgain: () => void;
+  onClose: () => void;
   onRefresh: () => void;
   onViewLog: () => void;
   runStatus: WebsiteUpdateRunStatus | null;
@@ -10497,28 +10543,23 @@ function WebsiteUpdateRestartDialog({
           </pre>
         )}
         <div className="review-modal-actions">
-          <button className="btn-primary" type="button" onClick={onRefresh}>
+          <button
+            className="btn-primary"
+            type="button"
+            onClick={onViewLog}
+            disabled={isLoadingLog}
+          >
+            {isLoadingLog ? "Loading Log..." : "View Update Log"}
+          </button>
+          <button className="btn-muted" type="button" onClick={onCheckAgain}>
+            Check Again
+          </button>
+          <button className="btn-muted" type="button" onClick={onClose}>
+            Close
+          </button>
+          <button className="btn-muted" type="button" onClick={onRefresh}>
             Refresh Now
           </button>
-          {failed && (
-            <>
-              <button
-                className="btn-muted"
-                type="button"
-                onClick={onViewLog}
-                disabled={isLoadingLog}
-              >
-                {isLoadingLog ? "Loading Log..." : "View Update Log"}
-              </button>
-              <button
-                className="btn-muted"
-                type="button"
-                onClick={onCheckAgain}
-              >
-                Check for Updates Again
-              </button>
-            </>
-          )}
         </div>
       </section>
     </div>

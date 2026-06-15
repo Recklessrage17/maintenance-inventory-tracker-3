@@ -1,6 +1,6 @@
 import cors from "cors";
 import express, { type RequestHandler } from "express";
-import { execFile, spawn } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -65,6 +65,8 @@ type UpdateRunStatus = {
   ok: boolean | null;
   phase: string;
   repoRoot: string;
+  scriptPath?: string;
+  pid?: number | null;
   running: boolean;
   startedAt: string | null;
   updatedAt: string | null;
@@ -219,6 +221,64 @@ async function getUpdateRunStatus(): Promise<UpdateRunStatus> {
   }
 }
 
+async function writeUpdateRunStatus(status: UpdateRunStatus) {
+  await fs.promises.mkdir(path.dirname(updateStatusPath), { recursive: true });
+  await fs.promises.writeFile(
+    updateStatusPath,
+    `${JSON.stringify(status, null, 2)}\n`,
+    "utf8",
+  );
+}
+
+function waitForUpdateProcessLaunch(child: ChildProcess) {
+  return new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const timeout = setTimeout(() => {
+      finish();
+      resolve();
+    }, 1500);
+
+    function finish() {
+      if (settled) {
+        return false;
+      }
+
+      settled = true;
+      clearTimeout(timeout);
+      child.off("spawn", onSpawn);
+      child.off("error", onError);
+      child.off("exit", onExit);
+      return true;
+    }
+
+    function onSpawn() {
+      if (finish()) {
+        resolve();
+      }
+    }
+
+    function onError(error: Error) {
+      if (finish()) {
+        reject(error);
+      }
+    }
+
+    function onExit(code: number | null, signal: NodeJS.Signals | null) {
+      if (finish()) {
+        reject(
+          new Error(
+            `Updater process exited before launch completed (code ${code ?? "null"}, signal ${signal ?? "null"}).`,
+          ),
+        );
+      }
+    }
+
+    child.once("spawn", onSpawn);
+    child.once("error", onError);
+    child.once("exit", onExit);
+  });
+}
+
 async function getLatestUpdateLogPath() {
   const status = await getUpdateRunStatus().catch(() => null);
 
@@ -360,6 +420,26 @@ app.post("/api/update/run", async (_request, response) => {
 
     updateRunInProgress = true;
 
+    const startedAt = new Date().toISOString();
+    const launchStatus: UpdateRunStatus = {
+      running: true,
+      phase: "launching",
+      message: "Starting MIT3 updater...",
+      repoRoot,
+      scriptPath: updateScriptPath,
+      pid: null,
+      startedAt,
+      updatedAt: startedAt,
+      completedAt: null,
+      ok: null,
+      error: null,
+      beforeSha: null,
+      afterSha: null,
+      logFile: null,
+    };
+
+    await writeUpdateRunStatus(launchStatus);
+
     const child = spawn(
       "powershell.exe",
       [
@@ -381,16 +461,59 @@ app.post("/api/update/run", async (_request, response) => {
       },
     );
 
+    launchStatus.pid = child.pid ?? null;
+
+    try {
+      await waitForUpdateProcessLaunch(child);
+    } catch (error) {
+      updateRunInProgress = false;
+      const message = updateErrorMessage(
+        error,
+        "Could not start MIT3 website update.",
+      );
+
+      await writeUpdateRunStatus({
+        ...launchStatus,
+        running: false,
+        phase: "failed",
+        message: "Updater launch failed.",
+        updatedAt: new Date().toISOString(),
+        completedAt: new Date().toISOString(),
+        ok: false,
+        error: message,
+      });
+
+      response.status(500).json({
+        ok: false,
+        error: message,
+        repoRoot,
+        scriptPath: updateScriptPath,
+        pid: child.pid ?? null,
+        statusUrl: "/api/update/run/status",
+      });
+      return;
+    }
+
     child.on("error", (error) => {
       updateRunInProgress = false;
-      console.error("Could not start MIT3 website update:", error);
+      console.error("MIT3 website update process error:", error);
     });
     child.unref();
+
+    await writeUpdateRunStatus({
+      ...launchStatus,
+      pid: child.pid ?? null,
+      phase: "running",
+      message: "MIT3 updater launched.",
+      updatedAt: new Date().toISOString(),
+    });
 
     response.json({
       ok: true,
       message: "Update started",
       repoRoot,
+      scriptPath: updateScriptPath,
+      pid: child.pid ?? null,
       statusUrl: "/api/update/run/status",
     });
   } catch (error) {

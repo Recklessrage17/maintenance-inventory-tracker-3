@@ -26,6 +26,8 @@ export type WebsiteUpdateRunStatus = {
   ok: boolean | null;
   phase: string;
   repoRoot?: string;
+  scriptPath?: string;
+  pid?: number | null;
   running: boolean;
   startedAt: string | null;
   updatedAt: string | null;
@@ -36,6 +38,8 @@ export type WebsiteUpdateRunResult =
       message: string;
       ok: true;
       repoRoot: string;
+      scriptPath: string;
+      pid: number | null;
       statusUrl: string;
     }
   | {
@@ -43,6 +47,10 @@ export type WebsiteUpdateRunResult =
       dirtyFiles?: string[];
       error: string;
       ok: false;
+      repoRoot?: string;
+      scriptPath?: string;
+      pid?: number | null;
+      statusUrl?: string;
     };
 
 function apiUrl(path: string) {
