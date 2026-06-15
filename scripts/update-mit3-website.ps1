@@ -49,6 +49,16 @@ function Write-UpdateLog {
   }
 }
 
+function Write-Utf8NoBomFile {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [Parameter(Mandatory = $true)][string]$Value
+  )
+
+  $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+  [System.IO.File]::WriteAllText($Path, $Value, $utf8NoBom)
+}
+
 function Save-UpdateStatus {
   param(
     [string]$Phase,
@@ -78,7 +88,8 @@ function Save-UpdateStatus {
     try { $Status.afterSha = (& git -C $Status.repoRoot rev-parse HEAD 2>$null) } catch {}
   }
 
-  $Status | ConvertTo-Json -Depth 4 | Set-Content -Path $StatusPath -Encoding UTF8
+  $json = $Status | ConvertTo-Json -Depth 4
+  Write-Utf8NoBomFile -Path $StatusPath -Value $json
 }
 
 function Invoke-LoggedCommand {
@@ -115,20 +126,42 @@ function Stop-Mit3Website {
 
   Write-UpdateLog "Stopping website on port $Port if running..."
 
-  $connections = Get-NetTCPConnection -LocalPort $Port -ErrorAction SilentlyContinue
+  $connections = Get-NetTCPConnection -LocalPort $Port -ErrorAction SilentlyContinue |
+    Where-Object { $_.OwningProcess -gt 0 }
 
   if (-not $connections) {
     Write-UpdateLog "Nothing running on port $Port."
     return
   }
 
-  $processIds = $connections | Select-Object -ExpandProperty OwningProcess -Unique
+  $processIds = $connections |
+    Select-Object -ExpandProperty OwningProcess -Unique |
+    Where-Object { $_ -gt 0 }
 
   foreach ($pidToStop in $processIds) {
+    if ($pidToStop -eq 0) {
+      Write-UpdateLog "Skipping Idle PID 0."
+      continue
+    }
+
+    if ($pidToStop -eq $PID) {
+      Write-UpdateLog "Skipping current updater PowerShell PID $pidToStop."
+      continue
+    }
+
     $proc = Get-Process -Id $pidToStop -ErrorAction SilentlyContinue
-    if ($proc) {
-      Write-UpdateLog "Stopping $($proc.ProcessName) PID $pidToStop..."
-      Stop-Process -Id $pidToStop -Force
+    if (-not $proc) {
+      Write-UpdateLog "Process PID $pidToStop disappeared before it could be stopped. Continuing..."
+      continue
+    }
+
+    Write-UpdateLog "Stopping $($proc.ProcessName) PID $pidToStop..."
+    try {
+      Stop-Process -Id $pidToStop -Force -ErrorAction Stop
+    } catch {
+      $stopMessage = $_.Exception.Message
+      if (-not $stopMessage) { $stopMessage = [string]$_ }
+      Write-UpdateLog "Could not stop PID $pidToStop ($($proc.ProcessName)): $stopMessage. Continuing..."
     }
   }
 }
