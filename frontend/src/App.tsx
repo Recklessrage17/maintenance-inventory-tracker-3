@@ -1644,6 +1644,25 @@ function getWatchListVisibilitySummary(
   return `${item.name} was shown on the Dashboard Watch List.`;
 }
 
+function isActiveWaitingRequisition(record: RequisitionMadeRecord) {
+  const status = String(record.status || "").toLowerCase();
+  const activeStatus =
+    status.includes("requisition made") ||
+    status.includes("made") ||
+    status.includes("waiting") ||
+    status.includes("ordered") ||
+    status.includes("pending") ||
+    status.includes("active");
+
+  return (
+    activeStatus &&
+    !status.includes("completed") &&
+    !status.includes("delivered") &&
+    !status.includes("history") &&
+    !status.includes("archived")
+  );
+}
+
 function getActiveRequisitionMadeRecords(data: AppData) {
   const activeRequisitionIdByItemId = new Map<string, string>();
 
@@ -1660,6 +1679,7 @@ function getActiveRequisitionMadeRecords(data: AppData) {
   });
 
   return data.requisitionMadeRecords
+    .filter(isActiveWaitingRequisition)
     .map((record) => ({
       ...record,
       itemIds: record.itemIds.filter(
@@ -9706,23 +9726,55 @@ function DashboardPage({
   );
   const [selectedRequisitionRecord, setSelectedRequisitionRecord] =
     useState<RequisitionMadeRecord | null>(null);
+  const [selectedOrderedVendorKey, setSelectedOrderedVendorKey] =
+    useState<string | null>(null);
   const heldItemCount = data.items.filter((it) => it.reorderHold && !it.hiddenFromWatchList && !it.nonStocked).length;
-  const orderedItemCount = data.items.filter(
-    (it) =>
-      it.orderPlaced && !it.hiddenFromWatchList && !it.nonStocked && isReorderNeeded(it, data.settings),
-  ).length;
-  const requisitionOrderedItemCount = data.items.filter(
-    (it) =>
-      it.orderPlaced &&
-      !it.hiddenFromWatchList &&
-      !it.nonStocked &&
-      Boolean(it.orderRequisitionId) &&
-      isReorderNeeded(it, data.settings),
-  ).length;
+  const activeOrderedRows = useMemo(
+    () =>
+      getActiveRequisitionMadeRecords(data).flatMap((record) =>
+        record.itemSnapshots
+          .filter((snapshot) => {
+            const item = data.items.find((candidate) => candidate.id === snapshot.itemId);
+
+            return !item || (!item.hiddenFromWatchList && !item.nonStocked);
+          })
+          .map((snapshot) => ({ record, snapshot })),
+      ),
+    [data],
+  );
+  const orderedVendorGroups = useMemo(() => {
+    const groups = new Map<
+      string,
+      {
+        vendorKey: string;
+        vendorName: string;
+        rows: { record: RequisitionMadeRecord; snapshot: RequisitionMadeRecord["itemSnapshots"][number] }[];
+      }
+    >();
+
+    activeOrderedRows.forEach((row) => {
+      const vendorName = row.record.vendorName?.trim() || "Unknown Vendor";
+      const vendorKey = row.record.vendorKey?.trim() || vendorName.toLowerCase();
+      const existing = groups.get(vendorKey);
+
+      if (existing) {
+        existing.rows.push(row);
+      } else {
+        groups.set(vendorKey, { vendorKey, vendorName, rows: [row] });
+      }
+    });
+
+    return Array.from(groups.values()).sort((a, b) =>
+      a.vendorName.localeCompare(b.vendorName),
+    );
+  }, [activeOrderedRows]);
+  const selectedOrderedVendorGroup =
+    orderedVendorGroups.find((group) => group.vendorKey === selectedOrderedVendorKey) ??
+    orderedVendorGroups[0] ??
+    null;
+  const orderedRequisitionCount = activeOrderedRows.length;
   const hasWatchListItems =
-    reorderItems.length > 0 ||
-    heldItemCount > 0 ||
-    requisitionOrderedItemCount > 0;
+    reorderItems.length > 0 || heldItemCount > 0 || orderedRequisitionCount > 0;
 
   useEffect(() => {
     if (!hasWatchListItems) {
@@ -9733,16 +9785,25 @@ function DashboardPage({
       setViewMode(heldItemCount > 0 ? "hold" : "ordered");
     } else if (viewMode === "hold" && heldItemCount === 0) {
       setViewMode(reorderItems.length > 0 ? "reorder" : "ordered");
-    } else if (viewMode === "ordered" && orderedItemCount === 0) {
+    } else if (viewMode === "ordered" && orderedRequisitionCount === 0) {
       setViewMode(reorderItems.length > 0 ? "reorder" : "hold");
     }
   }, [
     hasWatchListItems,
     heldItemCount,
-    orderedItemCount,
+    orderedRequisitionCount,
     reorderItems.length,
     viewMode,
   ]);
+
+  useEffect(() => {
+    if (
+      selectedOrderedVendorKey &&
+      !orderedVendorGroups.some((group) => group.vendorKey === selectedOrderedVendorKey)
+    ) {
+      setSelectedOrderedVendorKey(null);
+    }
+  }, [orderedVendorGroups, selectedOrderedVendorKey]);
 
   const visibleReorderItems = useMemo(() => {
     if (viewMode === "hold") {
@@ -9751,34 +9812,8 @@ function DashboardPage({
         .slice(0, 8);
     }
 
-    if (viewMode === "ordered") {
-      return data.items
-        .filter(
-          (it) =>
-            it.orderPlaced &&
-            !it.hiddenFromWatchList &&
-            !it.nonStocked &&
-            isReorderNeeded(it, data.settings),
-        )
-        .slice(0, 8);
-    }
-
     return reorderItems.slice(0, 8);
-  }, [viewMode, data.items, data.settings, reorderItems]);
-
-  const requisitionRecordByItemId = useMemo(() => {
-    const recordByItemId = new Map<string, RequisitionMadeRecord>();
-
-    data.items.forEach((item) => {
-      const record = getLinkedRequisitionMadeRecord(data, item);
-
-      if (record) {
-        recordByItemId.set(item.id, record);
-      }
-    });
-
-    return recordByItemId;
-  }, [data]);
+  }, [viewMode, data.items, reorderItems]);
 
   if (isScreensaverActive) {
     return <IdleScreensaver />;
@@ -9844,108 +9879,171 @@ function DashboardPage({
             </button>
           </div>
 
-          <div className="watch-list-grid">
-            {visibleReorderItems.map((item) => {
-              const status = getInventoryStatus(item, data.settings);
-              const requisitionRecord =
-                requisitionRecordByItemId.get(item.id) ?? null;
-
-              const openStockEdit = () => onStockAction(item.id);
-              const handleCardKeyDown = (
-                event: React.KeyboardEvent<HTMLDivElement>,
-              ) => {
-                if (event.target !== event.currentTarget) {
-                  return;
-                }
-
-                if (event.key === "Enter" || event.key === " ") {
-                  event.preventDefault();
-                  openStockEdit();
-                }
-              };
-              return (
-                <div
-                  key={item.id}
-                  className={`watch-card ${statusCardClassName(status)}`}
-                  role="button"
-                  tabIndex={0}
-                  aria-label={`Open stock edit for ${item.partNumber || item.name}`}
-                  onClick={openStockEdit}
-                  onKeyDown={handleCardKeyDown}
-                >
-                  <div className="watch-card-top">
-                    <div className="watch-card-badges">
-                      <StatusWithWatchVisibility
-                        item={item}
-                        settings={data.settings}
-                        onWatchListVisibilityClick={onWatchListVisibilityClick}
-                      />
-                      <StockQuantity
-                        compact
-                        item={item}
-                        settings={data.settings}
-                      />
-                    </div>
-                    <div className="watch-card-actions">
-                      <button
-                        className="btn-small watch-card-action-button"
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onToggleHold(item.id);
-                        }}
-                      >
-                        <PauseIcon />
-                        {item.reorderHold ? "Unhold" : "Hold"}
-                      </button>
-                      <button
-                        className="btn-small watch-card-action-button watch-card-action-button-ordered"
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onToggleOrdered(item.id);
-                        }}
-                      >
-                        <OrderCheckIcon />
-                        {item.orderPlaced ? "Ordered" : "Mark Ordered"}
-                      </button>
-                    </div>
-                  </div>
-                  <div className="watch-card-body">
-                    <h3>{item.name}</h3>
-                    <p>{item.partNumber || "No part number"}</p>
-                    {viewMode === "ordered" && (
-                      <div className="watch-card-order-details">
-                        <span>
-                          Vendor: {getVendorName(data, item.vendorId)}
-                        </span>
-                        <span>On hand: {formatStockQuantity(item)}</span>
-                        <span
-                          className={`watch-requisition-status ${requisitionRecord ? "watch-requisition-made" : "watch-requisition-missing"}`}
-                        >
-                          {requisitionRecord
-                            ? "Requisition Made"
-                            : "No Requisition Yet"}
-                        </span>
-                        {requisitionRecord && (
-                          <button
-                            className="btn-small watch-card-view-requisition"
-                            type="button"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              setSelectedRequisitionRecord(requisitionRecord);
-                            }}
-                          >
-                            View Requisition
-                          </button>
-                        )}
-                      </div>
-                    )}
-                  </div>
+          {viewMode === "ordered" ? (
+            <div className="ordered-requisition-queue">
+              <div className="ordered-requisition-header">
+                <div>
+                  <p className="eyebrow">Ordered tab</p>
+                  <h3>Ordered Requisition Queue</h3>
                 </div>
-              );
-            })}
-          </div>
+                <span>{orderedRequisitionCount} Waiting</span>
+              </div>
+
+              {orderedVendorGroups.length === 0 ? (
+                <div className="ordered-requisition-empty">
+                  No active ordered requisitions waiting.
+                </div>
+              ) : (
+                <>
+                  <div className="ordered-vendor-badge-row">
+                    {orderedVendorGroups.map((group) => (
+                      <button
+                        key={group.vendorKey}
+                        className={`ordered-vendor-badge ${selectedOrderedVendorGroup?.vendorKey === group.vendorKey ? "ordered-vendor-badge-active" : ""}`}
+                        type="button"
+                        onClick={() => setSelectedOrderedVendorKey(group.vendorKey)}
+                      >
+                        <span>{group.vendorName}</span>
+                        <strong>({group.rows.length})</strong>
+                      </button>
+                    ))}
+                  </div>
+
+                  {selectedOrderedVendorGroup && (
+                    <div className="ordered-vendor-detail-panel">
+                      <div className="ordered-vendor-detail-title">
+                        <div>
+                          <p className="eyebrow">Vendor</p>
+                          <h4>{selectedOrderedVendorGroup.vendorName}</h4>
+                        </div>
+                        <span>Status: Waiting</span>
+                      </div>
+                      <div className="ordered-requisition-detail-list">
+                        {selectedOrderedVendorGroup.rows.map(({ record, snapshot }) => (
+                          <article
+                            key={`${record.id}-${snapshot.itemId}-${snapshot.partNumber}`}
+                            className="ordered-requisition-detail-card"
+                          >
+                            <div className="ordered-requisition-detail-meta">
+                              <span>Vendor: {record.vendorName || "Unknown Vendor"}</span>
+                              <span>Status: Waiting</span>
+                              <span>Requisition Date: {formatDateTime(record.passedAt || record.createdAt || record.pdfGeneratedAt)}</span>
+                              <span>PDF Generated: {record.pdfGeneratedAt ? formatDateTime(record.pdfGeneratedAt) : "-"}</span>
+                            </div>
+                            <div className="ordered-requisition-part-row">
+                              <div>
+                                <strong>{snapshot.itemName}</strong>
+                                <span>Part #: {snapshot.partNumber || "-"}</span>
+                              </div>
+                              <div className="ordered-requisition-cost-grid">
+                                <span>Qty Requested: {formatNumber(snapshot.quantityRequested)}</span>
+                                <span>Unit Cost: {formatCurrency(snapshot.unitCost)}</span>
+                                <span>Total Cost: {formatCurrency(snapshot.totalCost)}</span>
+                              </div>
+                            </div>
+                            <div className="ordered-requisition-actions">
+                              <button
+                                className="btn-small"
+                                type="button"
+                                onClick={() => setSelectedRequisitionRecord(record)}
+                              >
+                                View
+                              </button>
+                              <button
+                                className="btn-small"
+                                type="button"
+                                onClick={() => setActivePage("reorder")}
+                              >
+                                Open in Requisition Made
+                              </button>
+                              {snapshot.itemId && (
+                                <button
+                                  className="btn-small"
+                                  type="button"
+                                  onClick={() => onStockAction(snapshot.itemId)}
+                                >
+                                  Stock Edit
+                                </button>
+                              )}
+                            </div>
+                          </article>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          ) : (
+            <div className="watch-list-grid">
+              {visibleReorderItems.map((item) => {
+                const status = getInventoryStatus(item, data.settings);
+                const openStockEdit = () => onStockAction(item.id);
+                const handleCardKeyDown = (
+                  event: React.KeyboardEvent<HTMLDivElement>,
+                ) => {
+                  if (event.target !== event.currentTarget) {
+                    return;
+                  }
+
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    openStockEdit();
+                  }
+                };
+                return (
+                  <div
+                    key={item.id}
+                    className={`watch-card ${statusCardClassName(status)}`}
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`Open stock edit for ${item.partNumber || item.name}`}
+                    onClick={openStockEdit}
+                    onKeyDown={handleCardKeyDown}
+                  >
+                    <div className="watch-card-top">
+                      <div className="watch-card-badges">
+                        <StatusWithWatchVisibility
+                          item={item}
+                          settings={data.settings}
+                          onWatchListVisibilityClick={onWatchListVisibilityClick}
+                        />
+                        <StockQuantity compact item={item} settings={data.settings} />
+                      </div>
+                      <div className="watch-card-actions">
+                        <button
+                          className="btn-small watch-card-action-button"
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onToggleHold(item.id);
+                          }}
+                        >
+                          <PauseIcon />
+                          {item.reorderHold ? "Unhold" : "Hold"}
+                        </button>
+                        <button
+                          className="btn-small watch-card-action-button watch-card-action-button-ordered"
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onToggleOrdered(item.id);
+                          }}
+                        >
+                          <OrderCheckIcon />
+                          {item.orderPlaced ? "Ordered" : "Mark Ordered"}
+                        </button>
+                      </div>
+                    </div>
+                    <div className="watch-card-body">
+                      <h3>{item.name}</h3>
+                      <p>{item.partNumber || "No part number"}</p>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </section>
       )}
       {selectedRequisitionRecord && (

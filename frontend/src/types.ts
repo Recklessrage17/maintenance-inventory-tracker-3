@@ -187,7 +187,7 @@ export type RequisitionMadeRecord = {
   pdfGeneratedAt: string;
   passedAt: string;
   requisitionedBy?: string;
-  status: "Made";
+  status: string;
 };
 
 export type StockChange = {
