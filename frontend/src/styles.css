@@ -1489,9 +1489,10 @@ button:disabled {
     position: relative;
     display: block;
     color: transparent;
-    font-size: clamp(5rem, 15vw, 11rem);
+    max-width: min(68rem, 88vw);
+    font-size: clamp(3.4rem, 8vw, 7.6rem);
     font-weight: 950;
-    letter-spacing: 0;
+    letter-spacing: -0.05em;
     background:
       linear-gradient(180deg, #f8fafc 0%, #93c5fd 18%, #22d3ee 42%, #0e7490 74%, #064e3b 100%),
       linear-gradient(90deg, rgba(15, 23, 42, 0.55), transparent 32%, rgba(240, 253, 250, 0.36) 50%, transparent 68%);
@@ -1503,6 +1504,20 @@ button:disabled {
       0 3px 0 rgba(8, 47, 73, 0.82),
       0 0 16px rgba(34, 211, 238, 0.22),
       0 0 28px rgba(34, 197, 94, 0.08);
+  }
+
+  .dashboard-screensaver-logo-subtext {
+    display: block;
+    max-width: min(46rem, 84vw);
+    margin-top: 1.35rem;
+    color: rgba(219, 234, 254, 0.9);
+    font-size: clamp(1.05rem, 2.3vw, 1.9rem);
+    font-weight: 800;
+    letter-spacing: 0.04em;
+    line-height: 1.18;
+    text-shadow:
+      0 1px 0 rgba(15, 23, 42, 0.6),
+      0 0 14px rgba(34, 211, 238, 0.18);
   }
 
   .dashboard-screensaver-logo-main::before,

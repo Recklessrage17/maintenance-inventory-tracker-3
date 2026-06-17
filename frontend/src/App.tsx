@@ -9950,7 +9950,7 @@ function DashboardPage({
                 type="button"
                 onClick={() => setActivePage("reorder")}
               >
-                Open Reorder List
+                Open Requisition
               </button>
             }
             kicker="Watch list"
@@ -20102,7 +20102,7 @@ function NewItemWatchListSettingDialog({
     },
     {
       description: "Keep it in the held reorder group.",
-      label: "Hold for Reorder List",
+      label: "Hold for Requisition",
       value: "held",
     },
   ];
