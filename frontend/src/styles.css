@@ -6898,3 +6898,27 @@ button:disabled {
     padding: 0.17rem 0.32rem;
   }
 }
+
+  .tag-non-stocked {
+    background: linear-gradient(135deg, #5f6772, #2f3540);
+    color: #f2f4f7;
+    border: 1px solid rgba(190, 200, 210, 0.45);
+    box-shadow: 0 0 12px rgba(160, 170, 180, 0.2);
+  }
+
+  .checkbox-field {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 0.65rem;
+    border: 1px solid rgba(148, 163, 184, 0.2);
+    border-radius: 0.75rem;
+    background: rgba(15, 23, 42, 0.42);
+    padding: 0.75rem 0.9rem;
+  }
+
+  .checkbox-field input[type="checkbox"] {
+    width: 1rem;
+    height: 1rem;
+    accent-color: #22d3ee;
+  }

@@ -71,6 +71,7 @@ export function runMigrations(db: Database.Database) {
       reorder_hold INTEGER NOT NULL DEFAULT 0 CHECK (reorder_hold IN (0, 1)),
       order_requisition_id TEXT,
       hidden_from_watchlist INTEGER NOT NULL DEFAULT 0 CHECK (hidden_from_watchlist IN (0, 1)),
+      non_stocked INTEGER NOT NULL DEFAULT 0 CHECK (non_stocked IN (0, 1)),
       is_demo INTEGER NOT NULL DEFAULT 0 CHECK (is_demo IN (0, 1)),
       created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
       updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
@@ -226,5 +227,8 @@ export function runMigrations(db: Database.Database) {
   const inventoryColumns = db.prepare("PRAGMA table_info(inventory_items)").all() as Array<{ name: string }>;
   if (!inventoryColumns.some((column) => column.name === "hidden_from_watchlist")) {
     db.exec("ALTER TABLE inventory_items ADD COLUMN hidden_from_watchlist INTEGER NOT NULL DEFAULT 0 CHECK (hidden_from_watchlist IN (0, 1))");
+  }
+  if (!inventoryColumns.some((column) => column.name === "non_stocked")) {
+    db.exec("ALTER TABLE inventory_items ADD COLUMN non_stocked INTEGER NOT NULL DEFAULT 0 CHECK (non_stocked IN (0, 1))");
   }
 }

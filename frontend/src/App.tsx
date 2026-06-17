@@ -392,6 +392,7 @@ type ItemFormState = {
   reorderHold: boolean;
   orderPlaced: boolean;
   hiddenFromWatchList: boolean;
+  nonStocked: boolean;
 };
 
 type StockFormState = {
@@ -577,6 +578,7 @@ type CsvFolderInventoryRecord = {
   orderPlaced: boolean | null;
   reorderHold: boolean | null;
   hiddenFromWatchList: boolean | null;
+  nonStocked: boolean | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -976,6 +978,7 @@ const blankItemForm = (defaultLocationId = ""): ItemFormState => ({
   reorderHold: false,
   orderPlaced: true,
   hiddenFromWatchList: false,
+  nonStocked: false,
 });
 
 const blankStockForm = (itemId = ""): StockFormState => ({
@@ -1387,6 +1390,7 @@ function normalizeItem(value: unknown): InventoryItem {
     reorderHold: raw.reorderHold === true,
     orderPlaced: hasOrderPlaced ? raw.orderPlaced === true : true,
     hiddenFromWatchList: raw.hiddenFromWatchList === true,
+    nonStocked: raw.nonStocked === true,
     orderRequisitionId: Object.prototype.hasOwnProperty.call(
       raw,
       "orderRequisitionId",
@@ -1582,6 +1586,10 @@ function getInventoryStatus(
   item: InventoryItem,
   _settings?: AppSettings,
 ): InventoryStatus {
+  if (item.nonStocked === true) {
+    return "Order As Needed";
+  }
+
   if (item.quantityOnHand <= 0) {
     return "Out of Stock";
   }
@@ -1791,6 +1799,8 @@ function statusTagClassName(status: string) {
       return "tag-low-stock";
     case "Out of Stock":
       return "tag-out-of-stock";
+    case "Order As Needed":
+      return "tag-non-stocked";
     case "Stock In":
       return "tag-stock-in";
     case "Stock Out":
@@ -1809,6 +1819,7 @@ function statusCardClassName(status: InventoryStatus) {
     case "Low Stock":
       return "status-card-low-stock";
     case "In Stock":
+    case "Order As Needed":
       return "status-card-in-stock";
   }
 }
@@ -1820,6 +1831,7 @@ function statusMetricClassName(status: InventoryStatus) {
     case "Low Stock":
       return "status-metric-card-low-stock";
     case "In Stock":
+    case "Order As Needed":
       return "status-metric-card-in-stock";
   }
 }
@@ -1831,6 +1843,7 @@ function stockQuantityClassName(status: InventoryStatus) {
     case "Low Stock":
       return "stock-quantity-low-stock";
     case "In Stock":
+    case "Order As Needed":
       return "stock-quantity-in-stock";
   }
 }
@@ -3037,6 +3050,7 @@ function csvFolderInventoryRecord(
     orderPlaced: csvBooleanValue(csvCell(record, "orderPlaced")),
     reorderHold: csvBooleanValue(csvCell(record, "reorderHold")),
     hiddenFromWatchList: csvBooleanValue(csvCell(record, "hiddenFromWatchList", "hidden_from_watchlist")),
+    nonStocked: csvBooleanValue(csvCell(record, "nonStocked", "non_stocked", "orderAsNeeded")),
     createdAt: csvCell(record, "createdAt"),
     updatedAt: csvCell(record, "updatedAt"),
   };
@@ -3198,6 +3212,7 @@ function itemFromForm(
     reorderHold: Boolean(form.reorderHold),
     orderPlaced: Boolean(form.orderPlaced),
     hiddenFromWatchList: Boolean(form.hiddenFromWatchList),
+    nonStocked: Boolean(form.nonStocked),
     orderRequisitionId: form.orderPlaced ? existing?.orderRequisitionId : "",
     isDemo: existing?.isDemo,
     createdAt: existing?.createdAt ?? now,
@@ -3256,6 +3271,7 @@ function formFromItem(item: InventoryItem): ItemFormState {
     reorderHold: Boolean(item.reorderHold),
     orderPlaced: Boolean(item.orderPlaced),
     hiddenFromWatchList: Boolean(item.hiddenFromWatchList),
+    nonStocked: Boolean(item.nonStocked),
   };
 }
 
@@ -5283,7 +5299,11 @@ function InventoryApp() {
         const vendorName =
           inventoryVendorNameById.get(item.vendorId) || "Unassigned";
 
-        if (statusFilter !== "All" && status !== statusFilter) {
+        if (statusFilter === "Order As Needed") {
+          if (!item.nonStocked) {
+            return false;
+          }
+        } else if (statusFilter !== "All" && (item.nonStocked || status !== statusFilter)) {
           return false;
         }
 
@@ -5340,8 +5360,7 @@ function InventoryApp() {
         (item) =>
           isReorderNeeded(item, data.settings) &&
           !item.hiddenFromWatchList &&
-          !item.orderPlaced &&
-          !item.reorderHold,
+          !item.nonStocked,
       )
       .sort(
         (a, b) =>
@@ -5786,7 +5805,7 @@ function InventoryApp() {
         ...current,
         items:
           deletedRecord.type === "Inventory"
-            ? [deletedRecord.payload as InventoryItem, ...current.items]
+            ? [normalizeItem(deletedRecord.payload), ...current.items]
             : current.items,
         vendors:
           deletedRecord.type === "Vendor"
@@ -8501,6 +8520,7 @@ function InventoryApp() {
           reorderHold: existing?.reorderHold === true,
           orderPlaced: existing?.orderPlaced === false ? false : true,
           hiddenFromWatchList: existing?.hiddenFromWatchList === true,
+          nonStocked: existing?.nonStocked === true,
         },
         existing,
       );
@@ -8680,6 +8700,7 @@ function InventoryApp() {
           reorderHold: existing?.reorderHold === true,
           orderPlaced: existing?.orderPlaced === false ? false : true,
           hiddenFromWatchList: existing?.hiddenFromWatchList === true,
+          nonStocked: existing?.nonStocked === true,
         },
         existing,
       );
@@ -9001,6 +9022,7 @@ function InventoryApp() {
           orderPlaced: record.orderPlaced ?? existing?.orderPlaced ?? true,
           reorderHold: record.reorderHold ?? existing?.reorderHold ?? false,
           hiddenFromWatchList: record.hiddenFromWatchList ?? existing?.hiddenFromWatchList ?? false,
+          nonStocked: record.nonStocked ?? existing?.nonStocked ?? false,
         },
         existing,
       );
@@ -9684,15 +9706,16 @@ function DashboardPage({
   );
   const [selectedRequisitionRecord, setSelectedRequisitionRecord] =
     useState<RequisitionMadeRecord | null>(null);
-  const heldItemCount = data.items.filter((it) => it.reorderHold && !it.hiddenFromWatchList).length;
+  const heldItemCount = data.items.filter((it) => it.reorderHold && !it.hiddenFromWatchList && !it.nonStocked).length;
   const orderedItemCount = data.items.filter(
     (it) =>
-      it.orderPlaced && !it.hiddenFromWatchList && isReorderNeeded(it, data.settings),
+      it.orderPlaced && !it.hiddenFromWatchList && !it.nonStocked && isReorderNeeded(it, data.settings),
   ).length;
   const requisitionOrderedItemCount = data.items.filter(
     (it) =>
       it.orderPlaced &&
       !it.hiddenFromWatchList &&
+      !it.nonStocked &&
       Boolean(it.orderRequisitionId) &&
       isReorderNeeded(it, data.settings),
   ).length;
@@ -9724,7 +9747,7 @@ function DashboardPage({
   const visibleReorderItems = useMemo(() => {
     if (viewMode === "hold") {
       return data.items
-        .filter((it) => it.reorderHold && !it.hiddenFromWatchList)
+        .filter((it) => it.reorderHold && !it.hiddenFromWatchList && !it.nonStocked)
         .slice(0, 8);
     }
 
@@ -9734,6 +9757,7 @@ function DashboardPage({
           (it) =>
             it.orderPlaced &&
             !it.hiddenFromWatchList &&
+            !it.nonStocked &&
             isReorderNeeded(it, data.settings),
         )
         .slice(0, 8);
@@ -12139,7 +12163,7 @@ safeInventoryPageRef.current = safeInventoryPage;
             )}
           </div>
           <div className="subtab-bar inventory-status-tabs">
-            {(["All", "In Stock", "Low Stock", "Out of Stock"] as const).map(
+            {(["All", "In Stock", "Low Stock", "Out of Stock", "Order As Needed"] as const).map(
               (status) => (
                 <button
                   key={status}
@@ -12969,6 +12993,9 @@ function ItemFormContent({
 }: ItemFormContentProps) {
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const [scanValue, setScanValue] = useState("");
+  const [showMediaOptions, setShowMediaOptions] = useState(() =>
+    Boolean(form.imageDataUrl || form.imagePlaceholder || form.barcodePlaceholder),
+  );
   const qrValue = getFormQrCodeValue(form, editingItemId);
   const imageAltText = `${form.name || form.partNumber || "Inventory item"} photo`;
   const cleanFormScanValue = cleanScanValue(scanValue);
@@ -13210,6 +13237,16 @@ function ItemFormContent({
             Set to 0 to turn off low stock alerts.
           </span>
         </label>
+        <label className="field-label checkbox-field">
+          <input
+            type="checkbox"
+            checked={Boolean(form.nonStocked)}
+            onChange={(event) =>
+              onChange({ ...form, nonStocked: event.currentTarget.checked })
+            }
+          />
+          <span>Not stocked in-house / order as needed</span>
+        </label>
         <label className="field-label">
           Location
           <select
@@ -13270,6 +13307,16 @@ function ItemFormContent({
             }
           />
         </label>
+        <label className="field-label checkbox-field md:col-span-2 xl:col-span-4">
+          <input
+            type="checkbox"
+            checked={showMediaOptions}
+            onChange={(event) => setShowMediaOptions(event.currentTarget.checked)}
+          />
+          <span>Use image / QR label options</span>
+        </label>
+        {showMediaOptions && (
+          <>
         <div className="media-placeholder md:col-span-1 xl:col-span-2">
           <span>Image / Photo</span>
           <div
@@ -13337,6 +13384,8 @@ function ItemFormContent({
             </span>
           </label>
         </div>
+          </>
+        )}
         <label className="field-label">
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <input
