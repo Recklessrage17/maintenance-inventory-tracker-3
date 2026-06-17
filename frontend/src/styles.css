@@ -1706,6 +1706,146 @@ button:disabled {
     font-size: 0.68rem;
   }
 
+
+  .ordered-requisition-queue {
+    display: grid;
+    gap: 1rem;
+    border: 1px solid rgba(34, 211, 238, 0.26);
+    border-radius: 1.15rem;
+    background:
+      radial-gradient(circle at top left, rgba(34, 211, 238, 0.14), transparent 32%),
+      linear-gradient(135deg, rgba(2, 6, 23, 0.94), rgba(15, 23, 42, 0.9));
+    padding: 1rem;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 0 30px rgba(8, 145, 178, 0.1);
+  }
+
+  .ordered-requisition-header,
+  .ordered-vendor-detail-title {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+  }
+
+  .ordered-requisition-header h3,
+  .ordered-vendor-detail-title h4 {
+    margin: 0;
+    color: #f8fafc;
+    font-weight: 950;
+    letter-spacing: -0.02em;
+  }
+
+  .ordered-requisition-header > span,
+  .ordered-vendor-detail-title > span {
+    border: 1px solid rgba(103, 232, 249, 0.38);
+    border-radius: 999px;
+    background: rgba(8, 47, 73, 0.5);
+    color: #cffafe;
+    padding: 0.35rem 0.7rem;
+    font-size: 0.72rem;
+    font-weight: 950;
+    text-transform: uppercase;
+  }
+
+  .ordered-vendor-badge-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.7rem;
+  }
+
+  .ordered-vendor-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    border: 1px solid rgba(34, 211, 238, 0.34);
+    border-radius: 0.95rem;
+    background: linear-gradient(135deg, rgba(8, 47, 73, 0.8), rgba(15, 23, 42, 0.92));
+    color: #e0f2fe;
+    padding: 0.7rem 0.9rem;
+    font-weight: 950;
+    box-shadow: 0 0 0 1px rgba(14, 165, 233, 0.06), 0 10px 20px rgba(0, 0, 0, 0.2);
+    transition: border-color 140ms ease, box-shadow 140ms ease, transform 140ms ease, filter 140ms ease;
+  }
+
+  .ordered-vendor-badge:hover,
+  .ordered-vendor-badge:focus-visible,
+  .ordered-vendor-badge-active {
+    border-color: rgba(103, 232, 249, 0.76);
+    box-shadow: 0 0 0 1px rgba(34, 211, 238, 0.2), 0 0 24px rgba(34, 211, 238, 0.18);
+    filter: brightness(1.08);
+    outline: none;
+    transform: translateY(-1px);
+  }
+
+  .ordered-vendor-badge strong {
+    color: #67e8f9;
+    font-size: 1rem;
+  }
+
+  .ordered-vendor-detail-panel,
+  .ordered-requisition-empty {
+    border: 1px solid rgba(51, 65, 85, 0.86);
+    border-radius: 1rem;
+    background: rgba(2, 6, 23, 0.56);
+    padding: 0.9rem;
+  }
+
+  .ordered-requisition-empty {
+    color: #94a3b8;
+    font-weight: 850;
+    text-align: center;
+  }
+
+  .ordered-requisition-detail-list {
+    display: grid;
+    gap: 0.75rem;
+    margin-top: 0.85rem;
+  }
+
+  .ordered-requisition-detail-card {
+    display: grid;
+    gap: 0.75rem;
+    border: 1px solid rgba(34, 211, 238, 0.18);
+    border-radius: 0.9rem;
+    background: rgba(15, 23, 42, 0.72);
+    padding: 0.85rem;
+  }
+
+  .ordered-requisition-detail-meta,
+  .ordered-requisition-cost-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem 0.8rem;
+    color: #cbd5e1;
+    font-size: 0.76rem;
+    font-weight: 800;
+  }
+
+  .ordered-requisition-part-row {
+    display: grid;
+    gap: 0.65rem;
+  }
+
+  .ordered-requisition-part-row strong {
+    display: block;
+    color: #ffffff;
+    font-size: 0.98rem;
+    font-weight: 950;
+  }
+
+  .ordered-requisition-part-row span {
+    color: #bae6fd;
+    font-size: 0.78rem;
+    font-weight: 850;
+  }
+
+  .ordered-requisition-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+  }
+
   .watch-card .tag {
     min-height: 1.58rem;
     padding: 0.24rem 0.48rem;
