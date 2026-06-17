@@ -8,7 +8,7 @@ export type PageId =
   | "reorder"
   | "history";
 
-export type InventoryStatus = "In Stock" | "Low Stock" | "Out of Stock";
+export type InventoryStatus = "In Stock" | "Low Stock" | "Out of Stock" | "Order As Needed";
 export type StockActionType = "Stock In" | "Stock Out" | "Set Stock On Hand";
 export type BackupIndicatorState = "saved" | "pending" | "running" | "done" | "failed";
 export type BackupInterval = "manual" | "change" | "5min" | "15min";
@@ -105,6 +105,7 @@ export type InventoryItem = {
   orderPlaced?: boolean;
   orderRequisitionId?: string;
   hiddenFromWatchList?: boolean;
+  nonStocked?: boolean;
   isDemo?: boolean;
   createdAt: string;
   updatedAt: string;

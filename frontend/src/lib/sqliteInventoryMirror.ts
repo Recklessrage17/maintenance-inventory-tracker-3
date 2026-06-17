@@ -23,6 +23,7 @@ type SqliteInventoryRow = {
   image_data_url: string | null;
   image_placeholder: string | null;
   hidden_from_watchlist: number | boolean | null;
+  non_stocked: number | boolean | null;
   is_demo: number | boolean | null;
   item_name: string;
   item_url: string | null;
@@ -84,7 +85,7 @@ function boolFromSqlite(value: number | boolean | null | undefined) {
 }
 
 function itemHasLowAlert(item: InventoryItem) {
-  return item.lowStockAlertLevel > 0 && item.quantityOnHand <= item.lowStockAlertLevel;
+  return !item.nonStocked && item.lowStockAlertLevel > 0 && item.quantityOnHand <= item.lowStockAlertLevel;
 }
 
 function itemFromSqlite(row: SqliteInventoryRow): InventoryItem {
@@ -110,6 +111,7 @@ function itemFromSqlite(row: SqliteInventoryRow): InventoryItem {
     orderPlaced: boolFromSqlite(row.order_placed),
     orderRequisitionId: row.order_requisition_id ?? undefined,
     hiddenFromWatchList: boolFromSqlite(row.hidden_from_watchlist),
+    nonStocked: boolFromSqlite(row.non_stocked),
     isDemo: boolFromSqlite(row.is_demo),
     createdAt: row.created_at,
     updatedAt: row.updated_at
@@ -144,6 +146,8 @@ function hasJsonFieldsMissingFromSqlite(jsonItems: InventoryItem[], sqliteItems:
       jsonItem.imageDataUrl !== sqliteItem.imageDataUrl ||
       jsonItem.barcodePlaceholder !== sqliteItem.barcodePlaceholder ||
       (jsonItem.orderRequisitionId ?? "") !== (sqliteItem.orderRequisitionId ?? "") ||
+      Boolean(jsonItem.hiddenFromWatchList) !== Boolean(sqliteItem.hiddenFromWatchList) ||
+      Boolean(jsonItem.nonStocked) !== Boolean(sqliteItem.nonStocked) ||
       Boolean(jsonItem.isDemo) !== Boolean(sqliteItem.isDemo)
     );
   });
@@ -190,10 +194,11 @@ async function saveInventoryItemWithDb(db: SqliteDatabase, item: InventoryItem) 
       reorder_hold,
       order_requisition_id,
       hidden_from_watchlist,
+      non_stocked,
       is_demo,
       created_at,
       updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       item_name = excluded.item_name,
       description = excluded.description,
@@ -216,6 +221,7 @@ async function saveInventoryItemWithDb(db: SqliteDatabase, item: InventoryItem) 
       reorder_hold = excluded.reorder_hold,
       order_requisition_id = excluded.order_requisition_id,
       hidden_from_watchlist = excluded.hidden_from_watchlist,
+      non_stocked = excluded.non_stocked,
       is_demo = excluded.is_demo,
       created_at = excluded.created_at,
       updated_at = excluded.updated_at`,
@@ -242,6 +248,7 @@ async function saveInventoryItemWithDb(db: SqliteDatabase, item: InventoryItem) 
       boolToSqlite(item.reorderHold),
       item.orderRequisitionId || null,
       boolToSqlite(item.hiddenFromWatchList),
+      boolToSqlite(item.nonStocked),
       boolToSqlite(item.isDemo),
       item.createdAt,
       item.updatedAt
@@ -279,6 +286,7 @@ export async function loadInventoryFromSqlite(): Promise<InventoryItem[]> {
       reorder_hold,
       order_requisition_id,
       hidden_from_watchlist,
+      non_stocked,
       is_demo,
       created_at,
       updated_at
