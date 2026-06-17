@@ -420,6 +420,14 @@ const itemFormErrorLabels: Record<ItemFormErrorKey, string> = {
   costEach: "Cost each",
 };
 
+type ReorderView = "items" | "forms" | "made" | "delivered" | "history";
+
+type StockReturnContext = {
+  page: PageId;
+  tab?: ReorderView;
+  label: string;
+};
+
 type StockFormState = {
   itemId: string;
   actionType: StockActionType | "";
@@ -4064,6 +4072,10 @@ function InventoryApp() {
     string | null
   >(null);
   const [stockForm, setStockForm] = useState<StockFormState>(blankStockForm());
+  const [stockReturnContext, setStockReturnContext] =
+    useState<StockReturnContext | null>(null);
+  const [reorderReturnView, setReorderReturnView] =
+    useState<ReorderView | null>(null);
   const [locationForm, setLocationForm] =
     useState<LocationFormState>(blankLocationForm());
   const [vendorForm, setVendorForm] =
@@ -6022,6 +6034,10 @@ function InventoryApp() {
   }
 
   function openPage(page: PageId) {
+    if (page === "stock") {
+      setStockReturnContext(null);
+    }
+
     setIsDashboardScreensaverActive(false);
     setIsManualScreensaverActive(false);
     setActivePage(page);
@@ -7160,6 +7176,7 @@ function InventoryApp() {
   function startStockAction(
     itemId: string,
     _actionType: StockActionType | "" = "",
+    returnContext?: StockReturnContext,
   ) {
     if (!ensurePermission("inventory:stock")) {
       return;
@@ -7172,6 +7189,7 @@ function InventoryApp() {
       reorderHold: Boolean(item?.reorderHold),
     });
     openPage("stock");
+    setStockReturnContext(returnContext ?? null);
   }
 
   function updateMinimumStockLevel(itemId: string, minimumStockLevel: number) {
@@ -7519,12 +7537,21 @@ function InventoryApp() {
       return nextData;
     });
 
-    showToast(
-      "success",
-      hasStockMovement
+    const successMessage = stockReturnContext
+      ? `Stock updated successfully. Returned to ${stockReturnContext.label}.`
+      : hasStockMovement
         ? `${getStockActionLabel(actionType)} saved${willClearOrderPlaced ? " and Mark Ordered cleared" : ""}.`
-        : "Reorder options saved.",
-    );
+        : "Reorder options saved.";
+
+    if (stockReturnContext) {
+      if (stockReturnContext.page === "reorder" && stockReturnContext.tab) {
+        setReorderReturnView(stockReturnContext.tab);
+      }
+      openPage(stockReturnContext.page);
+      setStockReturnContext(null);
+    }
+
+    showToast("success", successMessage);
     setStockForm({
       ...blankStockForm(item.id),
       orderPlaced: willClearOrderPlaced ? false : nextOrderPlaced,
@@ -9648,7 +9675,12 @@ function InventoryApp() {
           <DashboardPage
             data={data}
             isScreensaverActive={isDashboardScreensaverActive}
-            onStockAction={startStockAction}
+            onStockAction={(itemId, actionType) =>
+              startStockAction(itemId, actionType, {
+                page: "dashboard",
+                label: "Dashboard",
+              })
+            }
             recentAddAlerts={recentAddAlerts}
             reorderItems={reorderItems}
             setActivePage={openPage}
@@ -9679,7 +9711,12 @@ function InventoryApp() {
             onNewItemsShown={markShownNewInventoryItems}
             onPrintLabel={openLabelPreview}
             onScanLookupWarning={(message) => showToast("warning", message)}
-            onStockAction={startStockAction}
+            onStockAction={(itemId, actionType) =>
+              startStockAction(itemId, actionType, {
+                page: "inventory",
+                label: "Inventory Parts Table",
+              })
+            }
             onStatusFilter={setStatusFilter}
             onWatchListVisibilityClick={toggleWatchListHidden}
             onItemLinkOpenMessage={() =>
@@ -9757,8 +9794,12 @@ function InventoryApp() {
             inventoryRequisitionLaunch={inventoryRequisitionLaunch}
             items={reorderItems}
             onDataChange={commitData}
-            onStockAction={startStockAction}
+            onStockAction={(itemId, actionType, returnContext) =>
+              startStockAction(itemId, actionType, returnContext)
+            }
             onWatchListVisibilityClick={toggleWatchListHidden}
+            returnView={reorderReturnView}
+            onReturnViewApplied={() => setReorderReturnView(null)}
           />
         )}
         {activePage === "history" && <HistoryPage data={data} />}
@@ -15201,19 +15242,25 @@ function ReorderPage({
   inventoryRequisitionLaunch,
   items,
   onDataChange,
+  onReturnViewApplied,
   onStockAction,
   onWatchListVisibilityClick,
+  returnView,
 }: {
   data: AppData;
   inventoryRequisitionLaunch: { id: string; itemIds: string[] } | null;
   items: InventoryItem[];
   onDataChange: (updater: (current: AppData) => AppData) => void;
-  onStockAction: (itemId: string, actionType?: StockActionType | "") => void;
+  onReturnViewApplied: () => void;
+  onStockAction: (
+    itemId: string,
+    actionType?: StockActionType | "",
+    returnContext?: StockReturnContext,
+  ) => void;
   onWatchListVisibilityClick: (itemId: string) => void;
+  returnView: ReorderView | null;
 }) {
-  const [reorderView, setReorderView] = useState<
-    "items" | "forms" | "made" | "delivered" | "history"
-  >("items");
+  const [reorderView, setReorderView] = useState<ReorderView>("items");
   const [selectedReorderItemIds, setSelectedReorderItemIds] = useState<
     string[]
   >([]);
@@ -15260,6 +15307,31 @@ function ReorderPage({
     DEFAULT_REQUISITION_HISTORY_PAGE_SIZE,
   );
   const [reorderWarning, setReorderWarning] = useState("");
+
+  useEffect(() => {
+    if (!returnView) {
+      return;
+    }
+
+    setReorderView(returnView);
+    onReturnViewApplied();
+  }, [onReturnViewApplied, returnView]);
+
+  const openReorderStockEdit = (itemId: string) => {
+    const labelByView: Record<ReorderView, string> = {
+      items: "Requisition Reorder Items",
+      forms: "Requisition Forms",
+      made: "Requisition Made",
+      delivered: "Delivered to Maint",
+      history: "Requisition History",
+    };
+
+    onStockAction(itemId, "", {
+      page: "reorder",
+      tab: reorderView,
+      label: labelByView[reorderView],
+    });
+  };
 
   const activeMadeRecords = useMemo(
     () => getActiveRequisitionMadeRecords(data),
@@ -16244,7 +16316,7 @@ Status: ${isComplete ? "Delivered to Maint" : "Partially Delivered"}`;
                     key="stock"
                     className="btn-small"
                     type="button"
-                    onClick={() => onStockAction(item.id)}
+                    onClick={() => openReorderStockEdit(item.id)}
                   >
                     Stock Edit
                   </button>
@@ -16300,7 +16372,7 @@ Status: ${isComplete ? "Delivered to Maint" : "Partially Delivered"}`;
               <button
                 className="btn-small"
                 type="button"
-                onClick={() => onStockAction(snapshot.itemId)}
+                onClick={() => openReorderStockEdit(snapshot.itemId)}
               >
                 Stock Edit
               </button>
