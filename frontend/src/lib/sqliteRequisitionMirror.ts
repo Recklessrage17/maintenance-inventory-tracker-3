@@ -16,6 +16,9 @@ type RequisitionMirrorPartSampleRow = {
 };
 
 type SqliteRequisitionRow = {
+  cancel_reason: string | null;
+  cancelled_at: string | null;
+  cancelled_by: string | null;
   created_at: string;
   fulfilled_at: string | null;
   id: string;
@@ -171,7 +174,10 @@ function recordFromSqlite(row: SqliteRequisitionRow, lines: SqliteRequisitionLin
     pdfGeneratedAt: row.pdf_generated_at ?? row.submitted_at ?? createdAt,
     passedAt: row.passed_at ?? row.fulfilled_at ?? createdAt,
     requisitionedBy: row.requested_by ?? "",
-    status: row.status ?? "Requisition Made"
+    status: row.status ?? "Requisition Made",
+    cancelledAt: row.cancelled_at ?? "",
+    cancelledBy: row.cancelled_by ?? "",
+    cancelReason: row.cancel_reason ?? ""
   };
 }
 
@@ -188,6 +194,9 @@ function recordsMatch(jsonRecord: RequisitionMadeRecord, sqliteRecord: Requisiti
     jsonRecord.pdfGeneratedAt !== sqliteRecord.pdfGeneratedAt ||
     jsonRecord.passedAt !== sqliteRecord.passedAt ||
     (jsonRecord.requisitionedBy ?? "") !== (sqliteRecord.requisitionedBy ?? "") ||
+    (jsonRecord.cancelledAt ?? "") !== (sqliteRecord.cancelledAt ?? "") ||
+    (jsonRecord.cancelledBy ?? "") !== (sqliteRecord.cancelledBy ?? "") ||
+    (jsonRecord.cancelReason ?? "") !== (sqliteRecord.cancelReason ?? "") ||
     jsonRecord.itemSnapshots.length !== sqliteRecord.itemSnapshots.length
   ) {
     return false;
@@ -271,8 +280,11 @@ async function saveRequisitionWithDb(db: SqliteDatabase, record: RequisitionMade
       requisition_type,
       pdf_generated_at,
       passed_at,
+      cancelled_at,
+      cancelled_by,
+      cancel_reason,
       source_record_type
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       requested_by = excluded.requested_by,
       status = excluded.status,
@@ -289,6 +301,9 @@ async function saveRequisitionWithDb(db: SqliteDatabase, record: RequisitionMade
       requisition_type = excluded.requisition_type,
       pdf_generated_at = excluded.pdf_generated_at,
       passed_at = excluded.passed_at,
+      cancelled_at = excluded.cancelled_at,
+      cancelled_by = excluded.cancelled_by,
+      cancel_reason = excluded.cancel_reason,
       source_record_type = excluded.source_record_type`,
     [
       record.id,
@@ -307,6 +322,9 @@ async function saveRequisitionWithDb(db: SqliteDatabase, record: RequisitionMade
       record.requisitionType,
       record.pdfGeneratedAt || null,
       record.passedAt || null,
+      record.cancelledAt || null,
+      record.cancelledBy || null,
+      record.cancelReason || null,
       REQUISITION_MADE_SOURCE
     ]
   );
@@ -480,7 +498,10 @@ export async function loadRequisitionsFromSqlite(): Promise<RequisitionMadeRecor
       total_cost,
       requisition_type,
       pdf_generated_at,
-      passed_at
+      passed_at,
+      cancelled_at,
+      cancelled_by,
+      cancel_reason
     FROM requisitions
     WHERE source_record_type = ?
     ORDER BY created_at DESC, id ASC`,

@@ -65,6 +65,12 @@ fn sqlite_migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/008_inventory_non_stocked.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 9,
+            description: "requisition_cancellation_fields",
+            sql: include_str!("../migrations/009_requisition_cancellation_fields.sql"),
+            kind: MigrationKind::Up,
+        },
     ]
 }
 

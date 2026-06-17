@@ -190,6 +190,9 @@ export type RequisitionMadeRecord = {
   passedAt: string;
   requisitionedBy?: string;
   status: string;
+  cancelledAt?: string;
+  cancelledBy?: string;
+  cancelReason?: string;
 };
 
 export type StockChange = {

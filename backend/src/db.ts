@@ -105,6 +105,9 @@ type StockLedgerRow = {
 };
 
 type RequisitionRow = {
+  cancel_reason: string | null;
+  cancelled_at: string | null;
+  cancelled_by: string | null;
   created_at: string;
   fulfilled_at: string | null;
   id: string;
@@ -418,7 +421,10 @@ function requisitionFromRows(row: RequisitionRow, lines: RequisitionLineRow[]) {
     pdfGeneratedAt: row.pdf_generated_at ?? row.submitted_at ?? createdAt,
     passedAt: row.passed_at ?? row.fulfilled_at ?? createdAt,
     requisitionedBy: row.requested_by ?? "",
-    status: row.status ?? "Requisition Made"
+    status: row.status ?? "Requisition Made",
+    cancelledAt: row.cancelled_at ?? "",
+    cancelledBy: row.cancelled_by ?? "",
+    cancelReason: row.cancel_reason ?? ""
   };
 }
 
@@ -500,7 +506,7 @@ export function loadAppDataFromNormalizedTables(snapshot: AppData | null = loadA
   ).map(stockChangeFromRow);
   const requisitionRows = db.prepare(
     `SELECT id, requested_by, status, created_at, updated_at, submitted_at, fulfilled_at, vendor_key, vendor_name,
-      po_no, total_cost, requisition_type, pdf_generated_at, passed_at
+      po_no, total_cost, requisition_type, pdf_generated_at, passed_at, cancelled_at, cancelled_by, cancel_reason
      FROM requisitions
      ORDER BY created_at DESC, id ASC`
   ).all() as RequisitionRow[];
@@ -759,8 +765,8 @@ export function saveNormalizedTablesFromAppData(data: AppData) {
     // Insert requisitions and lines
     if (Array.isArray(data.requisitionMadeRecords)) {
       const insertReq = db.prepare(`
-        INSERT INTO requisitions (id, requested_by, status, needed_by, notes, vendor_key, vendor_name, po_no, total_cost, requisition_type, pdf_generated_at, passed_at, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO requisitions (id, requested_by, status, needed_by, notes, vendor_key, vendor_name, po_no, total_cost, requisition_type, pdf_generated_at, passed_at, cancelled_at, cancelled_by, cancel_reason, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
 
       const insertLine = db.prepare(`
@@ -782,6 +788,9 @@ export function saveNormalizedTablesFromAppData(data: AppData) {
           r.requisitionType ?? r.requisition_type ?? null,
           r.pdfGeneratedAt ?? null,
           r.passedAt ?? null,
+          r.cancelledAt ?? r.cancelled_at ?? null,
+          r.cancelledBy ?? r.cancelled_by ?? null,
+          r.cancelReason ?? r.cancel_reason ?? null,
           r.createdAt ?? savedAt,
           r.createdAt ?? savedAt
         );
