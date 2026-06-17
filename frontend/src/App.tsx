@@ -229,7 +229,7 @@ const pages: Array<{ id: PageId; label: string }> = [
   { id: "inventory", label: "Inventory" },
   { id: "locations", label: "Locations" },
   { id: "vendors", label: "Vendors" },
-  { id: "reorder", label: "Reorder List" },
+  { id: "reorder", label: "Requisition" },
   { id: "history", label: "History Logs" },
 ];
 
@@ -15831,7 +15831,7 @@ Status: ${isComplete ? "Delivered to Maint" : "Partially Delivered"}`;
   return (
     <section className="panel reorder-panel">
       <div className="reorder-screen-header no-requisition-print">
-        <SectionHeader kicker="Minimum stock" title="Reorder List" />
+        <SectionHeader kicker="Minimum stock" title="Requisition" />
         <div className="reorder-page-tabs">
           <button
             className={`reorder-tab-button ${reorderView === "items" ? "reorder-tab-active" : ""}`}
