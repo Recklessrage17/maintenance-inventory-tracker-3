@@ -989,18 +989,18 @@ const blankVendorForm = (): VendorFormState => ({
   notes: "",
 });
 
-const blankItemForm = (defaultLocationId = ""): ItemFormState => ({
+const blankItemForm = (): ItemFormState => ({
   name: "",
   partNumber: "",
   description: "",
-  category: "Other",
+  category: "",
   quantityOnHand: 0,
   stockUnit: DEFAULT_STOCK_UNIT,
   minimumStockLevel: 0,
   lowStockAlertLevel: 0,
-  locationId: defaultLocationId,
+  locationId: "",
   vendorId: "",
-  costEach: 0,
+  costEach: "",
   itemUrl: "",
   notes: "",
   imagePlaceholder: "",
@@ -1507,7 +1507,7 @@ function normalizeRequisitionMadeRecord(value: unknown): RequisitionMadeRecord {
     pdfGeneratedAt: stringValue(raw.pdfGeneratedAt, now),
     passedAt: stringValue(raw.passedAt, now),
     requisitionedBy: stringValue(raw.requisitionedBy ?? raw.createdBy),
-    status: "Made",
+    status: stringValue(raw.status, "Requisition Made"),
   };
 }
 
@@ -1683,7 +1683,8 @@ function isActiveWaitingRequisition(record: RequisitionMadeRecord) {
     status.includes("waiting") ||
     status.includes("ordered") ||
     status.includes("pending") ||
-    status.includes("active");
+    status.includes("active") ||
+    status.includes("partially delivered");
 
   return (
     activeStatus &&
@@ -1695,33 +1696,24 @@ function isActiveWaitingRequisition(record: RequisitionMadeRecord) {
 }
 
 function getActiveRequisitionMadeRecords(data: AppData) {
-  const activeRequisitionIdByItemId = new Map<string, string>();
-
-  data.items.forEach((item) => {
-    if (!item.orderPlaced || !isReorderNeeded(item, data.settings)) {
-      return;
-    }
-
-    const record = getLinkedRequisitionMadeRecord(data, item);
-
-    if (record) {
-      activeRequisitionIdByItemId.set(item.id, record.id);
-    }
-  });
-
   return data.requisitionMadeRecords
     .filter(isActiveWaitingRequisition)
-    .map((record) => ({
-      ...record,
-      itemIds: record.itemIds.filter(
-        (itemId) => activeRequisitionIdByItemId.get(itemId) === record.id,
-      ),
-      itemSnapshots: record.itemSnapshots.filter(
+    .map((record) => {
+      const activeSnapshots = record.itemSnapshots.filter(
         (snapshot) =>
-          activeRequisitionIdByItemId.get(snapshot.itemId) === record.id,
-      ),
-    }))
-    .filter((record) => record.itemIds.length > 0);
+          (snapshot.deliveredQuantity ?? 0) < snapshot.quantityRequested,
+      );
+      const activeItemIds = new Set(
+        activeSnapshots.map((snapshot) => snapshot.itemId),
+      );
+
+      return {
+        ...record,
+        itemIds: record.itemIds.filter((itemId) => activeItemIds.has(itemId)),
+        itemSnapshots: activeSnapshots,
+      };
+    })
+    .filter((record) => record.itemSnapshots.length > 0);
 }
 
 function getLinkedRequisitionMadeRecord(data: AppData, item: InventoryItem) {
@@ -4409,7 +4401,7 @@ function InventoryApp() {
         setLastAutoImportAt(
           loadedData.settings.lastAutoImportTimestamp || null,
         );
-        setItemForm(blankItemForm(loadedData.settings.defaultLocationId));
+        setItemForm(blankItemForm());
         setStockForm(blankStockForm(loadedData.items[0]?.id ?? ""));
         setBackupMessage(
           loadedData.settings.backupStatus ||
@@ -4447,7 +4439,7 @@ function InventoryApp() {
         latestDataRef.current = fallback;
         setLastBackupAt(fallback.settings.lastBackupTimestamp || null);
         setLastAutoImportAt(fallback.settings.lastAutoImportTimestamp || null);
-        setItemForm(blankItemForm(fallback.settings.defaultLocationId));
+        setItemForm(blankItemForm());
         setStockForm(blankStockForm(fallback.items[0]?.id ?? ""));
         setCsvFolderStatus(
           showWebsiteModePanel
@@ -5912,7 +5904,7 @@ function InventoryApp() {
 
     setEditingItemId(null);
     setItemFormErrors({});
-    setItemForm(blankItemForm(data?.settings.defaultLocationId ?? ""));
+    setItemForm(blankItemForm());
     setIsItemFormOpen(true);
     openInventoryForItemForm();
   }
@@ -6047,7 +6039,7 @@ function InventoryApp() {
     setIsItemFormOpen(false);
     setEditingItemId(null);
     setItemFormErrors({});
-    setItemForm(blankItemForm(data?.settings.defaultLocationId ?? ""));
+    setItemForm(blankItemForm());
     setActivePage("inventory");
     closeSettingsPanel();
   }
@@ -6656,7 +6648,7 @@ function InventoryApp() {
         setLastAutoImportAt(importedAt);
       }
 
-      setItemForm(blankItemForm(restoredSettings.defaultLocationId));
+      setItemForm(blankItemForm());
       setStockForm(blankStockForm(importedWithTrash.items[0]?.id ?? ""));
       setBackupIndicator("done");
       setBackupMessage(successMessage);
@@ -6932,7 +6924,7 @@ function InventoryApp() {
     }
     setEditingItemId(null);
     setItemFormErrors({});
-    setItemForm(blankItemForm(data?.settings.defaultLocationId ?? ""));
+    setItemForm(blankItemForm());
     setIsItemFormOpen(false);
     setActivePage("inventory");
     closeSettingsPanel();
@@ -13257,8 +13249,9 @@ function ItemFormContent({
               onChange({ ...form, category: event.target.value })
             }
           >
+            <option value="">Select category</option>
             {inventoryCategoryOptions.map((category) => (
-              <option key={category}>{category}</option>
+              <option key={category} value={category}>{category}</option>
             ))}
           </select>
           {fieldError("category")}
@@ -13368,7 +13361,7 @@ function ItemFormContent({
               onChange({ ...form, locationId: event.target.value })
             }
           >
-            <option value="">Unassigned</option>
+            <option value="">Select location</option>
             {data.locations.map((location) => (
               <option key={location.id} value={location.id}>
                 {location.name}
@@ -13386,7 +13379,7 @@ function ItemFormContent({
               onChange({ ...form, vendorId: event.target.value })
             }
           >
-            <option value="">Unassigned</option>
+            <option value="">Select vendor</option>
             {data.vendors.map((vendor) => (
               <option key={vendor.id} value={vendor.id}>
                 {vendor.name}
@@ -13400,6 +13393,7 @@ function ItemFormContent({
           <input
             className={inputClass("costEach")}
             min="0"
+            placeholder="Enter cost"
             step="0.01"
             type="number"
             value={form.costEach}
@@ -17048,7 +17042,7 @@ function createRequisitionMadeRecord({
     pdfGeneratedAt: pdfGeneratedAt || passedAt,
     passedAt,
     requisitionedBy: header.requisitionedBy,
-    status: "Made",
+    status: "Requisition Made",
   };
 }
 

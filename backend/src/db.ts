@@ -418,7 +418,7 @@ function requisitionFromRows(row: RequisitionRow, lines: RequisitionLineRow[]) {
     pdfGeneratedAt: row.pdf_generated_at ?? row.submitted_at ?? createdAt,
     passedAt: row.passed_at ?? row.fulfilled_at ?? createdAt,
     requisitionedBy: row.requested_by ?? "",
-    status: "Made"
+    status: row.status ?? "Requisition Made"
   };
 }
 
@@ -772,7 +772,7 @@ export function saveNormalizedTablesFromAppData(data: AppData) {
         insertReq.run(
           r.id,
           r.createdBy ?? r.requisitionedBy ?? null,
-          r.status ?? "Made",
+          r.status ?? "Requisition Made",
           r.neededBy ?? null,
           r.comments ?? r.notes ?? null,
           r.vendorKey ?? null,
