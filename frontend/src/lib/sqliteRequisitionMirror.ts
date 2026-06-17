@@ -171,7 +171,7 @@ function recordFromSqlite(row: SqliteRequisitionRow, lines: SqliteRequisitionLin
     pdfGeneratedAt: row.pdf_generated_at ?? row.submitted_at ?? createdAt,
     passedAt: row.passed_at ?? row.fulfilled_at ?? createdAt,
     requisitionedBy: row.requested_by ?? "",
-    status: "Made"
+    status: row.status ?? "Requisition Made"
   };
 }
 
@@ -293,7 +293,7 @@ async function saveRequisitionWithDb(db: SqliteDatabase, record: RequisitionMade
     [
       record.id,
       record.requisitionedBy || record.createdBy || "",
-      record.status || "Made",
+      record.status || "Requisition Made",
       null,
       "",
       createdAt,
@@ -441,7 +441,7 @@ async function saveReorderHistoryLineWithDb(db: SqliteDatabase, line: Requisitio
       quantityRequested,
       unitCost,
       numberValue(snapshot.totalCost, quantityRequested * unitCost),
-      record.status || "Made",
+      record.status || "Requisition Made",
       record.pdfGeneratedAt || createdAt,
       record.passedAt || null,
       "",
