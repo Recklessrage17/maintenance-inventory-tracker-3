@@ -9728,18 +9728,28 @@ function DashboardPage({
     useState<RequisitionMadeRecord | null>(null);
   const [selectedOrderedVendorKey, setSelectedOrderedVendorKey] =
     useState<string | null>(null);
+  const [printStatus, setPrintStatus] = useState("");
+  const [printStatusType, setPrintStatusType] = useState<"success" | "error">(
+    "success",
+  );
   const heldItemCount = data.items.filter((it) => it.reorderHold && !it.hiddenFromWatchList && !it.nonStocked).length;
-  const activeOrderedRows = useMemo(
+  const activeOrderedRequisitions = useMemo(
     () =>
-      getActiveRequisitionMadeRecords(data).flatMap((record) =>
-        record.itemSnapshots
-          .filter((snapshot) => {
+      getActiveRequisitionMadeRecords(data)
+        .map((record) => ({
+          ...record,
+          itemIds: record.itemIds.filter((itemId) => {
+            const item = data.items.find((candidate) => candidate.id === itemId);
+
+            return !item || (!item.hiddenFromWatchList && !item.nonStocked);
+          }),
+          itemSnapshots: record.itemSnapshots.filter((snapshot) => {
             const item = data.items.find((candidate) => candidate.id === snapshot.itemId);
 
             return !item || (!item.hiddenFromWatchList && !item.nonStocked);
-          })
-          .map((snapshot) => ({ record, snapshot })),
-      ),
+          }),
+        }))
+        .filter((record) => record.itemSnapshots.length > 0),
     [data],
   );
   const orderedVendorGroups = useMemo(() => {
@@ -9748,31 +9758,35 @@ function DashboardPage({
       {
         vendorKey: string;
         vendorName: string;
-        rows: { record: RequisitionMadeRecord; snapshot: RequisitionMadeRecord["itemSnapshots"][number] }[];
+        records: RequisitionMadeRecord[];
       }
     >();
 
-    activeOrderedRows.forEach((row) => {
-      const vendorName = row.record.vendorName?.trim() || "Unknown Vendor";
-      const vendorKey = row.record.vendorKey?.trim() || vendorName.toLowerCase();
+    activeOrderedRequisitions.forEach((record) => {
+      const vendorName = record.vendorName?.trim() || "Unknown Vendor";
+      const fallbackKey = `${vendorName.toLowerCase()}-${record.passedAt || record.pdfGeneratedAt || record.createdAt || record.id}`;
+      const vendorKey = record.vendorKey?.trim() || vendorName.toLowerCase() || fallbackKey;
       const existing = groups.get(vendorKey);
 
       if (existing) {
-        existing.rows.push(row);
+        existing.records.push(record);
       } else {
-        groups.set(vendorKey, { vendorKey, vendorName, rows: [row] });
+        groups.set(vendorKey, { vendorKey, vendorName, records: [record] });
       }
     });
 
-    return Array.from(groups.values()).sort((a, b) =>
-      a.vendorName.localeCompare(b.vendorName),
-    );
-  }, [activeOrderedRows]);
+    return Array.from(groups.values())
+      .map((group) => ({
+        ...group,
+        records: [...group.records].sort(
+          (a, b) => getRequisitionRecordTime(b) - getRequisitionRecordTime(a),
+        ),
+      }))
+      .sort((a, b) => a.vendorName.localeCompare(b.vendorName));
+  }, [activeOrderedRequisitions]);
   const selectedOrderedVendorGroup =
-    orderedVendorGroups.find((group) => group.vendorKey === selectedOrderedVendorKey) ??
-    orderedVendorGroups[0] ??
-    null;
-  const orderedRequisitionCount = activeOrderedRows.length;
+    orderedVendorGroups.find((group) => group.vendorKey === selectedOrderedVendorKey) ?? null;
+  const orderedRequisitionCount = activeOrderedRequisitions.length;
   const hasWatchListItems =
     reorderItems.length > 0 || heldItemCount > 0 || orderedRequisitionCount > 0;
 
@@ -9815,8 +9829,99 @@ function DashboardPage({
     return reorderItems.slice(0, 8);
   }, [viewMode, data.items, reorderItems]);
 
+  async function handlePrintRequisition(record: RequisitionMadeRecord) {
+    try {
+      await printRequisitionMadeRecord(record);
+      setPrintStatus("Print / Export PDF view started.");
+      setPrintStatusType("success");
+    } catch {
+      setPrintStatus("Could not generate print file.");
+      setPrintStatusType("error");
+    }
+  }
+
   if (isScreensaverActive) {
     return <IdleScreensaver />;
+  }
+
+  if (selectedRequisitionRecord && selectedOrderedVendorGroup) {
+    const total = getRequisitionRecordTotal(selectedRequisitionRecord);
+
+    return (
+      <section className="ordered-requisition-fullscreen">
+        <button className="btn-muted" type="button" onClick={() => setSelectedRequisitionRecord(null)}>
+          ← Back to {selectedOrderedVendorGroup.vendorName} Requisitions
+        </button>
+        <div className="ordered-requisition-fullscreen-header">
+          <p className="eyebrow">Requisition detail</p>
+          <h2>Requisition Made — {selectedOrderedVendorGroup.vendorName}</h2>
+        </div>
+        <div className="requisition-detail-summary">
+          <div><span>Vendor</span><strong>{selectedRequisitionRecord.vendorName || "Unknown Vendor"}</strong></div>
+          <div><span>Requisition ID</span><strong>{selectedRequisitionRecord.id}</strong></div>
+          <div><span>Date Made</span><strong>{formatDateTime(selectedRequisitionRecord.passedAt || selectedRequisitionRecord.createdAt || selectedRequisitionRecord.pdfGeneratedAt)}</strong></div>
+          <div><span>PDF Generated</span><strong>{selectedRequisitionRecord.pdfGeneratedAt ? formatDateTime(selectedRequisitionRecord.pdfGeneratedAt) : "-"}</strong></div>
+          <div><span>Status</span><strong>Waiting</strong></div>
+          <div><span>Grand Total</span><strong>{formatCurrency(total)}</strong></div>
+        </div>
+        <div className="table-wrap requisition-detail-table">
+          <table className="data-table">
+            <thead><tr><th>#</th><th>Item</th><th>Part #</th><th>Qty Requested</th><th>Unit Cost</th><th>Total Cost</th></tr></thead>
+            <tbody>
+              {selectedRequisitionRecord.itemSnapshots.map((snapshot, index) => (
+                <tr key={`${selectedRequisitionRecord.id}-${snapshot.itemId}-${index}`}>
+                  <td>{index + 1}</td>
+                  <td>{snapshot.itemName}</td>
+                  <td>{snapshot.partNumber || "-"}</td>
+                  <td>{formatNumber(snapshot.quantityRequested)}</td>
+                  <td>{formatCurrency(snapshot.unitCost)}</td>
+                  <td>{formatCurrency(snapshot.totalCost)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div className="ordered-requisition-actions">
+          <button className="btn-primary" type="button" onClick={() => handlePrintRequisition(selectedRequisitionRecord)}>Print / Export PDF</button>
+          {printStatus && <span className={`requisition-status-message requisition-status-${printStatusType}`}>{printStatus}</span>}
+        </div>
+      </section>
+    );
+  }
+
+  if (selectedOrderedVendorGroup) {
+    return (
+      <section className="ordered-requisition-fullscreen">
+        <button className="btn-muted" type="button" onClick={() => setSelectedOrderedVendorKey(null)}>
+          ← Back to Dashboard
+        </button>
+        <div className="ordered-requisition-fullscreen-header">
+          <p className="eyebrow">Waiting requisitions grouped by vendor</p>
+          <h2>Requisition Made — {selectedOrderedVendorGroup.vendorName}</h2>
+        </div>
+        <div className="ordered-requisition-detail-list">
+          {selectedOrderedVendorGroup.records.map((record) => (
+            <article key={record.id} className="ordered-requisition-detail-card ordered-requisition-card-clickable" onClick={() => setSelectedRequisitionRecord(record)}>
+              <div className="ordered-vendor-detail-title">
+                <div><p className="eyebrow">Requisition ID: {record.id}</p><h4>Requisition ({formatNumber(record.itemSnapshots.length)})</h4></div>
+                <span>Status: Waiting</span>
+              </div>
+              <div className="ordered-requisition-detail-meta">
+                <span>Date Made: {formatDateTime(record.passedAt || record.createdAt || record.pdfGeneratedAt)}</span>
+                <span>Vendor: {record.vendorName || "Unknown Vendor"}</span>
+                <span>Items: {formatNumber(record.itemSnapshots.length)}</span>
+                <span>Total: {formatCurrency(getRequisitionRecordTotal(record))}</span>
+              </div>
+              <div className="ordered-requisition-actions">
+                <button className="btn-small" type="button" onClick={(event) => { event.stopPropagation(); setSelectedRequisitionRecord(record); }}>View Items</button>
+                <button className="btn-small" type="button" onClick={(event) => { event.stopPropagation(); handlePrintRequisition(record); }}>Print / Export PDF</button>
+              </div>
+            </article>
+          ))}
+        </div>
+        {printStatus && <span className={`requisition-status-message requisition-status-${printStatusType}`}>{printStatus}</span>}
+      </section>
+    );
   }
 
   return (
@@ -9883,94 +9988,32 @@ function DashboardPage({
             <div className="ordered-requisition-queue">
               <div className="ordered-requisition-header">
                 <div>
-                  <p className="eyebrow">Ordered tab</p>
-                  <h3>Ordered Requisition Queue</h3>
+                  <p className="eyebrow">Waiting requisitions grouped by vendor</p>
+                  <h3 title="Requisition Made">Requisition Made</h3>
                 </div>
                 <span>{orderedRequisitionCount} Waiting</span>
               </div>
 
               {orderedVendorGroups.length === 0 ? (
                 <div className="ordered-requisition-empty">
-                  No active ordered requisitions waiting.
+                  No active requisitions made.
                 </div>
               ) : (
                 <>
-                  <div className="ordered-vendor-badge-row">
+                  <div className="ordered-vendor-badge-row" title="Requisition Made">
                     {orderedVendorGroups.map((group) => (
                       <button
                         key={group.vendorKey}
-                        className={`ordered-vendor-badge ${selectedOrderedVendorGroup?.vendorKey === group.vendorKey ? "ordered-vendor-badge-active" : ""}`}
+                        className="ordered-vendor-badge"
                         type="button"
+                        title="Requisition Made"
                         onClick={() => setSelectedOrderedVendorKey(group.vendorKey)}
                       >
                         <span>{group.vendorName}</span>
-                        <strong>({group.rows.length})</strong>
+                        <strong>({group.records.length})</strong>
                       </button>
                     ))}
                   </div>
-
-                  {selectedOrderedVendorGroup && (
-                    <div className="ordered-vendor-detail-panel">
-                      <div className="ordered-vendor-detail-title">
-                        <div>
-                          <p className="eyebrow">Vendor</p>
-                          <h4>{selectedOrderedVendorGroup.vendorName}</h4>
-                        </div>
-                        <span>Status: Waiting</span>
-                      </div>
-                      <div className="ordered-requisition-detail-list">
-                        {selectedOrderedVendorGroup.rows.map(({ record, snapshot }) => (
-                          <article
-                            key={`${record.id}-${snapshot.itemId}-${snapshot.partNumber}`}
-                            className="ordered-requisition-detail-card"
-                          >
-                            <div className="ordered-requisition-detail-meta">
-                              <span>Vendor: {record.vendorName || "Unknown Vendor"}</span>
-                              <span>Status: Waiting</span>
-                              <span>Requisition Date: {formatDateTime(record.passedAt || record.createdAt || record.pdfGeneratedAt)}</span>
-                              <span>PDF Generated: {record.pdfGeneratedAt ? formatDateTime(record.pdfGeneratedAt) : "-"}</span>
-                            </div>
-                            <div className="ordered-requisition-part-row">
-                              <div>
-                                <strong>{snapshot.itemName}</strong>
-                                <span>Part #: {snapshot.partNumber || "-"}</span>
-                              </div>
-                              <div className="ordered-requisition-cost-grid">
-                                <span>Qty Requested: {formatNumber(snapshot.quantityRequested)}</span>
-                                <span>Unit Cost: {formatCurrency(snapshot.unitCost)}</span>
-                                <span>Total Cost: {formatCurrency(snapshot.totalCost)}</span>
-                              </div>
-                            </div>
-                            <div className="ordered-requisition-actions">
-                              <button
-                                className="btn-small"
-                                type="button"
-                                onClick={() => setSelectedRequisitionRecord(record)}
-                              >
-                                View
-                              </button>
-                              <button
-                                className="btn-small"
-                                type="button"
-                                onClick={() => setActivePage("reorder")}
-                              >
-                                Open in Requisition Made
-                              </button>
-                              {snapshot.itemId && (
-                                <button
-                                  className="btn-small"
-                                  type="button"
-                                  onClick={() => onStockAction(snapshot.itemId)}
-                                >
-                                  Stock Edit
-                                </button>
-                              )}
-                            </div>
-                          </article>
-                        ))}
-                      </div>
-                    </div>
-                  )}
                 </>
               )}
             </div>
@@ -10058,6 +10101,13 @@ function DashboardPage({
 
 function formatRequisitionType(type: RequisitionMadeRecord["requisitionType"]) {
   return type === "over100" ? "Over $100" : "Under $100";
+}
+
+function getRequisitionRecordTime(record: RequisitionMadeRecord) {
+  const timestamp = record.passedAt || record.pdfGeneratedAt || record.createdAt || "";
+  const parsed = Date.parse(timestamp);
+
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function getRequisitionRecordTotal(record: RequisitionMadeRecord) {
@@ -10391,10 +10441,12 @@ async function printRequisitionMadeRecord(record: RequisitionMadeRecord) {
     `<main class="report">
       <header class="report-header">
         <p class="report-kicker">Maintenance Inventory Tracker</p>
-        <h1>Requisition Made - ${escapeReportHtml(record.vendorName)}</h1>
+        <h1>Requisition Made</h1>
       </header>
       <section class="report-meta">
-        <div><span>Status</span><strong>${escapeReportHtml(record.status)}</strong></div>
+        <div><span>Vendor</span><strong>${escapeReportHtml(record.vendorName || "Unknown Vendor")}</strong></div>
+        <div><span>Requisition ID</span><strong>${escapeReportHtml(record.id)}</strong></div>
+        <div><span>Status</span><strong>Waiting</strong></div>
         <div><span>Form Type</span><strong>${escapeReportHtml(formatRequisitionType(record.requisitionType))}</strong></div>
         <div><span>PO Number</span><strong>${escapeReportHtml(record.poNo || "-")}</strong></div>
         <div><span>Total Cost</span><strong>${escapeReportHtml(formatCurrency(total))}</strong></div>
