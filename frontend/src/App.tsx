@@ -401,6 +401,25 @@ type ItemFormState = {
   nonStocked: boolean;
 };
 
+type ItemFormErrorKey =
+  | "name"
+  | "partNumber"
+  | "category"
+  | "vendorId"
+  | "locationId"
+  | "costEach";
+
+type ItemFormErrors = Partial<Record<ItemFormErrorKey, string>>;
+
+const itemFormErrorLabels: Record<ItemFormErrorKey, string> = {
+  name: "Item name",
+  partNumber: "Part number",
+  category: "Category",
+  vendorId: "Vendor",
+  locationId: "Location",
+  costEach: "Cost each",
+};
+
 type StockFormState = {
   itemId: string;
   actionType: StockActionType | "";
@@ -3246,13 +3265,27 @@ function itemFromForm(
   };
 }
 
+function validateRequiredItemFields(form: ItemFormState): ItemFormErrors {
+  const errors: ItemFormErrors = {};
+
+  if (!form.name.trim()) errors.name = "Item name is required";
+  if (!form.partNumber.trim()) errors.partNumber = "Part number is required";
+  if (!form.category.trim()) errors.category = "Category is required";
+  if (!form.vendorId.trim()) errors.vendorId = "Vendor is required";
+  if (!form.locationId.trim()) errors.locationId = "Location is required";
+
+  const costNumber = Number(form.costEach);
+  if (form.costEach === "" || Number.isNaN(costNumber) || costNumber <= 0) {
+    errors.costEach = "Cost each must be greater than 0";
+  }
+
+  return errors;
+}
+
 function getItemFormValidationWarning(
   form: ItemFormState,
   settings: AppSettings,
 ) {
-  if (!form.name.trim()) {
-    return "Item name is required.";
-  }
 
   if (
     !settings.allowNegativeStockOverride &&
@@ -3269,8 +3302,9 @@ function getItemFormValidationWarning(
     return "Low Stock Alert Level cannot be negative.";
   }
 
-  if (numberValue(form.costEach) < 0) {
-    return "Cost each cannot be negative.";
+  const costEach = Number(form.costEach);
+  if (form.costEach !== "" && (Number.isNaN(costEach) || costEach <= 0)) {
+    return "Cost each must be a valid number greater than 0.";
   }
 
   return "";
@@ -4020,6 +4054,7 @@ function InventoryApp() {
   const [labelPreviewItem, setLabelPreviewItem] =
     useState<InventoryItem | null>(null);
   const [itemForm, setItemForm] = useState<ItemFormState>(blankItemForm());
+  const [itemFormErrors, setItemFormErrors] = useState<ItemFormErrors>({});
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
   const [isItemFormOpen, setIsItemFormOpen] = useState(false);
   const [isCategoryManagerOpen, setIsCategoryManagerOpen] = useState(false);
@@ -6015,6 +6050,7 @@ function InventoryApp() {
     }
 
     setEditingItemId(null);
+    setItemFormErrors({});
     setItemForm(blankItemForm(data?.settings.defaultLocationId ?? ""));
     setIsItemFormOpen(true);
     openInventoryForItemForm();
@@ -6149,6 +6185,7 @@ function InventoryApp() {
   function closeItemForm() {
     setIsItemFormOpen(false);
     setEditingItemId(null);
+    setItemFormErrors({});
     setItemForm(blankItemForm(data?.settings.defaultLocationId ?? ""));
     setActivePage("inventory");
     closeSettingsPanel();
@@ -6965,6 +7002,17 @@ function InventoryApp() {
       return;
     }
 
+    const requiredErrors = validateRequiredItemFields(itemForm);
+
+    if (Object.keys(requiredErrors).length > 0) {
+      setItemFormErrors(requiredErrors);
+      const missingFields = Object.keys(requiredErrors)
+        .map((key) => itemFormErrorLabels[key as ItemFormErrorKey])
+        .join(", ");
+      showToast("warning", `Missing required fields: ${missingFields}.`);
+      return;
+    }
+
     const validationWarning = getItemFormValidationWarning(
       itemForm,
       data.settings,
@@ -6975,6 +7023,7 @@ function InventoryApp() {
       return;
     }
 
+    setItemFormErrors({});
     saveItemForm(itemForm, editingItemId);
   }
 
@@ -7021,6 +7070,7 @@ function InventoryApp() {
       }
     }
     setEditingItemId(null);
+    setItemFormErrors({});
     setItemForm(blankItemForm(data?.settings.defaultLocationId ?? ""));
     setIsItemFormOpen(false);
     setActivePage("inventory");
@@ -7044,6 +7094,7 @@ function InventoryApp() {
     }
 
     setEditingItemId(item.id);
+    setItemFormErrors({});
     setItemForm(formFromItem(item));
     setIsItemFormOpen(true);
     openInventoryForItemForm();
@@ -9580,8 +9631,12 @@ function InventoryApp() {
             data={data}
             editingItemId={editingItemId}
             form={itemForm}
+            errors={itemFormErrors}
             onCancel={closeItemForm}
-            onChange={setItemForm}
+            onChange={(nextForm) => {
+              setItemForm(nextForm);
+              setItemFormErrors({});
+            }}
             onImageRemove={removeItemImage}
             onImageUpload={handleItemImageUpload}
             onPrintLabel={openCurrentItemFormLabel}
@@ -9638,8 +9693,12 @@ function InventoryApp() {
             data={data}
             editingItemId={editingItemId}
             form={itemForm}
+            errors={itemFormErrors}
             onCancel={closeItemForm}
-            onChange={setItemForm}
+            onChange={(nextForm) => {
+              setItemForm(nextForm);
+              setItemFormErrors({});
+            }}
             onImageRemove={removeItemImage}
             onImageUpload={handleItemImageUpload}
             onPrintLabel={openCurrentItemFormLabel}
@@ -13044,6 +13103,7 @@ type ItemFormProps = {
   data: AppData;
   editingItemId: string | null;
   form: ItemFormState;
+  errors: ItemFormErrors;
   onCancel: () => void;
   onChange: (form: ItemFormState) => void;
   onImageRemove: () => void;
@@ -13060,6 +13120,7 @@ function ItemFormDrawer({
   data,
   editingItemId,
   form,
+  errors,
   onCancel,
   onChange,
   onImageRemove,
@@ -13105,6 +13166,7 @@ function ItemFormDrawer({
           data={data}
           editingItemId={editingItemId}
           form={form}
+          errors={errors}
           headerAction={
             <button
               className="settings-close item-form-close-button"
@@ -13141,6 +13203,7 @@ function ItemFormContent({
   data,
   editingItemId,
   form,
+  errors,
   headerAction,
   onCancel,
   onChange,
@@ -13205,6 +13268,25 @@ function ItemFormContent({
     }
   }
 
+  function requiredLabel(label: string) {
+    return (
+      <span>
+        {label}
+        <span className="required-star" aria-hidden="true">*</span>
+      </span>
+    );
+  }
+
+  function inputClass(errorKey: ItemFormErrorKey) {
+    return `input ${errors[errorKey] ? "input-error" : ""}`.trim();
+  }
+
+  function fieldError(errorKey: ItemFormErrorKey) {
+    return errors[errorKey] ? (
+      <span className="field-helper field-error-text">{errors[errorKey]}</span>
+    ) : null;
+  }
+
   return (
     <>
       <div className="item-form-header">
@@ -13216,24 +13298,26 @@ function ItemFormContent({
       </div>
       <form className="item-form-grid" onSubmit={onSubmit}>
         <label className="field-label xl:col-span-2">
-          Item name
+          {requiredLabel("Item name")}
           <input
-            className="input"
+            className={inputClass("name")}
             value={form.name}
             onChange={(event) =>
               onChange({ ...form, name: event.target.value })
             }
           />
+          {fieldError("name")}
         </label>
         <label className="field-label">
-          Part number
+          {requiredLabel("Part number")}
           <input
-            className="input"
+            className={inputClass("partNumber")}
             value={form.partNumber}
             onChange={(event) =>
               onChange({ ...form, partNumber: event.target.value })
             }
           />
+          {fieldError("partNumber")}
         </label>
         <label className="field-label xl:col-span-2">
           Hyperlink / Part Info URL
@@ -13296,9 +13380,9 @@ function ItemFormContent({
           </div>
         </div>
         <label className="field-label">
-          Category
+          {requiredLabel("Category")}
           <select
-            className="input"
+            className={inputClass("category")}
             value={form.category}
             onChange={(event) =>
               onChange({ ...form, category: event.target.value })
@@ -13308,6 +13392,7 @@ function ItemFormContent({
               <option key={category}>{category}</option>
             ))}
           </select>
+          {fieldError("category")}
         </label>
         <label className="field-label md:col-span-2 xl:col-span-4">
           Description
@@ -13406,9 +13491,9 @@ function ItemFormContent({
           <span>Not stocked in-house / order as needed</span>
         </label>
         <label className="field-label">
-          Location
+          {requiredLabel("Location")}
           <select
-            className="input"
+            className={inputClass("locationId")}
             value={form.locationId}
             onChange={(event) =>
               onChange({ ...form, locationId: event.target.value })
@@ -13421,11 +13506,12 @@ function ItemFormContent({
               </option>
             ))}
           </select>
+          {fieldError("locationId")}
         </label>
         <label className="field-label">
-          Vendor
+          {requiredLabel("Vendor")}
           <select
-            className="input"
+            className={inputClass("vendorId")}
             value={form.vendorId}
             onChange={(event) =>
               onChange({ ...form, vendorId: event.target.value })
@@ -13438,11 +13524,12 @@ function ItemFormContent({
               </option>
             ))}
           </select>
+          {fieldError("vendorId")}
         </label>
         <label className="field-label">
-          Cost each
+          {requiredLabel("Cost each")}
           <input
-            className="input"
+            className={inputClass("costEach")}
             min="0"
             step="0.01"
             type="number"
@@ -13454,6 +13541,7 @@ function ItemFormContent({
               })
             }
           />
+          {fieldError("costEach")}
         </label>
         <label className="field-label md:col-span-2 xl:col-span-3">
           Notes

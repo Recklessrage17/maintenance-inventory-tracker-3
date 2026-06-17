@@ -3591,6 +3591,17 @@ button:disabled {
     @apply min-h-10 w-full rounded-md border border-slate-600 bg-slate-950/70 px-3 py-2 text-sm font-semibold text-slate-100 outline-none transition placeholder:text-slate-500 focus:border-cyan-300 focus:ring-2 focus:ring-cyan-400/30;
   }
 
+  .input-error {
+    border-color: #ff4d6d;
+    box-shadow: 0 0 0 1px rgba(255, 77, 109, 0.5);
+  }
+
+  .required-star {
+    color: #ff4d6d;
+    margin-left: 4px;
+    font-weight: 800;
+  }
+
   .field-label {
     @apply flex flex-col gap-1.5 text-sm font-bold text-slate-300;
   }
@@ -3598,6 +3609,11 @@ button:disabled {
   .field-helper {
     @apply text-xs font-semibold text-slate-500;
     opacity: 0.78;
+  }
+
+  .field-error-text {
+    color: #ff9ab0;
+    opacity: 1;
   }
 
   .eyebrow {
