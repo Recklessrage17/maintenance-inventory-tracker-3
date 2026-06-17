@@ -104,6 +104,7 @@ export type InventoryItem = {
   reorderHold?: boolean;
   orderPlaced?: boolean;
   orderRequisitionId?: string;
+  hiddenFromWatchList?: boolean;
   isDemo?: boolean;
   createdAt: string;
   updatedAt: string;

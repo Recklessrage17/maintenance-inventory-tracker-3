@@ -275,6 +275,7 @@ function buildInventoryCsv(appData: AppData) {
     "notes",
     "reorderHold",
     "orderPlaced",
+    "hiddenFromWatchList",
     "createdAt",
     "updatedAt"
   ];
@@ -297,6 +298,7 @@ function buildInventoryCsv(appData: AppData) {
     item.notes,
     item.reorderHold,
     item.orderPlaced,
+    item.hiddenFromWatchList,
     item.createdAt,
     item.updatedAt
   ]);

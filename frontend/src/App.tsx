@@ -391,6 +391,7 @@ type ItemFormState = {
   barcodePlaceholder: string;
   reorderHold: boolean;
   orderPlaced: boolean;
+  hiddenFromWatchList: boolean;
 };
 
 type StockFormState = {
@@ -575,6 +576,7 @@ type CsvFolderInventoryRecord = {
   notes: string;
   orderPlaced: boolean | null;
   reorderHold: boolean | null;
+  hiddenFromWatchList: boolean | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -973,6 +975,7 @@ const blankItemForm = (defaultLocationId = ""): ItemFormState => ({
   barcodePlaceholder: "",
   reorderHold: false,
   orderPlaced: true,
+  hiddenFromWatchList: false,
 });
 
 const blankStockForm = (itemId = ""): StockFormState => ({
@@ -1383,6 +1386,7 @@ function normalizeItem(value: unknown): InventoryItem {
     barcodePlaceholder: stringValue(raw.barcodePlaceholder),
     reorderHold: raw.reorderHold === true,
     orderPlaced: hasOrderPlaced ? raw.orderPlaced === true : true,
+    hiddenFromWatchList: raw.hiddenFromWatchList === true,
     orderRequisitionId: Object.prototype.hasOwnProperty.call(
       raw,
       "orderRequisitionId",
@@ -1603,11 +1607,7 @@ function isHiddenFromDashboardWatchList(
   item: InventoryItem,
   settings: AppSettings,
 ) {
-  return (
-    isReorderNeeded(item, settings) &&
-    item.orderPlaced === true &&
-    item.reorderHold !== true
-  );
+  return isReorderNeeded(item, settings) && item.hiddenFromWatchList === true;
 }
 
 function applyWatchListVisibilityChoice(
@@ -1615,14 +1615,14 @@ function applyWatchListVisibilityChoice(
   choice: WatchListVisibilityChoice,
 ): ItemFormState {
   if (choice === "visible") {
-    return { ...form, orderPlaced: false, reorderHold: false };
+    return { ...form, hiddenFromWatchList: false, orderPlaced: false, reorderHold: false };
   }
 
   if (choice === "held") {
-    return { ...form, orderPlaced: false, reorderHold: true };
+    return { ...form, hiddenFromWatchList: false, orderPlaced: false, reorderHold: true };
   }
 
-  return { ...form, orderPlaced: true, reorderHold: false };
+  return { ...form, hiddenFromWatchList: true, orderPlaced: false, reorderHold: false };
 }
 
 function getWatchListVisibilitySummary(
@@ -3036,6 +3036,7 @@ function csvFolderInventoryRecord(
     notes: csvCell(record, "notes", "note", "comments"),
     orderPlaced: csvBooleanValue(csvCell(record, "orderPlaced")),
     reorderHold: csvBooleanValue(csvCell(record, "reorderHold")),
+    hiddenFromWatchList: csvBooleanValue(csvCell(record, "hiddenFromWatchList", "hidden_from_watchlist")),
     createdAt: csvCell(record, "createdAt"),
     updatedAt: csvCell(record, "updatedAt"),
   };
@@ -3196,6 +3197,7 @@ function itemFromForm(
     barcodePlaceholder: form.barcodePlaceholder.trim(),
     reorderHold: Boolean(form.reorderHold),
     orderPlaced: Boolean(form.orderPlaced),
+    hiddenFromWatchList: Boolean(form.hiddenFromWatchList),
     orderRequisitionId: form.orderPlaced ? existing?.orderRequisitionId : "",
     isDemo: existing?.isDemo,
     createdAt: existing?.createdAt ?? now,
@@ -3253,6 +3255,7 @@ function formFromItem(item: InventoryItem): ItemFormState {
     barcodePlaceholder: item.barcodePlaceholder,
     reorderHold: Boolean(item.reorderHold),
     orderPlaced: Boolean(item.orderPlaced),
+    hiddenFromWatchList: Boolean(item.hiddenFromWatchList),
   };
 }
 
@@ -5336,6 +5339,7 @@ function InventoryApp() {
       .filter(
         (item) =>
           isReorderNeeded(item, data.settings) &&
+          !item.hiddenFromWatchList &&
           !item.orderPlaced &&
           !item.reorderHold,
       )
@@ -6193,6 +6197,45 @@ function InventoryApp() {
     }));
   }
 
+  function toggleWatchListHidden(itemId: string) {
+    commitData((current) => {
+      const item = current.items.find((candidate) => candidate.id === itemId);
+
+      if (!item || !isReorderNeeded(item, current.settings)) {
+        return current;
+      }
+
+      const updatedAt = nowIso();
+      const nextHidden = item.hiddenFromWatchList !== true;
+      const updatedItem: InventoryItem = {
+        ...item,
+        hiddenFromWatchList: nextHidden,
+        updatedAt,
+      };
+
+      return addAudit(
+        {
+          ...current,
+          items: current.items.map((candidate) =>
+            candidate.id === itemId ? updatedItem : candidate,
+          ),
+        },
+        createAuditEntry(
+          "Item",
+          itemId,
+          nextHidden
+            ? "Hidden from Dashboard Watch List"
+            : "Unhidden from Dashboard Watch List",
+          `${item.name} was ${nextHidden ? "hidden from" : "unhidden on"} the Dashboard Watch List.`,
+          "User",
+          updatedAt,
+        ),
+      );
+    });
+
+    showToast("success", "Watch List visibility updated.");
+  }
+
   function updateWatchListVisibility(
     itemId: string,
     choice: Exclude<WatchListVisibilityChoice, "hidden">,
@@ -6212,6 +6255,7 @@ function InventoryApp() {
               orderPlaced: false,
               reorderHold: true,
               orderRequisitionId: "",
+              hiddenFromWatchList: false,
               updatedAt,
             }
           : {
@@ -6219,6 +6263,7 @@ function InventoryApp() {
               orderPlaced: false,
               reorderHold: false,
               orderRequisitionId: "",
+              hiddenFromWatchList: false,
               updatedAt,
             };
 
@@ -8455,6 +8500,7 @@ function InventoryApp() {
           barcodePlaceholder: existing?.barcodePlaceholder || "",
           reorderHold: existing?.reorderHold === true,
           orderPlaced: existing?.orderPlaced === false ? false : true,
+          hiddenFromWatchList: existing?.hiddenFromWatchList === true,
         },
         existing,
       );
@@ -8633,6 +8679,7 @@ function InventoryApp() {
           barcodePlaceholder: existing?.barcodePlaceholder || "",
           reorderHold: existing?.reorderHold === true,
           orderPlaced: existing?.orderPlaced === false ? false : true,
+          hiddenFromWatchList: existing?.hiddenFromWatchList === true,
         },
         existing,
       );
@@ -8953,6 +9000,7 @@ function InventoryApp() {
           barcodePlaceholder: existing?.barcodePlaceholder || "",
           orderPlaced: record.orderPlaced ?? existing?.orderPlaced ?? true,
           reorderHold: record.reorderHold ?? existing?.reorderHold ?? false,
+          hiddenFromWatchList: record.hiddenFromWatchList ?? existing?.hiddenFromWatchList ?? false,
         },
         existing,
       );
@@ -9464,7 +9512,7 @@ function InventoryApp() {
         {selectedVendorId && (
           <VendorItemsDialog
             data={data}
-            onWatchListVisibilityClick={setWatchListVisibilityItemId}
+            onWatchListVisibilityClick={toggleWatchListHidden}
             vendorId={selectedVendorId}
             onClose={() => setSelectedVendorId(null)}
           />
@@ -9473,7 +9521,7 @@ function InventoryApp() {
           <LocationItemsDialog
             data={data}
             locationId={selectedLocationId}
-            onWatchListVisibilityClick={setWatchListVisibilityItemId}
+            onWatchListVisibilityClick={toggleWatchListHidden}
             onClose={() => setSelectedLocationId(null)}
           />
         )}
@@ -9501,7 +9549,7 @@ function InventoryApp() {
             setActivePage={openPage}
             onToggleHold={toggleReorderHold}
             onToggleOrdered={toggleOrderPlaced}
-            onWatchListVisibilityClick={setWatchListVisibilityItemId}
+            onWatchListVisibilityClick={toggleWatchListHidden}
           />
         )}
         {activePage === "inventory" && (
@@ -9528,7 +9576,7 @@ function InventoryApp() {
             onScanLookupWarning={(message) => showToast("warning", message)}
             onStockAction={startStockAction}
             onStatusFilter={setStatusFilter}
-            onWatchListVisibilityClick={setWatchListVisibilityItemId}
+            onWatchListVisibilityClick={toggleWatchListHidden}
             onItemLinkOpenMessage={() =>
               showToast("warning", "Could not open item link.")
             }
@@ -9557,7 +9605,7 @@ function InventoryApp() {
             onMinimumStockChange={updateMinimumStockLevel}
             onPrintLabel={openLabelPreview}
             onSubmit={handleStockSubmit}
-            onWatchListVisibilityClick={setWatchListVisibilityItemId}
+            onWatchListVisibilityClick={toggleWatchListHidden}
           />
         )}
         {activePage === "locations" && (
@@ -9601,7 +9649,7 @@ function InventoryApp() {
             items={reorderItems}
             onDataChange={commitData}
             onStockAction={startStockAction}
-            onWatchListVisibilityClick={setWatchListVisibilityItemId}
+            onWatchListVisibilityClick={toggleWatchListHidden}
           />
         )}
         {activePage === "history" && <HistoryPage data={data} />}
@@ -9636,13 +9684,15 @@ function DashboardPage({
   );
   const [selectedRequisitionRecord, setSelectedRequisitionRecord] =
     useState<RequisitionMadeRecord | null>(null);
-  const heldItemCount = data.items.filter((it) => it.reorderHold).length;
+  const heldItemCount = data.items.filter((it) => it.reorderHold && !it.hiddenFromWatchList).length;
   const orderedItemCount = data.items.filter(
-    (it) => it.orderPlaced && isReorderNeeded(it, data.settings),
+    (it) =>
+      it.orderPlaced && !it.hiddenFromWatchList && isReorderNeeded(it, data.settings),
   ).length;
   const requisitionOrderedItemCount = data.items.filter(
     (it) =>
       it.orderPlaced &&
+      !it.hiddenFromWatchList &&
       Boolean(it.orderRequisitionId) &&
       isReorderNeeded(it, data.settings),
   ).length;
@@ -9673,12 +9723,19 @@ function DashboardPage({
 
   const visibleReorderItems = useMemo(() => {
     if (viewMode === "hold") {
-      return data.items.filter((it) => it.reorderHold).slice(0, 8);
+      return data.items
+        .filter((it) => it.reorderHold && !it.hiddenFromWatchList)
+        .slice(0, 8);
     }
 
     if (viewMode === "ordered") {
       return data.items
-        .filter((it) => it.orderPlaced && isReorderNeeded(it, data.settings))
+        .filter(
+          (it) =>
+            it.orderPlaced &&
+            !it.hiddenFromWatchList &&
+            isReorderNeeded(it, data.settings),
+        )
         .slice(0, 8);
     }
 
@@ -19520,6 +19577,7 @@ function StatusWithWatchVisibility({
   title?: string;
 }) {
   const status = getInventoryStatus(item, settings);
+  const shouldShowWatchToggle = isReorderNeeded(item, settings);
   const isHidden = isHiddenFromDashboardWatchList(item, settings);
 
   return (
@@ -19530,21 +19588,30 @@ function StatusWithWatchVisibility({
         status={status}
         title={title}
       />
-      {isHidden && (
+      {shouldShowWatchToggle && (
         <button
-          className="hidden-watch-indicator"
+          className={`hidden-watch-indicator ${isHidden ? "hidden-watch-indicator-unhide" : ""}`}
           type="button"
-          aria-label={`Show ${item.name} on Dashboard Watch List`}
-          title="Hidden from Dashboard Watch List"
+          aria-label={`${isHidden ? "Unhide" : "Hide"} ${item.name} ${isHidden ? "on" : "from"} Dashboard Watch List`}
+          title={isHidden ? "Unhide from Watch List" : "Hide from Watch List"}
           onClick={(event) => {
             event.stopPropagation();
             onWatchListVisibilityClick(item.id);
           }}
         >
-          <EyeOffIcon />
+          {isHidden ? <EyeIcon /> : <EyeOffIcon />}
         </button>
       )}
     </span>
+  );
+}
+
+function EyeIcon() {
+  return (
+    <svg viewBox="0 0 24 24" role="img" aria-hidden="true">
+      <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z" />
+      <circle cx="12" cy="12" r="3" />
+    </svg>
   );
 }
 

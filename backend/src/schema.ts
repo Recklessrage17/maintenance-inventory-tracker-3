@@ -70,6 +70,7 @@ export function runMigrations(db: Database.Database) {
       order_placed INTEGER NOT NULL DEFAULT 0 CHECK (order_placed IN (0, 1)),
       reorder_hold INTEGER NOT NULL DEFAULT 0 CHECK (reorder_hold IN (0, 1)),
       order_requisition_id TEXT,
+      hidden_from_watchlist INTEGER NOT NULL DEFAULT 0 CHECK (hidden_from_watchlist IN (0, 1)),
       is_demo INTEGER NOT NULL DEFAULT 0 CHECK (is_demo IN (0, 1)),
       created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
       updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
@@ -221,4 +222,9 @@ export function runMigrations(db: Database.Database) {
       ('schema_version', 'web-1', NULL),
       ('app_data_mode', 'sqlite-live-json-backup', '{"sqlite":"live app data","json":"backup export import restore","csv":"inventory import export"}');
   `);
+
+  const inventoryColumns = db.prepare("PRAGMA table_info(inventory_items)").all() as Array<{ name: string }>;
+  if (!inventoryColumns.some((column) => column.name === "hidden_from_watchlist")) {
+    db.exec("ALTER TABLE inventory_items ADD COLUMN hidden_from_watchlist INTEGER NOT NULL DEFAULT 0 CHECK (hidden_from_watchlist IN (0, 1))");
+  }
 }

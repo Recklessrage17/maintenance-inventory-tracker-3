@@ -22,6 +22,7 @@ type SqliteInventoryRow = {
   id: string;
   image_data_url: string | null;
   image_placeholder: string | null;
+  hidden_from_watchlist: number | boolean | null;
   is_demo: number | boolean | null;
   item_name: string;
   item_url: string | null;
@@ -108,6 +109,7 @@ function itemFromSqlite(row: SqliteInventoryRow): InventoryItem {
     reorderHold: boolFromSqlite(row.reorder_hold),
     orderPlaced: boolFromSqlite(row.order_placed),
     orderRequisitionId: row.order_requisition_id ?? undefined,
+    hiddenFromWatchList: boolFromSqlite(row.hidden_from_watchlist),
     isDemo: boolFromSqlite(row.is_demo),
     createdAt: row.created_at,
     updatedAt: row.updated_at
@@ -187,10 +189,11 @@ async function saveInventoryItemWithDb(db: SqliteDatabase, item: InventoryItem) 
       order_placed,
       reorder_hold,
       order_requisition_id,
+      hidden_from_watchlist,
       is_demo,
       created_at,
       updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       item_name = excluded.item_name,
       description = excluded.description,
@@ -212,6 +215,7 @@ async function saveInventoryItemWithDb(db: SqliteDatabase, item: InventoryItem) 
       order_placed = excluded.order_placed,
       reorder_hold = excluded.reorder_hold,
       order_requisition_id = excluded.order_requisition_id,
+      hidden_from_watchlist = excluded.hidden_from_watchlist,
       is_demo = excluded.is_demo,
       created_at = excluded.created_at,
       updated_at = excluded.updated_at`,
@@ -237,6 +241,7 @@ async function saveInventoryItemWithDb(db: SqliteDatabase, item: InventoryItem) 
       boolToSqlite(item.orderPlaced),
       boolToSqlite(item.reorderHold),
       item.orderRequisitionId || null,
+      boolToSqlite(item.hiddenFromWatchList),
       boolToSqlite(item.isDemo),
       item.createdAt,
       item.updatedAt
@@ -273,6 +278,7 @@ export async function loadInventoryFromSqlite(): Promise<InventoryItem[]> {
       order_placed,
       reorder_hold,
       order_requisition_id,
+      hidden_from_watchlist,
       is_demo,
       created_at,
       updated_at

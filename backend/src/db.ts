@@ -66,6 +66,7 @@ type InventoryItemRow = {
   id: string;
   image_data_url: string | null;
   image_placeholder: string | null;
+  hidden_from_watchlist: SqliteScalar;
   is_demo: SqliteScalar;
   item_name: string;
   item_url: string | null;
@@ -345,6 +346,7 @@ function itemFromRow(row: InventoryItemRow) {
     reorderHold: boolFromSqlite(row.reorder_hold),
     orderPlaced: boolFromSqlite(row.order_placed),
     orderRequisitionId: row.order_requisition_id ?? undefined,
+    hiddenFromWatchList: boolFromSqlite(row.hidden_from_watchlist),
     isDemo: boolFromSqlite(row.is_demo),
     createdAt: row.created_at,
     updatedAt: row.updated_at
@@ -479,7 +481,7 @@ export function loadAppDataFromNormalizedTables(snapshot: AppData | null = loadA
     db.prepare(
       `SELECT id, item_name, description, part_number, category, vendor_id, location_id, stock_on_hand, unit, minimum,
         low_stock_alert_level, cost, item_url, notes, image_placeholder, image_data_url, barcode_placeholder,
-        order_placed, reorder_hold, order_requisition_id, is_demo, created_at, updated_at
+        order_placed, reorder_hold, order_requisition_id, hidden_from_watchlist, is_demo, created_at, updated_at
        FROM inventory_items
        ORDER BY updated_at DESC, item_name ASC, id ASC`
     ).all() as InventoryItemRow[]
@@ -679,8 +681,8 @@ export function saveNormalizedTablesFromAppData(data: AppData) {
     // Insert inventory items
     if (Array.isArray(data.items)) {
       const insertItem = db.prepare(`
-        INSERT INTO inventory_items (id, item_name, description, part_number, category, vendor_id, location_id, stock_on_hand, unit, minimum, low_alert, low_stock_alert_level, cost, item_url, notes, image_placeholder, image_data_url, barcode_placeholder, order_placed, reorder_hold, order_requisition_id, is_demo, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO inventory_items (id, item_name, description, part_number, category, vendor_id, location_id, stock_on_hand, unit, minimum, low_alert, low_stock_alert_level, cost, item_url, notes, image_placeholder, image_data_url, barcode_placeholder, order_placed, reorder_hold, order_requisition_id, hidden_from_watchlist, is_demo, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
 
       for (const it of data.items as any[]) {
@@ -709,6 +711,7 @@ export function saveNormalizedTablesFromAppData(data: AppData) {
           it.orderPlaced ? 1 : 0,
           it.reorderHold ? 1 : 0,
           it.orderRequisitionId ?? null,
+          it.hiddenFromWatchList ? 1 : 0,
           it.isDemo ? 1 : 0,
           it.createdAt ?? savedAt,
           it.updatedAt ?? savedAt

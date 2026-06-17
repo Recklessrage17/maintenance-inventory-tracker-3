@@ -159,6 +159,7 @@ export function getInventoryCsv(data: AppData) {
     "notes",
     "orderPlaced",
     "reorderHold",
+    "hiddenFromWatchList",
     "createdAt",
     "updatedAt"
   ];
@@ -181,6 +182,7 @@ export function getInventoryCsv(data: AppData) {
     item.notes,
     item.orderPlaced === true,
     item.reorderHold === true,
+    item.hiddenFromWatchList === true,
     item.createdAt,
     item.updatedAt
   ]);
