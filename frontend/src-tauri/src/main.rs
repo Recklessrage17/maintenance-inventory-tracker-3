@@ -53,6 +53,12 @@ fn sqlite_migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/006_deleted_records_mirror_fields.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 7,
+            description: "inventory_watchlist_visibility",
+            sql: include_str!("../migrations/007_inventory_watchlist_visibility.sql"),
+            kind: MigrationKind::Up,
+        },
     ]
 }
 
