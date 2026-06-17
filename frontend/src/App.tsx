@@ -145,7 +145,6 @@ import {
   runWebsiteBackup as runBackendWebsiteBackup,
   type WebsiteBackupStatus,
 } from "./lib/websiteBackup";
-import { IdleScreensaver } from "./components/layout/IdleScreensaver";
 import jbtUsaRequisitionLogo from "./assets/jbt-usa-requisition-logo.png";
 import type {
   AppData,
@@ -218,7 +217,6 @@ const INVENTORY_AUTO_PAGE_EDGE_PX = 56;
 const INVENTORY_SCROLL_RESET_SUPPRESS_MS = 260;
 const REQUISITION_HISTORY_PAGE_SIZE_OPTIONS = [10, 20, 50, 100] as const;
 const DEFAULT_REQUISITION_HISTORY_PAGE_SIZE = 20;
-const DASHBOARD_SCREENSAVER_TIMEOUT_MS = 5 * 60 * 1000;
 const CSV_HISTORY_EXPORT_DEBOUNCE_MS = 900;
 
 const showWebsiteModePanel = isWebsiteBrowserMode();
@@ -3997,25 +3995,10 @@ function ExpandHeaderIcon() {
   );
 }
 
-function ScreensaverModeIcon() {
-  return (
-    <svg viewBox="0 0 24 24" role="img" aria-hidden="true">
-      <path d="M4 5.5h16v10H4z" />
-      <path d="M9 19h6" />
-      <path d="M12 15.5V19" />
-      <path d="M17.3 8.1a3.4 3.4 0 1 0 0 5.8 4.1 4.1 0 0 1 0-5.8z" />
-    </svg>
-  );
-}
-
 function InventoryApp() {
   const [data, setData] = useState<AppData | null>(null);
   const [activePage, setActivePage] = useState<PageId>("dashboard");
   const [isChromeCollapsed, setIsChromeCollapsed] = useState(false);
-  const [isDashboardScreensaverActive, setIsDashboardScreensaverActive] =
-    useState(false);
-  const [isManualScreensaverActive, setIsManualScreensaverActive] =
-    useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [backupIndicator, setBackupIndicator] =
     useState<BackupIndicatorState>("saved");
@@ -4939,137 +4922,6 @@ function InventoryApp() {
       cancelled = true;
     };
   }, [data?.requisitionMadeRecords]);
-
-  useEffect(() => {
-    if (!data) {
-      return;
-    }
-
-    const canEnterScreensaver =
-      !isManualScreensaverActive &&
-      !isSettingsOpen &&
-      !isItemFormOpen &&
-      !isAddLocationOpen &&
-      !isAddVendorOpen &&
-      !editingVendorId &&
-      !csvImportPreview &&
-      !csvFolderImportPreview &&
-      !backupDialog &&
-      !manualUpdateNotice &&
-      !labelPreviewItem &&
-      !selectedVendorId &&
-      !selectedLocationId &&
-      !vendorAiPrompt &&
-      activePage !== "add-item" &&
-      activePage !== "stock" &&
-      activePage !== "reorder";
-    let idleTimerId: number | null = null;
-
-    function clearIdleTimer() {
-      if (idleTimerId !== null) {
-        window.clearTimeout(idleTimerId);
-        idleTimerId = null;
-      }
-    }
-
-    function scheduleIdleTimer() {
-      clearIdleTimer();
-
-      if (!canEnterScreensaver) {
-        setIsDashboardScreensaverActive(false);
-        return;
-      }
-
-      idleTimerId = window.setTimeout(() => {
-        setActivePage("dashboard");
-        setIsChromeCollapsed(true);
-        setIsDashboardScreensaverActive(true);
-      }, DASHBOARD_SCREENSAVER_TIMEOUT_MS);
-    }
-
-    function handleUserActivity() {
-      setIsDashboardScreensaverActive(false);
-      scheduleIdleTimer();
-    }
-
-    const events: Array<keyof WindowEventMap> = [
-      "mousemove",
-      "mousedown",
-      "keydown",
-      "scroll",
-      "touchstart",
-      "wheel",
-    ];
-
-    events.forEach((eventName) =>
-      window.addEventListener(eventName, handleUserActivity, { passive: true }),
-    );
-    scheduleIdleTimer();
-
-    return () => {
-      clearIdleTimer();
-      events.forEach((eventName) =>
-        window.removeEventListener(eventName, handleUserActivity),
-      );
-    };
-  }, [
-    activePage,
-    backupDialog,
-    csvFolderImportPreview,
-    csvImportPreview,
-    data,
-    editingVendorId,
-    isAddLocationOpen,
-    isAddVendorOpen,
-    isItemFormOpen,
-    isManualScreensaverActive,
-    isSettingsOpen,
-    labelPreviewItem,
-    manualUpdateNotice,
-    selectedLocationId,
-    selectedVendorId,
-    vendorAiPrompt,
-  ]);
-
-  useEffect(() => {
-    if (!isDashboardScreensaverActive && !isManualScreensaverActive) {
-      return;
-    }
-
-    let canWake = false;
-    const wakeDelayId = window.setTimeout(() => {
-      canWake = true;
-    }, 300);
-
-    function wakeScreensaver() {
-      if (!canWake) {
-        return;
-      }
-
-      setIsDashboardScreensaverActive(false);
-      setIsManualScreensaverActive(false);
-    }
-
-    const events: Array<keyof WindowEventMap> = [
-      "mousemove",
-      "mousedown",
-      "keydown",
-      "wheel",
-      "scroll",
-      "touchstart",
-    ];
-
-    events.forEach((eventName) =>
-      window.addEventListener(eventName, wakeScreensaver, { passive: true }),
-    );
-
-    return () => {
-      window.clearTimeout(wakeDelayId);
-      events.forEach((eventName) =>
-        window.removeEventListener(eventName, wakeScreensaver),
-      );
-    };
-  }, [isDashboardScreensaverActive, isManualScreensaverActive]);
 
   useEffect(() => {
     if (!data || showWebsiteModePanel || startupBackupCheckRef.current) {
@@ -6038,18 +5890,11 @@ function InventoryApp() {
       setStockReturnContext(null);
     }
 
-    setIsDashboardScreensaverActive(false);
-    setIsManualScreensaverActive(false);
     setActivePage(page);
     setIsChromeCollapsed(page === "inventory");
     closeSettingsPanel();
   }
 
-  function startManualScreensaverMode() {
-    closeSettingsPanel();
-    setIsDashboardScreensaverActive(false);
-    setIsManualScreensaverActive(true);
-  }
 
   function openInventoryForItemForm() {
     if (activePage !== "inventory") {
@@ -9298,8 +9143,6 @@ function InventoryApp() {
   const chromeCollapsed = canCollapseChrome && isChromeCollapsed;
   const isCompactChrome = activePage !== "dashboard";
   const isInventoryWorkspace = activePage === "inventory" && !isSettingsOpen;
-  const isScreensaverModeActive =
-    isDashboardScreensaverActive || isManualScreensaverActive;
   const watchListVisibilityItem = watchListVisibilityItemId
     ? (data.items.find((item) => item.id === watchListVisibilityItemId) ?? null)
     : null;
@@ -9310,14 +9153,6 @@ function InventoryApp() {
       websiteUpdateStatus.updateAvailable &&
       websiteUpdateStatus.remoteSha !== remindedLaterUpdateSha,
     );
-
-  if (isScreensaverModeActive) {
-    return (
-      <main className="app-shell app-shell-screensaver min-h-screen text-slate-100">
-        <IdleScreensaver />
-      </main>
-    );
-  }
 
   return (
     <main
@@ -9447,7 +9282,6 @@ function InventoryApp() {
             onRunBackup={() => void runBackup(data, true)}
             onRunWebsiteBackup={() => void handleRunBackendWebsiteBackup()}
             onStartWebsiteUpdate={() => void startWebsiteUpdate()}
-            onStartScreensaver={startManualScreensaverMode}
             newRecoveryCode={newRecoveryCode}
             onPurgeExpiredDeletedRecords={purgeExpiredDeletedRecordsFromData}
             onCheckWebsiteUpdate={() => void checkWebsiteUpdate(true)}
@@ -9674,7 +9508,6 @@ function InventoryApp() {
         {activePage === "dashboard" && (
           <DashboardPage
             data={data}
-            isScreensaverActive={isDashboardScreensaverActive}
             onStockAction={(itemId, actionType) =>
               startStockAction(itemId, actionType, {
                 page: "dashboard",
@@ -9810,7 +9643,6 @@ function InventoryApp() {
 
 function DashboardPage({
   data,
-  isScreensaverActive,
   onStockAction,
   recentAddAlerts,
   reorderItems,
@@ -9820,7 +9652,6 @@ function DashboardPage({
   onWatchListVisibilityClick,
 }: {
   data: AppData;
-  isScreensaverActive: boolean;
   onStockAction: (itemId: string, actionType?: StockActionType | "") => void;
   recentAddAlerts: RecentAddAlert[];
   reorderItems: InventoryItem[];
@@ -9948,9 +9779,6 @@ function DashboardPage({
     }
   }
 
-  if (isScreensaverActive) {
-    return <IdleScreensaver />;
-  }
 
   if (selectedRequisitionRecord && selectedOrderedVendorGroup) {
     const total = getRequisitionRecordTotal(selectedRequisitionRecord);
@@ -18525,7 +18353,6 @@ function SettingsPage({
   onRunBackup,
   onRunWebsiteBackup,
   onStartWebsiteUpdate,
-  onStartScreensaver,
   isCheckingWebsiteUpdate,
   saveHealthRows,
   updateSettings,
@@ -18563,7 +18390,6 @@ function SettingsPage({
   onRunBackup: () => void;
   onRunWebsiteBackup: () => void;
   onStartWebsiteUpdate: () => void;
-  onStartScreensaver: () => void;
   isCheckingWebsiteUpdate: boolean;
   saveHealthRows: SaveHealthRow[];
   updateSettings: (settings: AppSettings, auditSummary?: string) => void;
@@ -18922,14 +18748,6 @@ function SettingsPage({
           </div>
         </div>
         <div className="settings-menu-row" aria-label="Settings sections">
-          <button
-            className="btn-primary settings-screensaver-action"
-            type="button"
-            onClick={onStartScreensaver}
-          >
-            <ScreensaverModeIcon />
-            Start Screensaver Mode
-          </button>
           {!showWebsiteModePanel && (
             <a className="btn-muted" href="#app-update">
               App Update
