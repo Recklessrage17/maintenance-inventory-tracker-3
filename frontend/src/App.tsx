@@ -1657,7 +1657,7 @@ function isActiveWaitingRequisition(record: RequisitionMadeRecord) {
   return (
     activeStatus &&
     !status.includes("completed") &&
-    !status.includes("delivered") &&
+    (!status.includes("delivered") || status.includes("partially delivered")) &&
     !status.includes("history") &&
     !status.includes("archived")
   );
@@ -15116,7 +15116,7 @@ function ReorderPage({
   onWatchListVisibilityClick: (itemId: string) => void;
 }) {
   const [reorderView, setReorderView] = useState<
-    "items" | "forms" | "made" | "history"
+    "items" | "forms" | "made" | "delivered" | "history"
   >("items");
   const [selectedReorderItemIds, setSelectedReorderItemIds] = useState<
     string[]
@@ -15146,6 +15146,13 @@ function ReorderPage({
     useState("");
   const [selectedMadeRecord, setSelectedMadeRecord] =
     useState<RequisitionMadeRecord | null>(null);
+  const [deliveredSearch, setDeliveredSearch] = useState("");
+  const [receivingLine, setReceivingLine] = useState<{
+    record: RequisitionMadeRecord;
+    snapshot: RequisitionMadeRecord["itemSnapshots"][number];
+  } | null>(null);
+  const [qtyReceived, setQtyReceived] = useState("1");
+  const [receiveError, setReceiveError] = useState("");
   const [historyFilters, setHistoryFilters] =
     useState<RequisitionHistoryFilters>(() => blankRequisitionHistoryFilters());
   const [historyPrintStatus, setHistoryPrintStatus] = useState("");
@@ -15222,6 +15229,18 @@ function ReorderPage({
       ),
     [activeMadeRecords],
   );
+  const deliveredRows = useMemo(() => {
+    const search = deliveredSearch.trim().toLowerCase();
+    return madeRows.filter(({ record, snapshot }) => {
+      if (!search) {
+        return true;
+      }
+      return [record.id, record.vendorName, snapshot.itemName, snapshot.partNumber]
+        .join(" ")
+        .toLowerCase()
+        .includes(search);
+    });
+  }, [deliveredSearch, madeRows]);
   const historyYears = useMemo(
     () => getRequisitionHistoryYears(data.requisitionMadeRecords),
     [data.requisitionMadeRecords],
@@ -15364,6 +15383,142 @@ function ReorderPage({
         ? nextPageSize
         : DEFAULT_REQUISITION_HISTORY_PAGE_SIZE,
     );
+  }
+
+  function getReceivingCurrentItem() {
+    return receivingLine
+      ? data.items.find((item) => item.id === receivingLine.snapshot.itemId)
+      : undefined;
+  }
+
+  function getRemainingRequisitionQuantity(snapshot: RequisitionMadeRecord["itemSnapshots"][number]) {
+    return Math.max(0, snapshot.quantityRequested - (snapshot.deliveredQuantity ?? 0));
+  }
+
+  function openReceiveModal(record: RequisitionMadeRecord, snapshot: RequisitionMadeRecord["itemSnapshots"][number]) {
+    const remaining = getRemainingRequisitionQuantity(snapshot);
+    setReceivingLine({ record, snapshot });
+    setQtyReceived(String(Math.max(1, remaining || snapshot.quantityRequested || 1)));
+    setReceiveError("");
+  }
+
+  function confirmDeliveredToMaint() {
+    if (!receivingLine) {
+      return;
+    }
+
+    const parsedQty = Number(qtyReceived);
+    if (!Number.isInteger(parsedQty) || parsedQty <= 0) {
+      setReceiveError("Please enter a valid quantity received.");
+      return;
+    }
+
+    const { record, snapshot } = receivingLine;
+    const deliveredAt = nowIso();
+
+    onDataChange((current) => {
+      const item = current.items.find((candidate) => candidate.id === snapshot.itemId);
+      if (!item) {
+        return current;
+      }
+
+      const stockBefore = item.quantityOnHand;
+      const stockAfter = stockBefore + parsedQty;
+      const previouslyDelivered = snapshot.deliveredQuantity ?? 0;
+      const deliveredTotal = previouslyDelivered + parsedQty;
+      const isComplete = deliveredTotal >= snapshot.quantityRequested;
+      const stockUnit = normalizeStockUnit(item.stockUnit);
+      const deliveredSummary = `Delivered to Maint
+Vendor: ${record.vendorName}
+Item: ${snapshot.itemName}
+Part Number: ${snapshot.partNumber || "-"}
+Qty Requested: ${formatNumber(snapshot.quantityRequested)}
+Qty Received: ${formatNumber(parsedQty)}
+Stock Before: ${formatNumber(stockBefore)} ${stockUnit}
+Stock After: ${formatNumber(stockAfter)} ${stockUnit}
+Unit Cost: ${formatCurrency(snapshot.unitCost)}
+Total Cost: ${formatCurrency(snapshot.totalCost)}
+Passed Date: ${formatDateTime(record.passedAt)}
+PDF Generated Date: ${formatDateTime(record.pdfGeneratedAt)}
+Delivered Date: ${formatDateTime(deliveredAt)}
+Delivered by: User
+Status: ${isComplete ? "Delivered to Maint" : "Partially Delivered"}`;
+
+      const stockChange: StockChange = {
+        id: createId(),
+        itemId: item.id,
+        itemNameSnapshot: item.name,
+        partNumberSnapshot: item.partNumber,
+        vendorNameSnapshot: record.vendorName,
+        actionType: "Stock In",
+        quantity: parsedQty,
+        reason: deliveredSummary,
+        actor: "User",
+        notes: `Requisition ${record.id} received at Maintenance.`,
+        occurredAt: deliveredAt,
+        previousQuantity: stockBefore,
+        newQuantity: stockAfter,
+        createdAt: deliveredAt,
+      };
+
+      const nextRecords = current.requisitionMadeRecords.map((candidate) => {
+        if (candidate.id !== record.id) {
+          return candidate;
+        }
+        const nextSnapshots = candidate.itemSnapshots.map((line) =>
+          line.itemId === snapshot.itemId
+            ? {
+                ...line,
+                deliveredQuantity: deliveredTotal,
+                deliveredAt: isComplete ? deliveredAt : line.deliveredAt,
+              }
+            : line,
+        );
+        const allComplete = nextSnapshots.every(
+          (line) => (line.deliveredQuantity ?? 0) >= line.quantityRequested,
+        );
+        return {
+          ...candidate,
+          itemSnapshots: nextSnapshots,
+          status: allComplete ? "Delivered to Maint" : "Partially Delivered",
+        };
+      });
+
+      let nextData: AppData = {
+        ...current,
+        items: current.items.map((candidate) =>
+          candidate.id === item.id
+            ? {
+                ...candidate,
+                quantityOnHand: stockAfter,
+                orderPlaced: isComplete ? false : candidate.orderPlaced,
+                orderRequisitionId: isComplete ? "" : candidate.orderRequisitionId,
+                updatedAt: deliveredAt,
+              }
+            : candidate,
+        ),
+        requisitionMadeRecords: nextRecords,
+        stockChanges: trimStockChangeEntries([stockChange, ...current.stockChanges]),
+      };
+
+      nextData = addAudit(
+        nextData,
+        createAuditEntry(
+          "Stock",
+          stockChange.id,
+          "Delivered to Maint",
+          deliveredSummary,
+          "User",
+          deliveredAt,
+        ),
+      );
+
+      return nextData;
+    });
+
+    setReceivingLine(null);
+    setQtyReceived("1");
+    setReceiveError("");
   }
 
   async function handlePrintReorderHistory() {
@@ -15703,6 +15858,14 @@ function ReorderPage({
             Requisition Made
           </button>
           <button
+            className={`reorder-tab-button ${reorderView === "delivered" ? "reorder-tab-active" : ""}`}
+            type="button"
+            aria-pressed={reorderView === "delivered"}
+            onClick={() => setReorderView("delivered")}
+          >
+            Delivered to Maint
+          </button>
+          <button
             className={`reorder-tab-button ${reorderView === "history" ? "reorder-tab-active" : ""}`}
             type="button"
             aria-pressed={reorderView === "history"}
@@ -15711,7 +15874,7 @@ function ReorderPage({
             History
           </button>
         </div>
-        {reorderView !== "made" && reorderView !== "history" && (
+        {reorderView !== "made" && reorderView !== "delivered" && reorderView !== "history" && (
           <div className="reorder-selection-toolbar no-print">
             <span>{selectedReorderItemIds.length} selected</span>
             <button
@@ -16050,6 +16213,62 @@ function ReorderPage({
         />
       )}
 
+
+      {reorderView === "delivered" && (
+        <div className="delivered-maint-section">
+          <label className="entity-search-field delivered-maint-search">
+            <span>Delivered to Maint receiving</span>
+            <input
+              className="input"
+              placeholder="Search by part number, vendor, item, or requisition ID..."
+              value={deliveredSearch}
+              onChange={(event) => setDeliveredSearch(event.target.value)}
+            />
+          </label>
+          <SimpleTable
+            emptyText="No requisitions are waiting for delivery."
+            headers={[
+              "Vendor",
+              "Item / Part Number",
+              "Qty Requested",
+              "Unit Cost",
+              "Total Cost",
+              "Passed Date",
+              "Status",
+              "Actions",
+            ]}
+            rowKeys={deliveredRows.map(({ record, snapshot }) => `${record.id}-${snapshot.itemId}`)}
+            rows={deliveredRows.map(({ record, snapshot }) => {
+              const remaining = getRemainingRequisitionQuantity(snapshot);
+              return [
+                record.vendorName,
+                <span key="item" className="requisition-made-item">
+                  <strong>{snapshot.itemName}</strong>
+                  <span>{snapshot.partNumber || "-"}</span>
+                </span>,
+                remaining < snapshot.quantityRequested
+                  ? `${formatNumber(remaining)} remaining of ${formatNumber(snapshot.quantityRequested)}`
+                  : formatNumber(snapshot.quantityRequested),
+                formatCurrency(snapshot.unitCost),
+                formatCurrency(snapshot.totalCost),
+                formatDateTime(record.passedAt),
+                <span key="status" className="requisition-made-badge requisition-made-badge-green">
+                  {remaining < snapshot.quantityRequested ? "Partially Delivered" : "Waiting for Delivery"}
+                </span>,
+                <button
+                  key="receive"
+                  className="btn-small"
+                  type="button"
+                  onClick={() => openReceiveModal(record, snapshot)}
+                >
+                  Receive
+                </button>,
+              ];
+            })}
+          />
+        </div>
+      )}
+
       {reorderView === "history" && (
         <div className="requisition-history-section">
           <div className="requisition-history-year-row">
@@ -16386,6 +16605,38 @@ function ReorderPage({
           </section>
         </div>
       )}
+      {receivingLine && (
+        <div className="review-modal-backdrop" role="presentation">
+          <section className="review-modal receive-delivered-modal" role="dialog" aria-modal="true" aria-labelledby="receive-delivered-title">
+            <div>
+              <p className="eyebrow">Receiving station</p>
+              <h3 id="receive-delivered-title">Receive Delivered Item</h3>
+            </div>
+            <div className="requisition-detail-summary">
+              <div><span>Vendor</span><strong>{receivingLine.record.vendorName}</strong></div>
+              <div><span>Item</span><strong>{receivingLine.snapshot.itemName}</strong></div>
+              <div><span>Part Number</span><strong>{receivingLine.snapshot.partNumber || "-"}</strong></div>
+              <div><span>Qty Requested</span><strong>{formatNumber(getRemainingRequisitionQuantity(receivingLine.snapshot))}</strong></div>
+              <div><span>Current Stock</span><strong>{getReceivingCurrentItem() ? formatStockQuantity(getReceivingCurrentItem()!) : "-"}</strong></div>
+            </div>
+            <label className="field-label">
+              Qty Received
+              <input
+                className="input"
+                inputMode="numeric"
+                value={qtyReceived}
+                onChange={(event) => setQtyReceived(normalizeWholeNumberInput(event.target.value))}
+              />
+            </label>
+            {receiveError && <div className="warning-bar">{receiveError}</div>}
+            <div className="review-modal-actions">
+              <button className="btn-muted" type="button" onClick={() => setReceivingLine(null)}>Cancel</button>
+              <button className="btn-primary" type="button" onClick={confirmDeliveredToMaint}>Confirm Delivered to Maint</button>
+            </div>
+          </section>
+        </div>
+      )}
+
       {selectedMadeRecord && (
         <RequisitionMadeDetailDialog
           record={selectedMadeRecord}

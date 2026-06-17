@@ -4394,9 +4394,33 @@ button:disabled {
     max-height: 54vh;
   }
 
-  .entity-detail-modal .data-table,
-  .requisition-detail-table .data-table {
+  .entity-detail-modal .data-table {
     min-width: 68rem;
+  }
+
+  .requisition-detail-table .data-table {
+    min-width: 0;
+    width: 100%;
+    table-layout: fixed;
+  }
+
+  .requisition-detail-table .data-table th:first-child,
+  .requisition-detail-table .data-table td:first-child {
+    width: 42%;
+  }
+
+  .delivered-maint-section {
+    display: grid;
+    gap: 1rem;
+  }
+
+  .delivered-maint-search {
+    max-width: 48rem;
+  }
+
+  .receive-delivered-modal {
+    width: min(94vw, 44rem);
+    border-color: rgba(34, 211, 238, 0.66);
   }
 
   .stock-quantity {
@@ -5020,11 +5044,27 @@ button:disabled {
   }
 
   .requisition-detail-modal {
-    width: min(100%, 54rem);
+    width: min(96vw, 82rem);
+    max-width: 96vw;
+    max-height: 92vh;
+    overflow-y: auto;
+    border-color: rgba(34, 211, 238, 0.68);
+    box-shadow: 0 0 0 1px rgba(34, 211, 238, 0.18), 0 24px 80px rgba(0, 0, 0, 0.58);
   }
 
   .requisition-detail-table {
-    max-height: 46vh;
+    max-height: 56vh;
+    overflow-x: hidden;
+    overflow-y: auto;
+    border: 1px solid rgba(34, 211, 238, 0.22);
+    border-radius: 0.85rem;
+  }
+
+  .requisition-detail-table th,
+  .requisition-detail-table td {
+    white-space: normal;
+    overflow-wrap: anywhere;
+    vertical-align: top;
   }
 
   .review-modal-backdrop {
