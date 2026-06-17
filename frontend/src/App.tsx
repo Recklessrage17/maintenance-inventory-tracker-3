@@ -321,13 +321,19 @@ function mergeNoticeIds(currentIds: string[], addedIds: string[]) {
   return Array.from(new Set([...addedIds, ...currentIds].filter(Boolean)));
 }
 
-function inventoryItemRecencyTime(item: InventoryItem) {
+function inventoryItemCreatedTime(item: InventoryItem) {
   const createdAt = Date.parse(item.createdAt || "");
-  const updatedAt = Date.parse(item.updatedAt || "");
 
-  return Math.max(
-    Number.isFinite(createdAt) ? createdAt : 0,
-    Number.isFinite(updatedAt) ? updatedAt : 0,
+  return Number.isFinite(createdAt) ? createdAt : 0;
+}
+
+function sortInventoryItemsNewestFirst(items: InventoryItem[]) {
+  return [...items].sort(
+    (left, right) =>
+      inventoryItemCreatedTime(right) - inventoryItemCreatedTime(left) ||
+      right.createdAt.localeCompare(left.createdAt) ||
+      left.name.localeCompare(right.name) ||
+      left.id.localeCompare(right.id),
   );
 }
 
@@ -5311,8 +5317,7 @@ function InventoryApp() {
       .trim()
       .toLowerCase();
 
-    return data.items
-      .filter((item) => {
+    const filtered = data.items.filter((item) => {
         const status = getInventoryStatus(item);
         const locationName =
           inventoryLocationNameById.get(item.locationId) || "Unassigned";
@@ -5360,8 +5365,9 @@ function InventoryApp() {
         }
 
         return true;
-      })
-      .sort((a, b) => a.name.localeCompare(b.name));
+      });
+
+    return sortInventoryItemsNewestFirst(filtered);
   }, [
     data?.items,
     debouncedInventoryColumnFilters,
@@ -7005,6 +7011,8 @@ function InventoryApp() {
     showToast("success", wasEditing ? "Item updated." : "Item added.");
     if (!wasEditing) {
       setActivityNow(Date.now());
+      setStatusFilter("All");
+      clearInventoryColumnFilters();
       setNewestAddedInventoryItemId(newItemId);
       if (!readSeenNewInventoryItemIds().includes(newItemId)) {
         setNewInventoryItemHighlightIds((current) =>
