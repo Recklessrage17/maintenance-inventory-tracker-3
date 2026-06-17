@@ -1508,6 +1508,9 @@ function normalizeRequisitionMadeRecord(value: unknown): RequisitionMadeRecord {
     passedAt: stringValue(raw.passedAt, now),
     requisitionedBy: stringValue(raw.requisitionedBy ?? raw.createdBy),
     status: stringValue(raw.status, "Requisition Made"),
+    cancelledAt: stringValue(raw.cancelledAt ?? raw.cancelled_at),
+    cancelledBy: stringValue(raw.cancelledBy ?? raw.cancelled_by),
+    cancelReason: stringValue(raw.cancelReason ?? raw.cancel_reason),
   };
 }
 
@@ -1690,6 +1693,8 @@ function isActiveWaitingRequisition(record: RequisitionMadeRecord) {
     activeStatus &&
     !status.includes("completed") &&
     (!status.includes("delivered") || status.includes("partially delivered")) &&
+    !status.includes("cancelled") &&
+    !status.includes("canceled") &&
     !status.includes("history") &&
     !status.includes("archived")
   );
@@ -10438,7 +10443,7 @@ function RequisitionMadeDetailDialog({
         <div className="requisition-detail-summary">
           <div>
             <span>Status</span>
-            <strong>{record.status}</strong>
+            <strong>{record.status === "cancelled" ? "Cancelled" : record.status}</strong>
           </div>
           <div>
             <span>Form type</span>
@@ -10468,6 +10473,18 @@ function RequisitionMadeDetailDialog({
             <span>Items</span>
             <strong>{formatNumber(record.itemSnapshots.length)}</strong>
           </div>
+          {record.cancelledAt && (
+            <div>
+              <span>Cancelled date</span>
+              <strong>{formatDateTime(record.cancelledAt)}</strong>
+            </div>
+          )}
+          {record.status === "cancelled" && (
+            <div>
+              <span>Cancel reason</span>
+              <strong>{record.cancelReason || "Not provided"}</strong>
+            </div>
+          )}
         </div>
         <div className="table-wrap requisition-detail-table">
           <table className="data-table">
@@ -15118,6 +15135,9 @@ function ReorderPage({
   } | null>(null);
   const [qtyReceived, setQtyReceived] = useState("1");
   const [receiveError, setReceiveError] = useState("");
+  const [cancelRequisitionRecord, setCancelRequisitionRecord] =
+    useState<RequisitionMadeRecord | null>(null);
+  const [cancelReason, setCancelReason] = useState("");
   const [historyFilters, setHistoryFilters] =
     useState<RequisitionHistoryFilters>(() => blankRequisitionHistoryFilters());
   const [historyPrintStatus, setHistoryPrintStatus] = useState("");
@@ -15383,6 +15403,123 @@ function ReorderPage({
 
   function getRemainingRequisitionQuantity(snapshot: RequisitionMadeRecord["itemSnapshots"][number]) {
     return Math.max(0, snapshot.quantityRequested - (snapshot.deliveredQuantity ?? 0));
+  }
+
+  function openCancelRequisitionModal(record: RequisitionMadeRecord) {
+    setCancelRequisitionRecord(record);
+    setCancelReason("");
+  }
+
+  function closeCancelRequisitionModal() {
+    setCancelRequisitionRecord(null);
+    setCancelReason("");
+  }
+
+  function confirmCancelRequisition() {
+    if (!cancelRequisitionRecord) {
+      return;
+    }
+
+    const record = cancelRequisitionRecord;
+    const cancelledAt = nowIso();
+    const reason = cancelReason.trim();
+    const reasonLine = reason ? `Reason: ${reason}` : "Reason: Not provided";
+    const itemLines = record.itemSnapshots
+      .map(
+        (snapshot) =>
+          `- ${snapshot.itemName} | Part #: ${snapshot.partNumber || "-"} | Qty Requested: ${formatNumber(snapshot.quantityRequested)}`,
+      )
+      .join("\n");
+    const summary = `Requisition Cancelled
+Vendor: ${record.vendorName}
+Requisition ID: ${record.id}
+Date Made: ${formatDateTime(getRequisitionMadeDate(record))}
+Cancelled Date: ${formatDateTime(cancelledAt)}
+Cancelled by: User
+${reasonLine}
+Total Cost: ${formatCurrency(record.totalCost)}
+Items:
+${itemLines}
+Status: Cancelled`;
+
+    onDataChange((current) => {
+      const currentRecord = current.requisitionMadeRecords.find(
+        (candidate) => candidate.id === record.id,
+      );
+      if (!currentRecord || !isActiveWaitingRequisition(currentRecord)) {
+        return current;
+      }
+
+      const cancelledItemIds = new Set(currentRecord.itemIds);
+      const stockChanges: StockChange[] = currentRecord.itemSnapshots.map((snapshot) => {
+        const item = current.items.find((candidate) => candidate.id === snapshot.itemId);
+        const currentQuantity = item?.quantityOnHand ?? 0;
+
+        return {
+          id: createId(),
+          itemId: snapshot.itemId,
+          itemNameSnapshot: snapshot.itemName,
+          partNumberSnapshot: snapshot.partNumber,
+          vendorNameSnapshot: currentRecord.vendorName,
+          actionType: "Set Stock On Hand",
+          quantity: 0,
+          reason: summary,
+          actor: "User",
+          notes: reason ? `Cancel reason: ${reason}` : "Requisition cancelled with no reason provided.",
+          occurredAt: cancelledAt,
+          previousQuantity: currentQuantity,
+          newQuantity: currentQuantity,
+          createdAt: cancelledAt,
+        };
+      });
+
+      let nextData: AppData = {
+        ...current,
+        items: current.items.map((item) =>
+          cancelledItemIds.has(item.id) && item.orderRequisitionId === currentRecord.id
+            ? {
+                ...item,
+                orderPlaced: false,
+                orderRequisitionId: "",
+                updatedAt: cancelledAt,
+              }
+            : item,
+        ),
+        requisitionMadeRecords: current.requisitionMadeRecords.map((candidate) =>
+          candidate.id === currentRecord.id
+            ? {
+                ...candidate,
+                status: "cancelled",
+                cancelledAt,
+                cancelledBy: "User",
+                cancelReason: reason,
+              }
+            : candidate,
+        ),
+        stockChanges: trimStockChangeEntries([...stockChanges, ...current.stockChanges]),
+      };
+
+      nextData = addAudit(
+        nextData,
+        createAuditEntry("Stock", currentRecord.id, "Requisition Cancelled", summary, "User", cancelledAt),
+      );
+
+      void saveRequisitionToSqlite({
+        ...currentRecord,
+        status: "cancelled",
+        cancelledAt,
+        cancelledBy: "User",
+        cancelReason: reason,
+      }).catch((error) => {
+        if (import.meta.env.DEV) {
+          console.warn("[sqlite-requisition-mirror] Cancelled requisition SQLite save failed. JSON fallback remains available.", error);
+        }
+      });
+
+      return nextData;
+    });
+
+    closeCancelRequisitionModal();
   }
 
   function openReceiveModal(record: RequisitionMadeRecord, snapshot: RequisitionMadeRecord["itemSnapshots"][number]) {
@@ -16198,6 +16335,15 @@ Status: ${isComplete ? "Delivered to Maint" : "Partially Delivered"}`;
               >
                 Stock Edit
               </button>
+              {isActiveWaitingRequisition(record) && (
+                <button
+                  className="btn-small btn-danger"
+                  type="button"
+                  onClick={() => openCancelRequisitionModal(record)}
+                >
+                  Cancel Requisition
+                </button>
+              )}
             </div>,
           ])}
         />
@@ -16418,6 +16564,8 @@ Status: ${isComplete ? "Delivered to Maint" : "Partially Delivered"}`;
               "Qty",
               "Unit Cost",
               "Created By",
+              "Status",
+              "Cancel Reason",
               "Actions",
             ]}
             rowKeys={paginatedHistoryRows.map(
@@ -16435,6 +16583,8 @@ Status: ${isComplete ? "Delivered to Maint" : "Partially Delivered"}`;
               formatNumber(snapshot.quantityRequested),
               formatCurrency(snapshot.unitCost),
               record.createdBy || record.requisitionedBy || "-",
+              record.status === "cancelled" ? "Cancelled" : record.status,
+              record.status === "cancelled" ? record.cancelReason || "Not provided" : "-",
               <button
                 key="view"
                 className="btn-small"
@@ -16595,6 +16745,37 @@ Status: ${isComplete ? "Delivered to Maint" : "Partially Delivered"}`;
           </section>
         </div>
       )}
+      {cancelRequisitionRecord && (
+        <div className="review-modal-backdrop" role="presentation">
+          <section className="review-modal receive-delivered-modal" role="dialog" aria-modal="true" aria-labelledby="cancel-requisition-title">
+            <div>
+              <p className="eyebrow">Warning</p>
+              <h3 id="cancel-requisition-title">Cancel Requisition?</h3>
+            </div>
+            <p>Are you sure you want to cancel this requisition?</p>
+            <div className="requisition-detail-summary">
+              <div><span>Vendor</span><strong>{cancelRequisitionRecord.vendorName}</strong></div>
+              <div><span>Requisition ID</span><strong>{cancelRequisitionRecord.id}</strong></div>
+              <div><span>Items</span><strong>{formatNumber(cancelRequisitionRecord.itemSnapshots.length)}</strong></div>
+              <div><span>Date Made</span><strong>{formatDateTime(getRequisitionMadeDate(cancelRequisitionRecord))}</strong></div>
+            </div>
+            <label className="field-label">
+              Reason for cancellation (optional)
+              <textarea
+                className="input"
+                rows={4}
+                value={cancelReason}
+                onChange={(event) => setCancelReason(event.target.value)}
+              />
+            </label>
+            <div className="review-modal-actions">
+              <button className="btn-muted" type="button" onClick={closeCancelRequisitionModal}>No</button>
+              <button className="btn-primary btn-danger" type="button" onClick={confirmCancelRequisition}>Yes, Cancel Requisition</button>
+            </div>
+          </section>
+        </div>
+      )}
+
       {receivingLine && (
         <div className="review-modal-backdrop" role="presentation">
           <section className="review-modal receive-delivered-modal" role="dialog" aria-modal="true" aria-labelledby="receive-delivered-title">
@@ -16665,6 +16846,10 @@ function blankRequisitionHistoryFilters(): RequisitionHistoryFilters {
 }
 
 function getRequisitionRecordDate(record: RequisitionMadeRecord) {
+  return record.cancelledAt || record.createdAt || record.passedAt || record.pdfGeneratedAt;
+}
+
+function getRequisitionMadeDate(record: RequisitionMadeRecord) {
   return record.createdAt || record.passedAt || record.pdfGeneratedAt;
 }
 

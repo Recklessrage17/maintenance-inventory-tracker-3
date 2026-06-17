@@ -110,6 +110,9 @@ export function runMigrations(db: Database.Database) {
       requisition_type TEXT,
       pdf_generated_at TEXT,
       passed_at TEXT,
+      cancelled_at TEXT,
+      cancelled_by TEXT,
+      cancel_reason TEXT,
       source_record_type TEXT,
       created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
       updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
@@ -223,6 +226,17 @@ export function runMigrations(db: Database.Database) {
       ('schema_version', 'web-1', NULL),
       ('app_data_mode', 'sqlite-live-json-backup', '{"sqlite":"live app data","json":"backup export import restore","csv":"inventory import export"}');
   `);
+
+  const requisitionColumns = db.prepare("PRAGMA table_info(requisitions)").all() as Array<{ name: string }>;
+  if (!requisitionColumns.some((column) => column.name === "cancelled_at")) {
+    db.exec("ALTER TABLE requisitions ADD COLUMN cancelled_at TEXT");
+  }
+  if (!requisitionColumns.some((column) => column.name === "cancelled_by")) {
+    db.exec("ALTER TABLE requisitions ADD COLUMN cancelled_by TEXT");
+  }
+  if (!requisitionColumns.some((column) => column.name === "cancel_reason")) {
+    db.exec("ALTER TABLE requisitions ADD COLUMN cancel_reason TEXT");
+  }
 
   const inventoryColumns = db.prepare("PRAGMA table_info(inventory_items)").all() as Array<{ name: string }>;
   if (!inventoryColumns.some((column) => column.name === "hidden_from_watchlist")) {
