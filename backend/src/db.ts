@@ -129,6 +129,7 @@ type RequisitionLineRow = {
   line_total_cost: SqliteScalar;
   part_number: string | null;
   quantity_requested: SqliteScalar;
+  quantity_fulfilled: SqliteScalar;
   requisition_id: string;
   source_item_id: string | null;
   unit_cost: SqliteScalar;
@@ -394,6 +395,7 @@ function requisitionFromRows(row: RequisitionRow, lines: RequisitionLineRow[]) {
       itemName: line.item_name ?? line.description ?? line.part_number ?? "Unknown Item",
       partNumber: line.part_number ?? "",
       quantityRequested,
+      deliveredQuantity: numberValue(line.quantity_fulfilled),
       unitCost,
       totalCost: numberValue(line.line_total_cost, quantityRequested * unitCost)
     };
@@ -504,7 +506,7 @@ export function loadAppDataFromNormalizedTables(snapshot: AppData | null = loadA
   ).all() as RequisitionRow[];
   const requisitionLineRows = db.prepare(
     `SELECT id, requisition_id, item_id, source_item_id, item_name, part_number, description,
-      quantity_requested, unit_cost, line_total_cost
+      quantity_requested, quantity_fulfilled, unit_cost, line_total_cost
      FROM requisition_lines
      ORDER BY requisition_id ASC, created_at ASC, id ASC`
   ).all() as RequisitionLineRow[];
@@ -762,8 +764,8 @@ export function saveNormalizedTablesFromAppData(data: AppData) {
       `);
 
       const insertLine = db.prepare(`
-        INSERT INTO requisition_lines (id, requisition_id, item_id, source_item_id, item_name, vendor_name, part_number, description, quantity_requested, unit_cost, line_total_cost, manual_line, notes, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO requisition_lines (id, requisition_id, item_id, source_item_id, item_name, vendor_name, part_number, description, quantity_requested, quantity_fulfilled, unit_cost, line_total_cost, manual_line, notes, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
 
       for (const r of data.requisitionMadeRecords as any[]) {
@@ -800,6 +802,7 @@ export function saveNormalizedTablesFromAppData(data: AppData) {
               s.partNumber ?? null,
               s.itemName ?? null,
               typeof s.quantityRequested === "number" ? s.quantityRequested : (s.quantityRequested ?? 0),
+              typeof s.deliveredQuantity === "number" ? s.deliveredQuantity : (s.quantityFulfilled ?? 0),
               s.unitCost ?? null,
               s.totalCost ?? null,
               0,

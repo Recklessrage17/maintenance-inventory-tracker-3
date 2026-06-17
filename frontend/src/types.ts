@@ -180,6 +180,8 @@ export type RequisitionMadeRecord = {
     quantityRequested: number;
     unitCost: number;
     totalCost: number;
+    deliveredQuantity?: number;
+    deliveredAt?: string;
   }[];
   poNo?: string;
   totalCost: number;
