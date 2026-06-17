@@ -290,7 +290,8 @@ export async function loadInventoryFromSqlite(): Promise<InventoryItem[]> {
       is_demo,
       created_at,
       updated_at
-    FROM inventory_items`
+    FROM inventory_items
+    ORDER BY datetime(created_at) DESC, item_name ASC, id ASC`
   );
 
   return rows.map(itemFromSqlite);

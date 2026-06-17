@@ -487,7 +487,7 @@ export function loadAppDataFromNormalizedTables(snapshot: AppData | null = loadA
         low_stock_alert_level, cost, item_url, notes, image_placeholder, image_data_url, barcode_placeholder,
         order_placed, reorder_hold, order_requisition_id, hidden_from_watchlist, non_stocked, is_demo, created_at, updated_at
        FROM inventory_items
-       ORDER BY updated_at DESC, item_name ASC, id ASC`
+       ORDER BY datetime(created_at) DESC, item_name ASC, id ASC`
     ).all() as InventoryItemRow[]
   ).map(itemFromRow);
   const stockChanges = (
