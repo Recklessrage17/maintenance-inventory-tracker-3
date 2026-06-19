@@ -54,6 +54,8 @@ const updateStatusPath = path.join(repoRoot, "backend", "update-status.json");
 const updateLogsDir = path.join(repoRoot, "backend", "update-logs");
 const execFileAsync = promisify(execFile);
 let updateRunInProgress = false;
+const staleUpdateRunningStateMs = 12 * 60 * 1000;
+const updaterLaunchGraceMs = 10 * 1000;
 
 type UpdateRunStatus = {
   afterSha: string | null;
@@ -69,6 +71,7 @@ type UpdateRunStatus = {
   gitPullResult?: string | null;
   ok: boolean | null;
   phase: string;
+  status?: string;
   repoRoot: string;
   scriptPath?: string;
   pid?: number | null;
@@ -205,10 +208,141 @@ function isIgnoredRuntimeStatusLine(line: string) {
   );
 }
 
+function isRunningUpdatePhase(status: UpdateRunStatus) {
+  const phase = (status.status ?? status.phase ?? "").toLowerCase();
+
+  return (
+    status.running ||
+    [
+      "checking",
+      "updating",
+      "launching",
+      "running",
+      "starting",
+      "git-status",
+      "backup",
+      "restarting",
+      "pulling",
+      "frontend-install",
+      "frontend-build",
+      "backend-install",
+      "backend-build",
+    ].includes(phase)
+  );
+}
+
+function updateStatusState(phase: string) {
+  if (phase === "complete") {
+    return "success";
+  }
+
+  if (phase === "git-status") {
+    return "checking";
+  }
+
+  if (phase === "failed") {
+    return "failed";
+  }
+
+  if (phase === "stale") {
+    return "stale";
+  }
+
+  if (
+    [
+      "launching",
+      "running",
+      "starting",
+      "backup",
+      "restarting",
+      "pulling",
+      "frontend-install",
+      "frontend-build",
+      "backend-install",
+      "backend-build",
+    ].includes(phase)
+  ) {
+    return "updating";
+  }
+
+  return phase || "idle";
+}
+
+function statusTimestampMs(status: UpdateRunStatus) {
+  const value = status.updatedAt ?? status.startedAt;
+  const timestamp = value ? Date.parse(value) : Number.NaN;
+
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function isProcessRunning(pid: number | null | undefined) {
+  if (!pid || pid <= 0) {
+    return false;
+  }
+
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+function isStaleUpdateRunStatus(status: UpdateRunStatus) {
+  if (!isRunningUpdatePhase(status)) {
+    return false;
+  }
+
+  const lastUpdatedMs = statusTimestampMs(status);
+  const isTooOld =
+    lastUpdatedMs === null ||
+    Date.now() - lastUpdatedMs > staleUpdateRunningStateMs;
+  const hasLivePid = isProcessRunning(status.pid);
+  const isPastLaunchGrace =
+    lastUpdatedMs === null || Date.now() - lastUpdatedMs > updaterLaunchGraceMs;
+
+  return isTooOld || (!hasLivePid && isPastLaunchGrace);
+}
+
+async function clearStaleUpdateRunStatus(status: UpdateRunStatus) {
+  const now = new Date().toISOString();
+  const staleStatus: UpdateRunStatus = {
+    ...status,
+    running: false,
+    phase: "stale",
+    status: "stale",
+    message:
+      "Previous update status was stale and has been cleared. You can run Update Now again.",
+    updatedAt: now,
+    completedAt: status.completedAt ?? now,
+    ok: false,
+    error:
+      status.error ?? status.message ?? "Updater running state became stale.",
+  };
+
+  updateRunInProgress = false;
+  await writeUpdateRunStatus(staleStatus);
+  return staleStatus;
+}
+
+async function reconcileUpdateRunStatus(status: UpdateRunStatus) {
+  const normalizedStatus = {
+    ...status,
+    status: status.status ?? updateStatusState(status.phase),
+  };
+
+  if (isStaleUpdateRunStatus(normalizedStatus)) {
+    return clearStaleUpdateRunStatus(normalizedStatus);
+  }
+
+  updateRunInProgress = isRunningUpdatePhase(normalizedStatus);
+  return normalizedStatus;
+}
+
 async function getUpdateRunStatus(): Promise<UpdateRunStatus> {
   try {
     const raw = await fs.promises.readFile(updateStatusPath, "utf8");
-    return JSON.parse(raw) as UpdateRunStatus;
+    return reconcileUpdateRunStatus(JSON.parse(raw) as UpdateRunStatus);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
       throw error;
@@ -217,6 +351,7 @@ async function getUpdateRunStatus(): Promise<UpdateRunStatus> {
     return {
       running: false,
       phase: "idle",
+      status: "idle",
       message: "No update has run yet",
       repoRoot,
       startedAt: null,
@@ -232,10 +367,15 @@ async function getUpdateRunStatus(): Promise<UpdateRunStatus> {
 }
 
 async function writeUpdateRunStatus(status: UpdateRunStatus) {
+  const statusToWrite = {
+    ...status,
+    status: status.status ?? updateStatusState(status.phase),
+  };
+
   await fs.promises.mkdir(path.dirname(updateStatusPath), { recursive: true });
   await fs.promises.writeFile(
     updateStatusPath,
-    `${JSON.stringify(status, null, 2)}\n`,
+    `${JSON.stringify(statusToWrite, null, 2)}\n`,
     "utf8",
   );
 }
@@ -372,12 +512,10 @@ app.post("/api/auth/setup", (request, response) => {
 app.post("/api/auth/login", (request, response) => {
   try {
     if (!verifyWebsiteAuthPassword(stringBodyValue(request.body?.password))) {
-      response
-        .status(401)
-        .json({
-          ok: false,
-          error: "Password did not match this inventory system.",
-        });
+      response.status(401).json({
+        ok: false,
+        error: "Password did not match this inventory system.",
+      });
       return;
     }
 
@@ -408,14 +546,18 @@ app.get("/api/update/status", async (_request, response) => {
 });
 
 app.post("/api/update/run", async (_request, response) => {
-  if (updateRunInProgress) {
-    response
-      .status(409)
-      .json({ ok: false, error: "An MIT3 website update is already running." });
-    return;
-  }
-
   try {
+    const currentRunStatus = await getUpdateRunStatus();
+
+    if (isRunningUpdatePhase(currentRunStatus)) {
+      response.status(409).json({
+        ok: false,
+        error: "An MIT3 website update is already running.",
+        runStatus: currentRunStatus,
+      });
+      return;
+    }
+
     const dirtyLines = await getDirtyStatusLines();
 
     if (dirtyLines.length > 0) {
@@ -447,6 +589,7 @@ app.post("/api/update/run", async (_request, response) => {
     const launchStatus: UpdateRunStatus = {
       running: true,
       phase: "launching",
+      status: "updating",
       message: "Starting MIT3 updater from repo path: " + repoRoot,
       repoRoot,
       branch,
@@ -500,6 +643,7 @@ app.post("/api/update/run", async (_request, response) => {
         ...launchStatus,
         running: false,
         phase: "failed",
+        status: "failed",
         message: "Updater launch failed.",
         updatedAt: new Date().toISOString(),
         completedAt: new Date().toISOString(),
@@ -528,6 +672,7 @@ app.post("/api/update/run", async (_request, response) => {
       ...launchStatus,
       pid: child.pid ?? null,
       phase: "running",
+      status: "updating",
       message: "MIT3 updater launched.",
       updatedAt: new Date().toISOString(),
     });
@@ -552,7 +697,6 @@ app.post("/api/update/run", async (_request, response) => {
 app.get("/api/update/run/status", async (_request, response) => {
   try {
     const status = await getUpdateRunStatus();
-    updateRunInProgress = status.running;
     response.json(status);
   } catch (error) {
     response.status(500).json({
@@ -643,13 +787,11 @@ app.put("/api/app-data", (request, response) => {
     // Attempt at least to save snapshot as fallback
     try {
       const fallback = saveAppDataSnapshot(data as AppData);
-      response
-        .status(500)
-        .json({
-          ok: false,
-          error: "Normalized save failed; snapshot saved.",
-          fallback,
-        });
+      response.status(500).json({
+        ok: false,
+        error: "Normalized save failed; snapshot saved.",
+        fallback,
+      });
     } catch (err2) {
       console.error("Error saving snapshot as fallback:", err2);
       response
@@ -696,12 +838,10 @@ function sendBackupDownload(
   const filePath = getBackupDownloadPath(kind);
 
   if (!fs.existsSync(filePath)) {
-    response
-      .status(404)
-      .json({
-        ok: false,
-        error: `${fileName} has not been created yet. Run Backup Now first.`,
-      });
+    response.status(404).json({
+      ok: false,
+      error: `${fileName} has not been created yet. Run Backup Now first.`,
+    });
     return;
   }
 

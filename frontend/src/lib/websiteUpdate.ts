@@ -31,6 +31,7 @@ export type WebsiteUpdateRunStatus = {
   gitPullResult?: string | null;
   ok: boolean | null;
   phase: string;
+  status?: string;
   repoRoot?: string;
   scriptPath?: string;
   pid?: number | null;
@@ -57,6 +58,7 @@ export type WebsiteUpdateRunResult =
       scriptPath?: string;
       pid?: number | null;
       statusUrl?: string;
+      runStatus?: WebsiteUpdateRunStatus;
     };
 
 function apiUrl(path: string) {

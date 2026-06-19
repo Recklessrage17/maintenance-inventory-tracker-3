@@ -4045,6 +4045,8 @@ function InventoryApp() {
   const [websiteUpdateRunStatus, setWebsiteUpdateRunStatus] =
     useState<WebsiteUpdateRunStatus | null>(null);
   const [websiteUpdateLogText, setWebsiteUpdateLogText] = useState("");
+  const [isWebsiteUpdatePromptHidden, setIsWebsiteUpdatePromptHidden] =
+    useState(false);
   const [isLoadingWebsiteUpdateLog, setIsLoadingWebsiteUpdateLog] =
     useState(false);
   const [websiteBackupStatus, setWebsiteBackupStatus] =
@@ -5430,13 +5432,26 @@ function InventoryApp() {
 
     try {
       const status = await getWebsiteUpdateStatus();
+      const runStatus = await getWebsiteUpdateRunStatus().catch(() => null);
 
       setWebsiteUpdateStatus(status);
+      setWebsiteUpdateRunStatus(runStatus);
       if (manual && status.ok && status.updateAvailable) {
         saveWebsiteUpdateRemindLaterSha("");
         setRemindedLaterUpdateSha("");
+        setIsWebsiteUpdatePromptHidden(false);
       }
-      setWebsiteUpdateMessage(manual ? websiteUpdateStatusMessage(status) : "");
+
+      const staleMessage =
+        runStatus?.status === "stale" || runStatus?.phase === "stale"
+          ? runStatus.message
+          : "";
+
+      setWebsiteUpdateMessage(
+        manual || staleMessage
+          ? staleMessage || websiteUpdateStatusMessage(status)
+          : "",
+      );
 
       if (manual) {
         showToast(
@@ -5445,7 +5460,7 @@ function InventoryApp() {
               ? "warning"
               : "success"
             : "warning",
-          websiteUpdateStatusMessage(status),
+          staleMessage || websiteUpdateStatusMessage(status),
         );
       }
     } catch (error) {
@@ -5467,6 +5482,11 @@ function InventoryApp() {
     }
   }
 
+  function waitWebsiteUpdateNotice() {
+    setIsWebsiteUpdatePromptHidden(true);
+    setWebsiteUpdateMessage("");
+  }
+
   function remindWebsiteUpdateLater() {
     if (!websiteUpdateStatus?.ok) {
       return;
@@ -5474,6 +5494,7 @@ function InventoryApp() {
 
     saveWebsiteUpdateRemindLaterSha(websiteUpdateStatus.remoteSha);
     setRemindedLaterUpdateSha(websiteUpdateStatus.remoteSha);
+    setIsWebsiteUpdatePromptHidden(true);
     setWebsiteUpdateMessage("Update reminder hidden for this GitHub version.");
   }
 
@@ -5486,6 +5507,7 @@ function InventoryApp() {
 
     try {
       const result = await runWebsiteUpdate();
+      setIsWebsiteUpdatePromptHidden(false);
 
       if (result.ok) {
         const launchDeadline = Date.now() + 6000;
@@ -9164,7 +9186,8 @@ function InventoryApp() {
     Boolean(
       websiteUpdateStatus?.ok &&
       websiteUpdateStatus.updateAvailable &&
-      websiteUpdateStatus.remoteSha !== remindedLaterUpdateSha,
+      !isWebsiteUpdatePromptHidden &&
+        websiteUpdateStatus.remoteSha !== remindedLaterUpdateSha,
     );
 
   return (
@@ -9420,7 +9443,8 @@ function InventoryApp() {
               isStarting={isStartingWebsiteUpdate}
               message={websiteUpdateMessage}
               status={websiteUpdateStatus}
-              onLater={remindWebsiteUpdateLater}
+              onDismiss={remindWebsiteUpdateLater}
+              onLater={waitWebsiteUpdateNotice}
               onUpdate={() => void startWebsiteUpdate()}
             />
           )}
@@ -10771,12 +10795,14 @@ function ManualUpdateNoticeDialog({
 function WebsiteUpdateNoticeDialog({
   isStarting,
   message,
+  onDismiss,
   onLater,
   onUpdate,
   status,
 }: {
   isStarting: boolean;
   message: string;
+  onDismiss: () => void;
   onLater: () => void;
   onUpdate: () => void;
   status: Extract<WebsiteUpdateStatus, { ok: true }>;
@@ -10826,9 +10852,17 @@ function WebsiteUpdateNoticeDialog({
             className="btn-muted"
             type="button"
             onClick={onLater}
-            disabled={isStarting || updateStarted}
+            disabled={isStarting}
           >
             Wait
+          </button>
+          <button
+            className="btn-muted"
+            type="button"
+            onClick={onDismiss}
+            disabled={isStarting}
+          >
+            Dismiss
           </button>
         </div>
       </section>
