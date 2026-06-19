@@ -1748,6 +1748,27 @@ function getLinkedRequisitionMadeRecord(data: AppData, item: InventoryItem) {
   );
 }
 
+function isItemLinkedToActiveRequisition(data: AppData, item: InventoryItem) {
+  return getActiveRequisitionMadeRecords(data).some((record) => {
+    if (item.orderRequisitionId?.trim()) {
+      return record.id === item.orderRequisitionId.trim() && record.itemIds.includes(item.id);
+    }
+
+    return record.itemIds.includes(item.id);
+  });
+}
+
+function shouldShowInDashboardReorder(data: AppData, item: InventoryItem) {
+  return (
+    isReorderNeeded(item, data.settings) &&
+    !item.hiddenFromWatchList &&
+    !item.nonStocked &&
+    item.orderPlaced !== true &&
+    !item.orderRequisitionId?.trim() &&
+    !isItemLinkedToActiveRequisition(data, item)
+  );
+}
+
 function addAudit(data: AppData, entry: AuditEntry): AppData {
   return {
     ...data,
@@ -5278,12 +5299,7 @@ function InventoryApp() {
     }
 
     return data.items
-      .filter(
-        (item) =>
-          isReorderNeeded(item, data.settings) &&
-          !item.hiddenFromWatchList &&
-          !item.nonStocked,
-      )
+      .filter((item) => shouldShowInDashboardReorder(data, item))
       .sort(
         (a, b) =>
           a.quantityOnHand - b.quantityOnHand || a.name.localeCompare(b.name),
