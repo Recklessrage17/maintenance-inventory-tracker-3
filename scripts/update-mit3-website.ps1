@@ -108,17 +108,40 @@ function Invoke-LoggedCommand {
   try {
     $output = & $FilePath @Arguments 2>&1
     $exitCode = $LASTEXITCODE
+    $textOutput = ($output | ForEach-Object { [string]$_ }) -join "`n"
 
     foreach ($line in $output) {
       Write-UpdateLog ([string]$line)
     }
 
     if ($exitCode -ne 0) {
-      throw "Command failed with exit code $exitCode`: $Description"
+      throw "Command failed with exit code $exitCode`: $Description`n$textOutput"
     }
+
+    return $textOutput
   } finally {
     Pop-Location
   }
+}
+
+function Test-IgnoredRuntimeStatusLine {
+  param([string]$Line)
+
+  if (-not $Line -or $Line.Length -lt 4) { return $false }
+
+  $normalizedPath = $Line.Substring(3).Replace("\", "/")
+
+  return $normalizedPath -match "^backend/data/.+\.(db|db-shm|db-wal|sqlite|sqlite-shm|sqlite-wal)$" -or
+    $normalizedPath -eq "backend/update-status.json" -or
+    $normalizedPath.StartsWith("backend/update-logs/")
+}
+
+function Get-BlockingGitStatusLines {
+  param([string]$WorkingDirectory)
+
+  $lines = & git -C $WorkingDirectory status --porcelain
+
+  return @($lines | Where-Object { $_ -and -not (Test-IgnoredRuntimeStatusLine $_) })
 }
 
 function Stop-Mit3Website {
@@ -207,6 +230,11 @@ try {
     beforeSha = $beforeSha
     afterSha = $null
     logFile = $LogFile
+    branch = $null
+    localSha = $beforeSha
+    remoteSha = $null
+    behindCount = $null
+    gitPullResult = $null
   }
   Save-UpdateStatus -Phase "starting" -Message "Starting MIT3 website update..."
 
@@ -243,12 +271,19 @@ try {
   Set-Location $RepoRoot
 
   Save-UpdateStatus -Phase "git-status" -Message "Checking local Git status..."
-  Invoke-LoggedCommand -FilePath "git" -Arguments @("status", "--short") -WorkingDirectory $RepoRoot -Description "git status --short"
+  Invoke-LoggedCommand -FilePath "git" -Arguments @("status", "--short") -WorkingDirectory $RepoRoot -Description "git status --short" | Out-Null
 
-  $dirty = & git -C $RepoRoot status --porcelain
-  if ($dirty) {
+  $dirty = Get-BlockingGitStatusLines -WorkingDirectory $RepoRoot
+  if ($dirty.Count -gt 0) {
     foreach ($line in $dirty) { Write-UpdateLog $line }
-    throw "This repo has local changes. Update stopped so it does not overwrite your work."
+    throw "Update blocked because local changes exist. Commit, stash, or reset before updating."
+  }
+
+  $branch = (& git -C $RepoRoot rev-parse --abbrev-ref HEAD).Trim()
+  $Status.branch = $branch
+  Write-UpdateLog "Current branch: $branch"
+  if ($branch -ne "main") {
+    throw "Update blocked because current branch is not main."
   }
 
   Save-UpdateStatus -Phase "backup" -Message "Backing up SQLite database..."
@@ -270,9 +305,37 @@ try {
   Save-UpdateStatus -Phase "restarting" -Message "Stopping the current MIT3 website process before pulling/building..."
   Stop-Mit3Website -Port $Port
 
-  Save-UpdateStatus -Phase "pulling" -Message "Pulling latest code from GitHub..."
-  Invoke-LoggedCommand -FilePath "git" -Arguments @("fetch") -WorkingDirectory $RepoRoot -Description "git fetch"
-  Invoke-LoggedCommand -FilePath "git" -Arguments @("pull", "--ff-only") -WorkingDirectory $RepoRoot -Description "git pull --ff-only"
+  Save-UpdateStatus -Phase "pulling" -Message "Fetching origin and pulling latest main from GitHub..."
+  Invoke-LoggedCommand -FilePath "git" -Arguments @("fetch", "origin") -WorkingDirectory $RepoRoot -Description "git fetch origin" | Out-Null
+
+  $localSha = (& git -C $RepoRoot rev-parse HEAD).Trim()
+  $remoteSha = (& git -C $RepoRoot rev-parse origin/main).Trim()
+  $behindText = (& git -C $RepoRoot rev-list --count HEAD..origin/main).Trim()
+  $behindCount = [int]$behindText
+  $Status.localSha = $localSha
+  $Status.remoteSha = $remoteSha
+  $Status.behindCount = $behindCount
+  Save-UpdateStatus -Phase "pulling" -Message "Repo path used: $RepoRoot; Current branch: $branch; Local commit: $localSha; Remote commit: $remoteSha; Behind count: $behindCount"
+  Write-UpdateLog "Repo path used: $RepoRoot"
+  Write-UpdateLog "Current branch: $branch"
+  Write-UpdateLog "Local commit: $localSha"
+  Write-UpdateLog "Remote commit: $remoteSha"
+  Write-UpdateLog "Behind count: $behindCount"
+
+  if ($behindCount -le 0) {
+    $Status.gitPullResult = "Already up to date."
+    Save-UpdateStatus -Phase "complete" -Message "Already up to date." -Running $false -Ok $true
+    Write-UpdateLog "Git pull result: Already up to date."
+    exit 0
+  }
+
+  try {
+    $pullOutput = Invoke-LoggedCommand -FilePath "git" -Arguments @("pull", "--ff-only", "origin", "main") -WorkingDirectory $RepoRoot -Description "git pull --ff-only origin main"
+    $Status.gitPullResult = if ($pullOutput) { $pullOutput } else { "git pull --ff-only origin main completed successfully." }
+    Write-UpdateLog "Git pull result: $($Status.gitPullResult)"
+  } catch {
+    throw "Update blocked because fast-forward pull is not possible. $($_.Exception.Message)"
+  }
 
   Save-UpdateStatus -Phase "frontend-install" -Message "Installing frontend dependencies..."
   if (Test-Path (Join-Path $FrontendDir ".env.production.website")) {
@@ -311,7 +374,7 @@ try {
     Write-UpdateLog "Restart was not requested. Update complete."
   }
 
-  Save-UpdateStatus -Phase "complete" -Message "Update complete. MIT3 website is restarting." -Running $false -Ok $true
+  Save-UpdateStatus -Phase "complete" -Message "Update completed successfully. Restart MIT3 to load the newest version." -Running $false -Ok $true
   Write-UpdateLog "Update complete."
 } catch {
   $message = $_.Exception.Message

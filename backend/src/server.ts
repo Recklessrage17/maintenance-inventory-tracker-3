@@ -62,6 +62,11 @@ type UpdateRunStatus = {
   error: string | null;
   logFile: string | null;
   message: string;
+  branch?: string | null;
+  localSha?: string | null;
+  remoteSha?: string | null;
+  behindCount?: number | null;
+  gitPullResult?: string | null;
   ok: boolean | null;
   phase: string;
   repoRoot: string;
@@ -76,6 +81,7 @@ type GitUpdateStatus = {
   behindCount: number | null;
   branch: string;
   checkedAt: string;
+  repoRoot: string;
   localSha: string;
   ok: true;
   remoteSha: string;
@@ -159,9 +165,9 @@ async function getGitUpdateStatus(): Promise<GitUpdateStatus> {
 
   const localSha = await runGit(["rev-parse", "HEAD"]);
 
-  await runGit(["fetch", "--quiet"]);
+  await runGit(["fetch", "origin", "--quiet"]);
 
-  const remoteRef = `origin/${branch}`;
+  const remoteRef = "origin/main";
   const remoteSha = await runGit(["rev-parse", remoteRef]);
   const behindCountText = await runGit([
     "rev-list",
@@ -175,9 +181,13 @@ async function getGitUpdateStatus(): Promise<GitUpdateStatus> {
   return {
     ok: true,
     branch,
+    repoRoot,
     localSha,
     remoteSha,
-    updateAvailable: localSha !== remoteSha,
+    updateAvailable:
+      behindCount !== null && Number.isFinite(behindCount)
+        ? behindCount > 0
+        : localSha !== remoteSha,
     behindCount: Number.isFinite(behindCount) ? behindCount : null,
     checkedAt: new Date().toISOString(),
   };
@@ -411,9 +421,22 @@ app.post("/api/update/run", async (_request, response) => {
     if (dirtyLines.length > 0) {
       response.status(409).json({
         ok: false,
-        error: "Local changes found",
+        error:
+          "Update blocked because local changes exist. Commit, stash, or reset before updating.",
         details: dirtyLines.join("\n"),
         dirtyFiles: dirtyLines,
+        repoRoot,
+      });
+      return;
+    }
+
+    const branch = await runGit(["rev-parse", "--abbrev-ref", "HEAD"]);
+
+    if (branch !== "main") {
+      response.status(409).json({
+        ok: false,
+        error: "Update blocked because current branch is not main.",
+        repoRoot,
       });
       return;
     }
@@ -424,8 +447,9 @@ app.post("/api/update/run", async (_request, response) => {
     const launchStatus: UpdateRunStatus = {
       running: true,
       phase: "launching",
-      message: "Starting MIT3 updater...",
+      message: "Starting MIT3 updater from repo path: " + repoRoot,
       repoRoot,
+      branch,
       scriptPath: updateScriptPath,
       pid: null,
       startedAt,
