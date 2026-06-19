@@ -5,6 +5,7 @@ export type WebsiteUpdateStatus =
       behindCount: number | null;
       branch: string;
       checkedAt: string;
+      repoRoot: string;
       localSha: string;
       ok: true;
       remoteSha: string;
@@ -23,6 +24,11 @@ export type WebsiteUpdateRunStatus = {
   error: string | null;
   logFile: string | null;
   message: string;
+  branch?: string | null;
+  localSha?: string | null;
+  remoteSha?: string | null;
+  behindCount?: number | null;
+  gitPullResult?: string | null;
   ok: boolean | null;
   phase: string;
   repoRoot?: string;

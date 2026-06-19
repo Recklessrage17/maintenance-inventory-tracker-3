@@ -352,7 +352,7 @@ function websiteUpdateStatusMessage(status: WebsiteUpdateStatus | null) {
     return `Update available on ${status.branch}${countLabel}.`;
   }
 
-  return `Up to date on ${status.branch}.`;
+  return `Already up to date on ${status.branch}.`;
 }
 
 const categoryOptions = [
@@ -9288,6 +9288,7 @@ function InventoryApp() {
             isCheckingWebsiteUpdate={isCheckingWebsiteUpdate}
             updateSettings={updateSettings}
             websiteBackupStatus={websiteBackupStatus}
+            websiteUpdateRunStatus={websiteUpdateRunStatus}
             websiteUpdateStatus={websiteUpdateStatus}
           />
         )}
@@ -18536,6 +18537,7 @@ function SettingsPage({
   saveHealthRows,
   updateSettings,
   websiteBackupStatus,
+  websiteUpdateRunStatus,
   websiteUpdateStatus,
 }: {
   backupSupported: boolean;
@@ -18573,6 +18575,7 @@ function SettingsPage({
   saveHealthRows: SaveHealthRow[];
   updateSettings: (settings: AppSettings, auditSummary?: string) => void;
   websiteBackupStatus: WebsiteBackupStatus | null;
+  websiteUpdateRunStatus: WebsiteUpdateRunStatus | null;
   websiteUpdateStatus: WebsiteUpdateStatus | null;
 }) {
   const [pdfEngineStatus, setPdfEngineStatus] =
@@ -18986,7 +18989,7 @@ function SettingsPage({
               <SettingsHealthCard
                 helper={
                   websiteUpdateStatus?.ok
-                    ? `Local ${websiteUpdateStatus.localSha.slice(0, 7)} / Remote ${websiteUpdateStatus.remoteSha.slice(0, 7)}`
+                    ? `Repo ${websiteUpdateStatus.repoRoot} / Local ${websiteUpdateStatus.localSha.slice(0, 7)} / Remote ${websiteUpdateStatus.remoteSha.slice(0, 7)}`
                     : "Run a manual check from this browser"
                 }
                 label="Update Status"
@@ -18995,6 +18998,43 @@ function SettingsPage({
               />
             </div>
           </div>
+
+          {websiteUpdateStatus?.ok && (
+            <div className="settings-status-panel mt-4">
+              <div className="pdf-engine-row">
+                <span>Repo path used</span>
+                <strong>{websiteUpdateStatus.repoRoot}</strong>
+              </div>
+              <div className="pdf-engine-row">
+                <span>Current branch</span>
+                <strong>{websiteUpdateStatus.branch}</strong>
+              </div>
+              <div className="pdf-engine-row">
+                <span>Local commit</span>
+                <strong>{websiteUpdateStatus.localSha.slice(0, 7)}</strong>
+              </div>
+              <div className="pdf-engine-row">
+                <span>Remote commit</span>
+                <strong>{websiteUpdateStatus.remoteSha.slice(0, 7)}</strong>
+              </div>
+              <div className="pdf-engine-row">
+                <span>Behind count</span>
+                <strong>{websiteUpdateStatus.behindCount ?? "Unknown"}</strong>
+              </div>
+            </div>
+          )}
+          {websiteUpdateRunStatus && (
+            <pre className="warning-bar whitespace-pre-wrap mt-4">
+              {`Last update attempt status: ${websiteUpdateRunStatus.message}
+Repo path used: ${websiteUpdateRunStatus.repoRoot ?? "Unknown"}
+Current branch: ${websiteUpdateRunStatus.branch ?? "Unknown"}
+Local commit: ${websiteUpdateRunStatus.localSha?.slice(0, 7) ?? websiteUpdateRunStatus.beforeSha?.slice(0, 7) ?? "Unknown"}
+Remote commit: ${websiteUpdateRunStatus.remoteSha?.slice(0, 7) ?? "Unknown"}
+Behind count: ${websiteUpdateRunStatus.behindCount ?? "Unknown"}
+Git pull result: ${websiteUpdateRunStatus.gitPullResult ?? websiteUpdateRunStatus.error ?? "Not run yet"}`}
+            </pre>
+          )}
+
           <div className="mt-4 flex flex-wrap gap-2">
             <button
               className="btn-primary"
