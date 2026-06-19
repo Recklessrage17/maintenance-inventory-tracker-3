@@ -797,6 +797,14 @@ button:disabled {
     filter: drop-shadow(0 0 8px rgba(34, 211, 238, 0.45));
   }
 
+  .settings-gear-icon {
+    transform-origin: center;
+  }
+
+  .settings-gear:hover .settings-gear-icon {
+    animation: gear-spin 1.2s linear infinite;
+  }
+
   .settings-popout {
     @apply relative grid gap-5 overflow-hidden rounded-lg border border-cyan-400/25 bg-slate-950/75 p-3 shadow-2xl shadow-black/30 backdrop-blur md:p-4;
     width: 100%;
@@ -6645,6 +6653,16 @@ button:disabled {
   }
 }
 
+@keyframes gear-spin {
+  from {
+    transform: rotate(0deg);
+  }
+
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   body::before,
   body::after,
@@ -6671,7 +6689,8 @@ button:disabled {
   .dashboard-screensaver::after,
   .dashboard-screensaver-logo,
   .dashboard-screensaver-logo::before,
-  .scan-lookup-expansion {
+  .scan-lookup-expansion,
+  .settings-gear:hover .settings-gear-icon {
     animation: none;
   }
 
