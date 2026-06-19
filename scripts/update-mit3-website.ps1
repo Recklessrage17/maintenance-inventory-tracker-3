@@ -59,6 +59,18 @@ function Write-Utf8NoBomFile {
   [System.IO.File]::WriteAllText($Path, $Value, $utf8NoBom)
 }
 
+function Get-UpdateStatusState {
+  param([string]$Phase)
+
+  if ($Phase -eq "complete") { return "success" }
+  if ($Phase -eq "failed") { return "failed" }
+  if ($Phase -eq "stale") { return "stale" }
+  if ($Phase -eq "git-status") { return "checking" }
+  if (@("starting", "backup", "restarting", "pulling", "frontend-install", "frontend-build", "backend-install", "backend-build") -contains $Phase) { return "updating" }
+  if ($Phase) { return $Phase }
+  return "idle"
+}
+
 function Save-UpdateStatus {
   param(
     [string]$Phase,
@@ -75,6 +87,7 @@ function Save-UpdateStatus {
   $now = (Get-Date).ToUniversalTime().ToString("o")
   $Status.running = $Running
   $Status.phase = $Phase
+  $Status.status = Get-UpdateStatusState -Phase $Phase
   $Status.message = $Message
   $Status.updatedAt = $now
   $Status.ok = $Ok
@@ -220,6 +233,7 @@ try {
   $Status = [ordered]@{
     running = $true
     phase = "starting"
+    status = "updating"
     message = "Starting MIT3 website update..."
     repoRoot = $RepoRoot
     startedAt = (Get-Date).ToUniversalTime().ToString("o")
