@@ -3981,7 +3981,12 @@ function AppLogoMark() {
 
 function GearIcon() {
   return (
-    <svg viewBox="0 0 24 24" role="img" aria-hidden="true">
+    <svg
+      className="settings-gear-icon"
+      viewBox="0 0 24 24"
+      role="img"
+      aria-hidden="true"
+    >
       <path d="M12 8.2a3.8 3.8 0 1 0 0 7.6 3.8 3.8 0 0 0 0-7.6z" />
       <path d="M19.4 13.5a7.7 7.7 0 0 0 .1-1.5 7.7 7.7 0 0 0-.1-1.5l2-1.5-2-3.4-2.4 1a8.2 8.2 0 0 0-2.5-1.4L14.2 2h-4.4l-.4 2.7A8.2 8.2 0 0 0 7 6.1l-2.5-1-2 3.4 2.1 1.5a7.7 7.7 0 0 0-.1 1.5 7.7 7.7 0 0 0 .1 1.5l-2.1 1.5 2 3.4 2.5-1a8.2 8.2 0 0 0 2.4 1.4l.4 2.7h4.4l.3-2.7a8.2 8.2 0 0 0 2.5-1.4l2.4 1 2-3.4-2-1.5z" />
     </svg>
